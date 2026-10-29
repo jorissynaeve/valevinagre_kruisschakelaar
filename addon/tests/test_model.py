@@ -127,3 +127,33 @@ def test_plan_rejects_nonsense_and_keeps_the_old_plan(bad):
     with pytest.raises(ModelError):
         m.set_plan(bad)
     assert m.plan == before
+
+
+def test_groups_are_saved_validated_and_new_ones_start_disabled(tmp_path):
+    p = tmp_path / "n.json"
+    m = Model(p)
+    assert "groups" not in m.to_dict()
+    m.set_groups([{"id": "keuken", "name": "Keuken", "entities": ["switch.a", "light.b"]}])
+    assert m.groups["keuken"] == {"name": "Keuken", "enabled": False, "entities": ["switch.a", "light.b"]}, "een nieuwe kring staat uit"
+    m.set_group("keuken", enabled=True)
+    m.set_groups([{"id": "keuken", "name": "Keuken 2", "entities": ["switch.a", "light.b", "switch.c"]}])
+    assert m.groups["keuken"]["enabled"] is True and m.groups["keuken"]["name"] == "Keuken 2", "opnieuw importeren houdt aan/uit"
+    assert Model(p).groups == m.groups
+    assert m.disable_all_groups() == 1 and not m.groups["keuken"]["enabled"] and m.disable_all_groups() == 0
+    assert m.remove_group("keuken") and not m.remove_group("keuken")
+    for bad in ([{"id": "A b", "entities": ["switch.a", "switch.b"]}], [{"id": "g", "entities": ["switch.a"]}],
+                [{"id": "g", "entities": ["switch.a", "switch.a"]}], [{"id": "g", "entities": ["switch.a", "Nope"]}], []):
+        with pytest.raises(ModelError):
+            m.set_groups(bad)
+    with pytest.raises(ModelError):
+        m.set_group("bestaat-niet", enabled=True)
+
+
+def test_import_of_a_file_with_conflicting_groups_is_refused_but_startup_is_not():
+    d = {"version": 1, "groups": {"a": {"name": "A", "enabled": True, "entities": ["switch.x", "switch.y"]},
+                                  "b": {"name": "B", "enabled": True, "entities": ["switch.y", "switch.z"]}}}
+    m = Model()
+    with pytest.raises(ModelError):
+        m.load_dict(d)
+    m.load_dict(d, save=False)  # zo laadt het model bij het opstarten: nooit weigeren
+    assert set(m.groups) == {"a", "b"}

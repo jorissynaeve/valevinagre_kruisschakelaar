@@ -22,6 +22,7 @@ from . import proto
 from .model import Model, ModelError
 from .proto import CF_BRIDGE, DEFAULT_TTL, LINK_LOCAL, T, Frame, Mode
 from .replay import ReplayTable
+from .sync import EntityGroups
 from .virtual import Virtuals
 
 PEER_ID_MIN = 0xF000  # ids vanaf hier zijn voor infrastructuur (add-on), nodes krijgen 1..0xEFFF
@@ -152,6 +153,8 @@ class Engine:
         self._load_state()
         self.virt = Virtuals(self)
         self.virt.rebuild()
+        self.groups = EntityGroups(self)
+        self.groups.rebuild()
         self.model.on_change(self._model_changed)
         self._at(self.t.maintenance, self._maintenance)
 
@@ -184,8 +187,24 @@ class Engine:
             cb(entry)
         return entry
 
+    # ------------------------------------------------------------ van HA (habridge.py)
+
+    def ha_entities(self) -> set[str]:
+        """Alle HA-entiteiten die we volgen: gangen van externe apparaten en leden van kringen."""
+        return self.virt.entities() | self.groups.entities()
+
+    def ha_state(self, entity: str, st: str | None) -> None:
+        if entity in self.virt.entities():
+            self.virt.ha_event(entity, st)
+        self.groups.ha_event(entity, st)
+
+    def ha_snapshot(self, states: dict[str, str]) -> None:
+        self.virt.ha_sync({k: v for k, v in states.items() if k in self.virt.entities()})
+        self.groups.ha_sync(states)
+
     def _model_changed(self) -> None:
         self.virt.rebuild()
+        self.groups.rebuild()
         self._emit("model", log=False, rev=self.model.rev)
 
     # ------------------------------------------------------------ zenden
@@ -715,5 +734,6 @@ class Engine:
             "lights": lights,
             "free_relays": free,
             "learn": learn,
+            "groups": self.groups.view(),
             "stats": dict(self.stats),
         }

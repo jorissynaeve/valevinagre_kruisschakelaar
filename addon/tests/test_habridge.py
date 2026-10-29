@@ -190,3 +190,27 @@ def test_devices_without_registry_access_degrades_to_an_empty_list():
             assert {x["entity_id"] for x in await e.bridge.entities()}, "losse entiteiten blijven bruikbaar"
 
     run(go())
+
+
+def test_group_members_follow_each_other_through_ha():
+    """Een kring tegen de nagebootste HA: een druk op de ene touch zet de andere leden aan, zonder heen-en-weer."""
+    async def go():
+        ha = FakeHa(delay=0.03, entities={"switch.t_0": "off", "switch.t_1": "off", "switch.t_2": "off", "switch.t_3": "off"})
+        async with Env(ha, with_device=False) as e:
+            e.model.set_groups([{"id": "gang", "name": "Gang", "entities": ["switch.t_0", "switch.t_1", "switch.t_2"]}])
+            await e.until(lambda: e.bridge.connected)
+            await asyncio.sleep(0.5)  # momentopname na de modelwijziging
+            await ha.set_state("switch.t_0", "on")  # kring uit: niets volgt
+            await asyncio.sleep(0.3)
+            assert ha.calls == [] and ha.states["switch.t_1"] == "off"
+            await ha.set_state("switch.t_0", "off")
+            e.model.set_group("gang", enabled=True)
+            await asyncio.sleep(0.5)
+            await ha.set_state("switch.t_1", "on")
+            await e.until(lambda: ha.states["switch.t_0"] == "on" and ha.states["switch.t_2"] == "on", what="de andere leden volgen")
+            await asyncio.sleep(0.4)
+            assert sorted(ha.calls) == [("switch.t_0", "turn_on"), ("switch.t_2", "turn_on")], f"precies een bevel per lid: {ha.calls}"
+            assert ha.states["switch.t_3"] == "off", "een entiteit buiten de kring blijft ongemoeid"
+            assert [x for x in e.engine.log if x["t"] == "sync" and x["what"] == "follow"]
+
+    run(go())

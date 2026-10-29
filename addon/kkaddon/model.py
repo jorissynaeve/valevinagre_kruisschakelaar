@@ -7,6 +7,8 @@ Bestandsformaat (network.json, ook voor export/import):
    "lights": [{"node": 2, "relay": 2, "name": "Plafond", "enabled": true,
                "triggers": [{"node": 1, "btn": 1, "mode": "toggle"}]}],
    "follow": [{"node": 1, "ind": 1, "light": null}],      # handmatige indicator-koppelingen (null = geen)
+   "groups": {"keuken": {"name": "Keuken", "enabled": false,
+                         "entities": ["switch.r4b01_sonoff_4ch_r4_01_relay_4", "light.t4b001_t4b001_relay_1"]}},
    "plan":   {"floors": [{"id": "g", "name": "Begane grond", "w": 1000, "h": 640,
                           "rooms": [{"x": 20, "y": 20, "w": 300, "h": 200, "name": "Living"}],
                           "items": {"n5": [120, 80], "l2.1": [200, 90]}}]}}   # plattegrond, alleen weergave
@@ -25,6 +27,7 @@ from .proto import MAX_GANGS, MAX_IND, MAX_RELAYS, MAX_TRIG, MODE_BY_NAME, VIRTU
 
 MAX_NAME = 60
 MAX_FLOORS, MAX_ROOMS, MAX_ITEMS, PLAN_MAX = 8, 80, 400, 4000
+MAX_GROUPS, MAX_GROUP_ENTITIES = 120, 40
 FORMAT_VERSION = 1
 
 
@@ -69,6 +72,48 @@ class Light:
 
 ENTITY_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 FLOOR_ID_RE = re.compile(r"^[a-z0-9]{1,12}$")
+GROUP_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
+
+
+def _group(gid, v) -> dict:
+    if not isinstance(gid, str) or not GROUP_ID_RE.match(gid):
+        raise ModelError(f"kring: ongeldig id {gid!r}")
+    if not isinstance(v, dict):
+        raise ModelError(f"kring {gid}: object verwacht")
+    raw = v.get("entities")
+    if not isinstance(raw, list) or not 2 <= len(raw) <= MAX_GROUP_ENTITIES:
+        raise ModelError(f"kring {gid}: 2 tot {MAX_GROUP_ENTITIES} entiteiten verwacht")
+    ents = []
+    for e in raw:
+        if not isinstance(e, str) or not ENTITY_RE.match(e):
+            raise ModelError(f"kring {gid}: ongeldige entiteit {e!r}")
+        if e in ents:
+            raise ModelError(f"kring {gid}: {e} komt twee keer voor")
+        ents.append(e)
+    return {"name": _name(v.get("name"), "kring.name") or gid, "enabled": bool(v.get("enabled", False)), "entities": ents}
+
+
+def _groups(raw) -> dict[str, dict]:
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict) or len(raw) > MAX_GROUPS:
+        raise ModelError(f"kringen: maximaal {MAX_GROUPS}")
+    return {gid: _group(gid, v) for gid, v in raw.items()}
+
+
+def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]]) -> None:
+    """Een entiteit mag maar door één ding worden bestuurd, anders werken die elkaar tegen."""
+    owner: dict[str, str] = {}
+    for vid, gangs in virtual.items():
+        for g in gangs:
+            owner.setdefault(g["entity"], f"extern apparaat {vid}")
+    for gid, g in groups.items():
+        if not g["enabled"]:
+            continue
+        for e in g["entities"]:
+            if e in owner:
+                raise ModelError(f"{e} wordt al bestuurd door {owner[e]} en staat ook in kring {g['name']} (aan): zet er een van beide uit of haal de entiteit eruit")
+            owner[e] = f"kring {g['name']}"
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 
 
@@ -176,6 +221,7 @@ class Model:
         self.follow: dict[tuple[int, int], tuple[int, int] | None] = {}
         self.virtual: dict[int, list[dict]] = {}  # virtuele node -> gangen [{entity, name, lamp}]
         self.plan: dict = {"floors": []}  # plattegrond (alleen weergave)
+        self.groups: dict[str, dict] = {}  # entiteitskringen (AppDaemon-stijl): id -> {name, enabled, entities}
         self.rev = 0
         self._listeners: list[Callable[[], None]] = []
         if self.path and self.path.exists():
@@ -218,6 +264,8 @@ class Model:
         }
         if self.plan["floors"]:
             d["plan"] = self.plan
+        if self.groups:
+            d["groups"] = self.groups
         return d
 
     def load_dict(self, d: dict, save: bool = True) -> None:
@@ -253,9 +301,58 @@ class Model:
             vid = _int(int(k) if str(k).isdigit() else None, VIRTUAL_MIN, VIRTUAL_MAX, "virtual id")
             virtual[vid] = _gangs((v or {}).get("gangs"))
         plan = _plan(d.get("plan"))
-        self.nodes, self.lights, self.follow, self.virtual, self.plan = nodes, lights, follow, virtual, plan
+        groups = _groups(d.get("groups"))
+        if save:  # bij het opstarten nooit weigeren, bij een import wel
+            _conflicts(groups, virtual)
+        self.nodes, self.lights, self.follow, self.virtual, self.plan, self.groups = nodes, lights, follow, virtual, plan, groups
         if save:
             self._changed()
+
+    def set_groups(self, items) -> list[str]:
+        """Import van kringen (nieuw of bijgewerkt). Een nieuwe kring staat **uit**; een bestaande houdt haar aan/uit."""
+        if not isinstance(items, list) or not items:
+            raise ModelError("geen kringen om te importeren")
+        new = dict(self.groups)
+        for it in items:
+            if not isinstance(it, dict):
+                raise ModelError("kring moet een object zijn")
+            gid = it.get("id")
+            old = new.get(gid)
+            new[gid] = _group(gid, {"name": it.get("name"), "entities": it.get("entities"), "enabled": old["enabled"] if old else False})
+        if len(new) > MAX_GROUPS:
+            raise ModelError(f"kringen: maximaal {MAX_GROUPS}")
+        _conflicts(new, self.virtual)
+        self.groups = new
+        self._changed()
+        return [it["id"] for it in items]
+
+    def set_group(self, gid: str, name=None, entities=None, enabled=None) -> None:
+        old = self.groups.get(gid)
+        if old is None:
+            raise ModelError("onbekende kring")
+        new = _group(gid, {
+            "name": old["name"] if name is None else name,
+            "entities": old["entities"] if entities is None else entities,
+            "enabled": old["enabled"] if enabled is None else enabled,
+        })
+        groups = {**self.groups, gid: new}
+        _conflicts(groups, self.virtual)
+        self.groups = groups
+        self._changed()
+
+    def remove_group(self, gid: str) -> bool:
+        if gid not in self.groups:
+            return False
+        self.groups = {k: v for k, v in self.groups.items() if k != gid}
+        self._changed()
+        return True
+
+    def disable_all_groups(self) -> int:
+        n = sum(1 for g in self.groups.values() if g["enabled"])
+        if n:
+            self.groups = {k: {**v, "enabled": False} for k, v in self.groups.items()}
+            self._changed()
+        return n
 
     def set_plan(self, raw) -> None:
         """Alleen bewaren: een plattegrond verandert niets aan de schakelingen, dus geen herconfiguratie en geen `rev`."""
@@ -330,6 +427,7 @@ class Model:
         for g in gangs:
             if g["entity"] in used:
                 raise ModelError(f"{g['entity']} hoort al bij een ander extern apparaat")
+        _conflicts(self.groups, {**self.virtual, vid: gangs})
         self.virtual[vid] = gangs
         n = self.nodes.setdefault(vid, {"name": "", "room": "", "adopted": True})
         n["name"], n["room"], n["adopted"] = _name(name, "name") or n["name"], _name(room, "room"), True

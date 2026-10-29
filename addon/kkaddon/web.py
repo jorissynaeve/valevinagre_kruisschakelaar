@@ -9,7 +9,7 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from . import __version__
+from . import __version__, appdaemon_import
 from .engine import Engine
 from .model import Model, ModelError
 from .settings import Settings, key_header
@@ -20,7 +20,7 @@ STATIC = Path(__file__).parent / "static"
 CTX = web.AppKey("ctx", object)
 INGRESS_PROXY = {"172.30.32.2", "127.0.0.1", "::1"}
 # Events die de pagina moet kennen; de rest (bv. losse commando-statussen) is ruis.
-PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "model"}
+PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model"}
 
 
 class Ctx:
@@ -192,6 +192,40 @@ async def ha_entities(request: web.Request) -> web.Response:
     return web.json_response({"connected": bool(ha and ha.connected), "entities": await ha.entities() if ha else []})
 
 
+async def groups_parse(request: web.Request) -> web.Response:
+    """Voorbeeld van een import: wat staat er in de geplakte YAML, wat bestaat al, wat kent HA niet."""
+    ctx: Ctx = request.app[CTX]
+    res = appdaemon_import.parse(str((await _body(request)).get("yaml") or ""))
+    known = {e["entity_id"] for e in await ctx.ha.entities()} if ctx.ha and ctx.ha.connected else None
+    for g in res["groups"]:
+        g["exists"] = g["id"] in ctx.model.groups
+        g["missing"] = None if known is None else [e for e in g["entities"] if e not in known]
+    return web.json_response({"ha": known is not None, **res})
+
+
+async def groups_post(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    ids = ctx.model.set_groups((await _body(request)).get("groups"))
+    return web.json_response({"ok": True, "ids": ids})
+
+
+async def group_put(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    gid = request.match_info["gid"]
+    b = await _body(request)
+    ctx.model.set_group(gid, name=b.get("name"), entities=b.get("entities"), enabled=b.get("enabled"))
+    return web.json_response({"ok": True})
+
+
+async def group_delete(request: web.Request) -> web.Response:
+    ok = request.app[CTX].model.remove_group(request.match_info["gid"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
+async def groups_all_off(request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, "disabled": request.app[CTX].model.disable_all_groups()})
+
+
 async def plan_put(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     ctx.model.set_plan(await _body(request))
@@ -281,7 +315,7 @@ def asset_version() -> str:
 async def index(request: web.Request) -> web.Response:
     v = asset_version()
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    for f in ("style.css", "plan.js", "app.js"):
+    for f in ("style.css", "plan.js", "groups.js", "app.js"):
         html = html.replace(f'static/{f}"', f'static/{f}?v={v}"')
     return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
@@ -307,6 +341,11 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_get("/api/ha/entities", ha_entities)
     r.add_get("/api/ha/devices", ha_devices)
     r.add_put("/api/plan", plan_put)
+    r.add_post("/api/groups/parse", groups_parse)
+    r.add_post("/api/groups/all-off", groups_all_off)
+    r.add_post("/api/groups", groups_post)
+    r.add_put("/api/groups/{gid}", group_put)
+    r.add_delete("/api/groups/{gid}", group_delete)
     r.add_post("/api/virtual", virtual_post)
     r.add_put("/api/virtual/{vid}", virtual_put)
     r.add_delete("/api/virtual/{vid}", virtual_delete)

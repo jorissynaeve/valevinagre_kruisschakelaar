@@ -36,6 +36,13 @@ De Tuya-touch schakelt altijd zelf zijn relais. De vertraging voor schakelaars v
 merkt er niets van. De add-on gebruikt de HA-API via de supervisor (`homeassistant_api` in `config.yaml`).
 Buiten Home Assistant (tests) zet je `ha_url` en `ha_token`.
 
+## HA-kringen (de oude AppDaemon-kruisschakelaars)
+
+Tabblad *HA-kringen* → *AppDaemon-YAML importeren*: plak je `kruisschakelaar`-configuratie (een heel `apps.yaml` mag ook),
+kies *Controleren* en daarna *OK*. Elke kring is een lijst entiteiten die elkaar volgen. **Alle kringen komen uitgeschakeld
+binnen**: de add-on kijkt dan alleen mee en laat de stand zien. Zet een kring *Actief* en zet dezelfde kring **in AppDaemon uit**,
+anders schakelen ze allebei. Zo verhuis je kring per kring. *Alles uit* zet alle kringen hier uit.
+
 ## Plattegrond
 
 Tabblad *Plattegrond* → *Bewerken*: voeg een verdieping toe, sleep kamers op de tekening en zet je schakelaars en

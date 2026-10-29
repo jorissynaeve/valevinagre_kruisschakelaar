@@ -67,6 +67,9 @@ function logText(e) {
       ? `${lightName(e.node, e.relay)} ${e.target ? 'aan' : 'uit'} bevestigd (${e.ms} ms)`
       : `${lightName(e.node, e.relay)} ${e.target ? 'aan' : 'uit'}: geen bevestiging, opdracht opgegeven`;
     case 'learn': return { started: 'Leer-modus gestart', stopped: 'Leer-modus gestopt', saved: 'Schakelaars opgeslagen', detected: `Leer-modus: ${nodeName(e.node)} knop ${e.btn + 1} gezien` }[e.what] || e.what;
+    case 'sync': return e.what === 'follow'
+      ? `Kring ${groupName(e.group)}: ${e.entity} ${e.on ? 'aan' : 'uit'} → ${e.to.length} ${e.to.length === 1 ? 'volgt' : 'volgen'}${e.skipped.length ? `, ${e.skipped.length} overgeslagen (niet beschikbaar)` : ''}`
+      : `Kring ${groupName(e.group)}: ${e.entity} ${e.on ? 'aan' : 'uit'} mislukt (${e.why})`;
     default: return e.t;
   }
 }
@@ -177,7 +180,7 @@ function render() {
   chips();
   banner();
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
-  if (tab !== 'settings' || !$('#keybox')) $('#main').innerHTML = { lights: viewLights, plan: viewPlan, nodes: viewNodes, log: viewLog, settings: viewSettings }[tab]();
+  if (tab !== 'settings' || !$('#keybox')) $('#main').innerHTML = { lights: viewLights, plan: viewPlan, nodes: viewNodes, groups: viewGroups, log: viewLog, settings: viewSettings }[tab]();
   if (L) refreshPicks();
 }
 
@@ -468,7 +471,7 @@ function connect() {
   ws.onmessage = (m) => {
     const e = JSON.parse(m.data).event;
     planEvent(e);
-    if (S && e && ['btn', 'light', 'node', 'cfg', 'learn', 'cmd'].includes(e.t)) {
+    if (S && e && ['btn', 'light', 'node', 'cfg', 'learn', 'cmd', 'sync'].includes(e.t)) {
       S.log.push(e);
       if (S.log.length > 300) S.log.shift();
     }

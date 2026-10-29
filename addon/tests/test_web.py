@@ -330,9 +330,77 @@ def test_index_pins_scripts_to_their_content(tmp_path):
         try:
             html = await (await c.get("/")).text()
             v = web.asset_version()
-            for f in ("style.css", "plan.js", "app.js"):
+            for f in ("style.css", "plan.js", "groups.js", "app.js"):
                 assert f'static/{f}?v={v}"' in html, f
             assert (await c.get(f"/static/app.js?v={v}")).status == 200
+        finally:
+            await c.close()
+
+    run(go())
+
+
+YAML_GROUPS = """
+kruisschakelaar_lamp_keuken:
+  module: kruisschakelaar
+  class: Kruisschakelaar
+  entities:
+    - switch.a
+    - light.b
+kruisschakelaar_lamp_hal:
+  module: kruisschakelaar
+  class: Kruisschakelaar
+  entities:
+    - switch.c
+    - switch.d
+"""
+
+
+def test_groups_import_enable_and_delete(tmp_path):
+    class StubHa:
+        connected, enabled, last_error = True, True, ""
+
+        async def entities(self):
+            return [{"entity_id": e, "name": e, "state": "off"} for e in ("switch.a", "light.b", "switch.c")]
+
+    async def go():
+        env = Env(tmp_path)
+        env.ctx.ha = StubHa()
+        c = await env.client()
+        try:
+            r = await (await c.post("/api/groups/parse", json={"yaml": YAML_GROUPS})).json()
+            assert r["ha"] is True and [g["id"] for g in r["groups"]] == ["kruisschakelaar_lamp_keuken", "kruisschakelaar_lamp_hal"]
+            keuken, hal = r["groups"]
+            assert keuken["missing"] == [] and hal["missing"] == ["switch.d"] and not keuken["exists"]
+            assert env.rig.model.groups == {}, "controleren schrijft niets"
+            assert (await c.post("/api/groups/parse", json={"yaml": "a: ["})).status == 400
+            ok = await c.post("/api/groups", json={"groups": [{"id": g["id"], "name": g["name"], "entities": g["entities"]} for g in r["groups"]]})
+            assert ok.status == 200
+            st = await (await c.get("/api/state")).json()
+            assert [(g["name"], g["enabled"]) for g in st["groups"]] == [("Hal", False), ("Keuken", False)], "nieuwe kringen staan uit"
+            assert (await c.put("/api/groups/kruisschakelaar_lamp_keuken", json={"enabled": True})).status == 200
+            assert env.rig.model.groups["kruisschakelaar_lamp_keuken"]["enabled"] is True
+            assert (await c.put("/api/groups/bestaat-niet", json={"enabled": True})).status == 400
+            # een tweede kring met dezelfde entiteit mag niet ook aan
+            await c.post("/api/groups", json={"groups": [{"id": "dubbel", "name": "Dubbel", "entities": ["switch.a", "switch.z"]}]})
+            bad = await c.put("/api/groups/dubbel", json={"enabled": True})
+            assert bad.status == 400 and "switch.a" in (await bad.json())["error"]
+            assert (await (await c.post("/api/groups/all-off", json={})).json())["disabled"] == 1
+            assert not any(g["enabled"] for g in env.rig.model.groups.values())
+            assert (await c.delete("/api/groups/dubbel")).status == 200 and (await c.delete("/api/groups/dubbel")).status == 404
+            assert (await (await c.get("/api/export")).json())["groups"].keys() == {"kruisschakelaar_lamp_keuken", "kruisschakelaar_lamp_hal"}
+        finally:
+            await c.close()
+
+    run(go())
+
+
+def test_groups_parse_without_ha_still_works_but_cannot_check_entities(tmp_path):
+    async def go():
+        env = Env(tmp_path)
+        c = await env.client()
+        try:
+            r = await (await c.post("/api/groups/parse", json={"yaml": YAML_GROUPS})).json()
+            assert r["ha"] is False and all(g["missing"] is None for g in r["groups"])
         finally:
             await c.close()
 

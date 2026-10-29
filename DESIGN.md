@@ -164,6 +164,7 @@ Gebouwd, zie §16. Code in `addon/` (Python 3.12, asyncio, aiohttp, PyNaCl, aiom
 | F5 | OTA-hybride en signing |
 | F6 | Kanaal-volgen en eilanden |
 | F3c ✅ | Plattegrond in de add-on: kamers tekenen, schakelaars en lampen plaatsen, kringen schematisch tonen (zie §19) |
+| F7b ✅ | Entiteitskringen: de oude AppDaemon-kruisschakelaars importeren en per kring aan/uit zetten (zie §20) |
 | F7a ✅ | Bestaande ESPHome-schakelaars tijdelijk als extern apparaat in de add-on (zie §18) |
 | F7 | Migratie per kring: toestellen om te flashen, met ESPHome-YAML als terugvalmogelijkheid |
 
@@ -351,3 +352,20 @@ Tabblad *Plattegrond*: een rudimentaire tekening per verdieping waarop je laat z
 - Lijnen kunnen elkaar kruisen en labels overlappen als veel kringen naar dezelfde plek lopen; verplaatsen van items lost dat op. Geen automatische indeling.
 - Geen achtergrondafbeelding of muren, alleen kamers; geen undo.
 - De tekenaar heeft geen geautomatiseerde UI-test (de backend wel); hij is met de demo in een browser geprobeerd.
+
+## 20. Entiteitskringen (de AppDaemon-kruisschakelaar overnemen)
+
+De oude opzet had per lamp een AppDaemon-app (`module: kruisschakelaar`) met een lijst entiteiten (`switch.*` en `light.*`) die elkaar volgen. Om kring per kring te kunnen verhuizen, kan de add-on dat gedrag zelf overnemen, naast de eigenlijke schakelaar-en-lamp-structuur. Code: `kkaddon/sync.py` (gedrag), `appdaemon_import.py` (YAML lezen), `model.py` (`groups`), tabblad *HA-kringen* in `static/groups.js`.
+
+- **Gedrag**: verandert een entiteit van een kring doordat iemand op een touch drukt, dan krijgen de andere leden dezelfde stand, absoluut (`turn_on`/`turn_off`). Een lid dat uit de pas liep wordt zo ook rechtgezet zodra er weer iets verandert.
+- **Aan/uit per kring**: alleen een kring die *Actief* is doet iets. Een kring die uit staat wordt wel gevolgd, de stand staat in de UI, zodat je kunt vergelijken. **Nieuwe kringen komen altijd uitgeschakeld binnen**; opnieuw importeren werkt entiteiten en naam bij maar laat aan/uit staan. *Alles uit* zet ze in één keer uit.
+- **Verhuizen**: zet een kring hier *Actief* en dezelfde kring in AppDaemon uit. Staan beide aan, dan geven ze elkaar tegenbevelen. De add-on kan AppDaemon niet uitzetten.
+- **Veiligheid**: een entiteit mag maar door één ding worden bestuurd. Een kring aanzetten wordt geweigerd als een entiteit al in een andere actieve kring of in een extern apparaat zit (en omgekeerd).
+- **Wanneer reageert hij niet**: de beginstand, de terugkeer uit `unavailable` en het opnieuw verbinden met HA zijn nooit een aanleiding om te schakelen, en aanzetten van een kring herstelt niets. Alleen een stand-wijziging die wij niet zelf opdroegen telt. Een lid dat niet beschikbaar is wordt overgeslagen; een bevel dat na 10 s niet is opgevolgd wordt gemeld in het logboek.
+- **Echo's**: eigen bevelen herkennen we aan een rij verwachte standen per entiteit. Twee snelle drukken achter elkaar geven daardoor geen heen-en-weer: er gaat alleen een bevel uit als de laatst opgedragen of bekende stand afwijkt.
+- **Import**: *AppDaemon-YAML importeren* leest een kringenlijst of een heel `apps.yaml`. Commentaarregels (`#- light.…`) blijven weg, andere apps en kringen met minder dan 2 entiteiten worden overgeslagen met een reden, en het voorbeeld toont per kring welke entiteiten HA niet kent. Naam en id komen van de sleutel (`kruisschakelaar_lamp_keuken` → *Keuken*).
+- **Opslag**: `groups` in `network.json` (optioneel), `POST /api/groups/parse`, `POST /api/groups`, `PUT`/`DELETE /api/groups/{id}`, `POST /api/groups/all-off`.
+
+### Niet getest / open
+- Alleen tegen een nagebootste HA en met unit-tests; de oude AppDaemon-app is niet naast de add-on gedraaid. Of AppDaemon bijzonderheden had die hier ontbreken (bv. vertragingen, uitzonderingen per entiteit) is niet bekeken: alleen de entiteitenlijsten komen mee.
+- De kringen staan niet op de plattegrond en gebruiken de nodes en het ESP-NOW-netwerk niet. Ze zijn bedoeld als tussenstap.

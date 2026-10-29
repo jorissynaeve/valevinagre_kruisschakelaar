@@ -141,9 +141,9 @@ class HaBridge:
                 return
             data = ev.get("data") or {}
             ent = data.get("entity_id")
-            if ent in self.engine.virt.entities():
+            if ent in self.engine.ha_entities():
                 new = data.get("new_state")
-                self.engine.virt.ha_event(ent, new.get("state") if new else "unavailable")
+                self.engine.ha_state(ent, new.get("state") if new else "unavailable")
 
     async def _sync(self) -> list[dict]:
         res = await self._request({"type": "get_states"})
@@ -153,7 +153,7 @@ class HaBridge:
             for s in res.get("result") or []
             if s.get("entity_id", "").split(".")[0] in DOMAINS
         ]
-        self.engine.virt.ha_sync({e: states.get(e) for e in self.engine.virt.entities()})
+        self.engine.ha_snapshot({e: states.get(e) for e in self.engine.ha_entities()})
         return self._cache
 
     async def entities(self) -> list[dict]:
