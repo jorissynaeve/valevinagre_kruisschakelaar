@@ -1,5 +1,5 @@
 name: Kruisschakelaars
-version: "0.1.0"
+version: "0.1.1"
 slug: kruisschakelaars
 description: Beheer en viewer voor het ESP-NOW kruisschakelaar-netwerk (leer-modus, configuratie, MQTT)
 url: https://github.com/jorissynaeve/valevinagre_kruisschakelaar

@@ -57,6 +57,25 @@ def key_header(key: bytes) -> str:
     return f"// Netwerksleutel van dit huis. Niet delen, niet committen.\n#define KK_NETWORK_KEY {{ {body} }}\n"
 
 
+S6_ENV_DIRS = ("/run/s6/container_environment", "/var/run/s6/container_environment")
+
+
+def supervisor_token(env: dict | None = None) -> str:
+    """Het token van de supervisor. In de HA-basisimage start s6 onze dienst zonder de omgeving van de container;
+    de waarde staat dan als bestand in de s6-omgevingsmap (daar leest ook bashio `with-contenv` hem)."""
+    env = os.environ if env is None else env
+    if env.get("SUPERVISOR_TOKEN"):
+        return env["SUPERVISOR_TOKEN"]
+    for d in ([env["KK_S6_ENV"]] if env.get("KK_S6_ENV") else list(S6_ENV_DIRS)):
+        try:
+            tok = (Path(d) / "SUPERVISOR_TOKEN").read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if tok:
+            return tok
+    return ""
+
+
 def _bool(v) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "on")
 
@@ -90,8 +109,9 @@ def load(env: dict | None = None) -> Settings:
         generated = True
 
     ha_url, ha_token = str(get("ha_url", "")), str(get("ha_token", ""))
-    if not ha_url and env.get("SUPERVISOR_TOKEN"):  # we draaien als add-on: de supervisor stuurt door naar HA
-        ha_url, ha_token = "ws://supervisor/core/websocket", env["SUPERVISOR_TOKEN"]
+    sup = supervisor_token(env)
+    if not ha_url and sup:  # we draaien als add-on: de supervisor stuurt door naar HA
+        ha_url, ha_token = "ws://supervisor/core/websocket", sup
     peers = get("peers", [])
     if isinstance(peers, str):
         peers = [p.strip() for p in peers.split(",") if p.strip()]

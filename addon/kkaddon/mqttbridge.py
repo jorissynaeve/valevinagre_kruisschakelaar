@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 
 import aiohttp
@@ -12,7 +11,7 @@ import aiomqtt
 
 from . import discovery as d
 from .engine import Engine
-from .settings import Settings
+from .settings import Settings, supervisor_token
 
 log = logging.getLogger("kk.mqtt")
 
@@ -21,7 +20,7 @@ SET_RE = re.compile(rf"^{d.PREFIX}/light/(\d+)/(\d+)/set$")
 
 async def supervisor_broker() -> dict | None:
     """Vraag de supervisor naar de MQTT-broker (Mosquitto-add-on of een externe, zoals HA hem kent)."""
-    token = os.environ.get("SUPERVISOR_TOKEN")
+    token = supervisor_token()
     if not token:
         return None
     try:
