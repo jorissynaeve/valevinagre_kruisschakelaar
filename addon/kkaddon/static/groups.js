@@ -50,14 +50,16 @@ function viewGroups() {
       <div class="sub">${g.members.length} entiteiten · ${g.enabled ? 'volgen elkaar' : 'volgen elkaar niet (alleen meekijken en bedienen)'}${mixed ? ' <span class="badge warn">staan niet gelijk</span>' : ''}</div>
       ${groupPower(g)}
       <div>${g.members.map((m) => memberRow(g, m)).join('')}</div>
-      <div class="row"><button class="btn small danger" data-grp="del" data-id="${esc(g.id)}">Verwijderen</button></div></div>`;
+      <div class="row"><button class="btn small" data-grp="edit" data-id="${esc(g.id)}">Bewerken</button>
+        <button class="btn small danger" data-grp="del" data-id="${esc(g.id)}">Verwijderen</button></div></div>`;
   }).join('');
   return `<p class="sub" style="margin-top:12px">Kringen zoals in AppDaemon (<code>kruisschakelaar</code>): verandert er één entiteit van een kring doordat iemand op een touch drukt,
     dan krijgen de andere dezelfde stand. Een kring doet alleen iets als hij hier <b>Actief</b> is. <b>Zet dezelfde kring in AppDaemon uit</b>, anders werken ze elkaar tegen.</p>
     <div class="row"><button class="btn primary" data-grp="import">AppDaemon-YAML importeren</button>
+    <button class="btn" data-grp="new">Nieuwe kring</button>
     <button class="btn" data-grp="lampmatch" ${gs.length ? '' : 'disabled'}>Lamp-relais kiezen op naam…</button>
     <button class="btn" data-grp="alloff" ${active ? '' : 'disabled'}>Alles uit${active ? ` (${active} actief)` : ''}</button></div>
-    ${cards ? `<div class="grid" style="margin-top:12px">${cards}</div>` : '<p class="empty">Nog geen kringen. Plak je oude AppDaemon-configuratie bij <b>AppDaemon-YAML importeren</b>; alles komt uitgeschakeld binnen.</p>'}`;
+    ${cards ? `<div class="grid" style="margin-top:12px">${cards}</div>` : '<p class="empty">Nog geen kringen. Plak je oude AppDaemon-configuratie bij <b>AppDaemon-YAML importeren</b> (alles komt uitgeschakeld binnen) of maak er zelf een met <b>Nieuwe kring</b>.</p>'}`;
 }
 
 function parsedHtml(r) {
@@ -90,7 +92,66 @@ function openGroupImport() {
   });
 }
 
+// ---------------------------------------------------------------- kring maken of bewerken
+
+let GE = null; // open dialoog: {id (null = nieuw), name}
+
+const slug = (s) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60);
+
+function readGroupRows() {
+  return [...document.querySelectorAll('#gents input[data-ge]')].map((i) => i.value.trim());
+}
+
+function groupRowsHtml(rows) {
+  return rows.map((v, i) => `<div class="row" style="margin:3px 0;flex-wrap:nowrap"><input type="text" data-ge list="gentlist" value="${esc(v)}" placeholder="switch.… of light.…" autocomplete="off" spellcheck="false">
+    <button class="btn small danger" type="button" data-grp="gerow" data-i="${i}" title="Deze entiteit uit de kring halen">✕</button></div>`).join('');
+}
+
+async function openGroupEdit(id) {
+  const g = id ? S.groups.find((x) => x.id === id) : null;
+  GE = { id: g ? g.id : null };
+  let ents = [];
+  try { ents = (await api('GET', 'ha/entities')).entities; } catch { /* zonder suggesties kan het ook */ }
+  const rows = g ? g.members.map((m) => m.entity) : ['', ''];
+  smallDialog(`<h3>${g ? 'Kring bewerken' : 'Nieuwe kring'}</h3>
+    <p class="sub">Alle entiteiten van een kring volgen elkaar. Een kring heeft minstens 2 entiteiten.${g && g.enabled ? ' Deze kring is actief: wijzigingen gelden meteen.' : ''}</p>
+    ${S.ha.connected ? '' : '<p class="sub" style="color:var(--bad)">Home Assistant is niet verbonden: typ de entiteit-id zelf, zonder suggesties.</p>'}
+    <label for="gname">Naam</label><input type="text" id="gname" maxlength="60" value="${esc(g ? g.name : '')}" placeholder="bv. Keuken">
+    <datalist id="gentlist">${ents.map((e) => `<option value="${esc(e.entity_id)}">${esc(e.name)}</option>`).join('')}</datalist>
+    <label>Entiteiten</label><div id="gents">${groupRowsHtml(rows)}</div>
+    <div class="row" style="margin-top:6px"><button class="btn small" type="button" data-grp="geadd">Entiteit toevoegen</button>
+    ${g ? '<span class="sub">Een lamp-relais of volgorde wijzig je in de kaart zelf.</span>' : ''}</div>`,
+  async () => {
+    const name = $('#gname').value.trim();
+    const entities = [...new Set(readGroupRows().filter(Boolean))];
+    if (GE.id) {
+      await api('PUT', `groups/${GE.id}`, { name: name || undefined, entities });
+    } else {
+      if (!name) throw new Error('Geef de kring een naam');
+      const taken = new Set((S.groups || []).map((x) => x.id));
+      let gid = slug(name) || 'kring', n = 2;
+      while (taken.has(gid)) gid = `${slug(name) || 'kring'}_${n++}`;
+      await api('POST', 'groups', { groups: [{ id: gid, name, entities }] });
+      toast(`Kring ${name} toegevoegd (uitgeschakeld)`);
+    }
+  });
+}
+
 const GROUP_ACTIONS = {
+  new: () => openGroupEdit(null),
+  edit: (d) => openGroupEdit(d.id),
+  geadd: () => {
+    const rows = readGroupRows();
+    rows.push('');
+    $('#gents').innerHTML = groupRowsHtml(rows);
+    const last = [...document.querySelectorAll('#gents input[data-ge]')].pop();
+    if (last) last.focus();
+  },
+  gerow: (d) => {
+    const rows = readGroupRows();
+    rows.splice(+d.i, 1);
+    $('#gents').innerHTML = groupRowsHtml(rows.length ? rows : ['']);
+  },
   lamp: async (d) => {
     const g = S.groups.find((x) => x.id === d.id);
     const lamp = g.lamp.includes(d.e) ? g.lamp.filter((x) => x !== d.e) : [...g.lamp, d.e];

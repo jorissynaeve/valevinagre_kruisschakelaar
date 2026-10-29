@@ -445,3 +445,27 @@ def test_group_lamp_relay_via_api(tmp_path):
             await c.close()
 
     run(go())
+
+
+def test_group_entities_can_be_added_and_removed_via_api(tmp_path):
+    async def go():
+        env = Env(tmp_path)
+        env.rig.model.set_groups([{"id": "gang", "name": "Gang", "entities": ["switch.a", "switch.b"]}])
+        env.rig.model.set_group("gang", lamp=["switch.b"])
+        c = await env.client()
+        try:
+            ok = await c.put("/api/groups/gang", json={"name": "Gang boven", "entities": ["switch.a", "switch.b", "light.c"]})
+            assert ok.status == 200 and env.rig.model.groups["gang"]["entities"] == ["switch.a", "switch.b", "light.c"]
+            assert env.rig.model.groups["gang"]["name"] == "Gang boven" and env.rig.model.groups["gang"]["lamp"] == ["switch.b"]
+            ok = await c.put("/api/groups/gang", json={"entities": ["switch.a", "light.c"]})
+            assert ok.status == 200 and env.rig.model.groups["gang"]["lamp"] == [], "het lamp-relais is uit de kring: de keuze valt weg"
+            assert (await c.put("/api/groups/gang", json={"entities": ["switch.a"]})).status == 400, "minstens 2 entiteiten"
+            assert (await c.put("/api/groups/gang", json={"entities": ["switch.a", "geen id"]})).status == 400
+            assert env.rig.model.groups["gang"]["entities"] == ["switch.a", "light.c"], "een afgewezen wijziging verandert niets"
+            # een nieuwe kring met een eigen id
+            ok = await c.post("/api/groups", json={"groups": [{"id": "hal", "name": "Hal", "entities": ["switch.x", "switch.y"]}]})
+            assert ok.status == 200 and env.rig.model.groups["hal"]["enabled"] is False
+        finally:
+            await c.close()
+
+    run(go())
