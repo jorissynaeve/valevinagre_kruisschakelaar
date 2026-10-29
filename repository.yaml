@@ -1,4 +1,4 @@
 # Voeg deze map (of de git-repo) toe als add-on repository in Home Assistant.
 name: Kruisschakelaars
-url: https://example.invalid/kruisschakelaars   # vul de echte repo-url in
-maintainer: Joris
+url: https://github.com/jorissynaeve/valevinagre_kruisschakelaar
+maintainer: Joris Synaeve
