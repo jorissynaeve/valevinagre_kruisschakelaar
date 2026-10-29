@@ -1,0 +1,36 @@
+configuration:
+  network_key:
+    name: Netwerksleutel
+    description: 64 hex-tekens (32 bytes). Leeg laten om er een te laten maken; zie het tabblad Instellingen voor firmware/secrets.h.
+  peer_id:
+    name: Peer-id van de add-on
+    description: Frame-adres van deze add-on (61440–65534). Alleen wijzigen als je er meer dan één draait.
+  udp_port:
+    name: UDP-poort
+    description: Poort van de LAN-link met de bridges. Moet gelijk zijn aan de firmware.
+  broadcast_addr:
+    name: Broadcast-adres
+    description: Standaard 255.255.255.255. Gebruik het subnet-broadcast (bv. 192.168.1.255) als dat niet werkt.
+  peers:
+    name: Vaste bridges (unicast)
+    description: Hostnamen of IP-adressen, "host" of "host:poort". Nodig voor een bridge achter een repeater die broadcast filtert.
+  hub:
+    name: Hub
+    description: Frames van de ene vaste bridge ook naar de andere doorgeven.
+  mqtt_host:
+    name: MQTT-host
+    description: Leeg laten om de broker van Home Assistant (Mosquitto) te gebruiken.
+  mqtt_port:
+    name: MQTT-poort
+  mqtt_user:
+    name: MQTT-gebruiker
+  mqtt_password:
+    name: MQTT-wachtwoord
+  ha_url:
+    name: HA-websocket (alleen buiten Home Assistant)
+    description: Leeg laten als add-on. Anders bv. ws://homeassistant.local:8123/api/websocket.
+  ha_token:
+    name: HA-token (alleen buiten Home Assistant)
+    description: Long-lived access token.
+  log_level:
+    name: Logniveau

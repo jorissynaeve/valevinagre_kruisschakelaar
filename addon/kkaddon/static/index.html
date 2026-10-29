@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kruisschakelaars</title>
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<header>
+  <h1>Kruisschakelaars</h1>
+  <div id="chips"></div>
+</header>
+<nav id="tabs">
+  <button data-tab="lights" class="on">Lichten</button>
+  <button data-tab="plan">Plattegrond</button>
+  <button data-tab="nodes">Nodes</button>
+  <button data-tab="log">Logboek</button>
+  <button data-tab="settings">Instellingen</button>
+</nav>
+<div id="banner" hidden></div>
+<main id="main"></main>
+
+<dialog id="dlg"><form method="dialog" id="dlgform"></form></dialog>
+<div id="toast" role="status" hidden></div>
+<script src="static/plan.js"></script>
+<script src="static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,60 @@
+# End-to-end: de C++-simulator (echte kern, echte UDP) + de echte add-on + een echte MQTT-broker.
+# Draai met: tools/test.sh e2e
+name: kk-e2e
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    command: mosquitto -c /mosquitto/config/mosquitto.conf
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  addon:
+    build:
+      context: ../addon
+      target: final
+    environment:
+      KK_DATA: /data
+      KK_NETWORK_KEY: "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc"
+      KK_MQTT_HOST: mosquitto
+      KK_DEV_MODE: "1"
+      KK_HA_URL: ws://fakeha:8123/api/websocket
+      KK_HA_TOKEN: test
+    depends_on: [mosquitto, fakeha]
+
+  # Nagebootste Home Assistant voor de externe apparaten (Tuya via local-tuya)
+  fakeha:
+    build:
+      context: ../addon
+      target: final
+    command: python /fakeha/fakeha.py
+    volumes:
+      - ../addon/tests:/fakeha:ro
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      FAKE_TOKEN: test
+      FAKE_DELAY: "0.15"   # zo lang doet local-tuya er ongeveer over om een bevel te bevestigen
+
+  sim:
+    image: gcc:14
+    command: /b/kkudp
+    volumes:
+      - ../build:/b:ro
+    environment:
+      KK_HB_FAST: "10"   # heartbeats 10x sneller, zodat de test minuten bespaart
+      KK_BCAST: "${KK_BCAST:-255.255.255.255}"
+      KK_PEERS: "${KK_PEERS:-}"
+
+  e2e:
+    build:
+      context: ../addon
+      target: test
+    command: pytest -q -x --tb=short -p no:cacheprovider /e2e
+    volumes:
+      - ./:/e2e:ro
+    environment:
+      ADDON_URL: http://addon:8099
+      MQTT_HOST: mosquitto
+      SIM_CTL: sim:47475
+      FAKEHA_URL: http://fakeha:8123
+      PYTHONDONTWRITEBYTECODE: "1"
+    depends_on: [addon, sim, mosquitto, fakeha]

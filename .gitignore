@@ -1,0 +1,7 @@
+build/
+firmware/.pio/
+secrets*.h
+secrets*.ini
+!secrets.example.h
+__pycache__/
+.pytest_cache/

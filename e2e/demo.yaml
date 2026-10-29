@@ -1,0 +1,18 @@
+# Demo: dezelfde opstelling als de e2e-test, met de web-UI op http://localhost:8099 en de besturing van de
+# simulator op udp/47475 (zie tools/simctl.py). Start met tools/demo.sh.
+services:
+  addon:
+    ports:
+      - "127.0.0.1:8099:8099"
+    volumes:
+      - demo-data:/data
+  sim:
+    ports:
+      - "127.0.0.1:47475:47475/udp"
+    environment:
+      KK_HB_FAST: "5"
+  fakeha:
+    ports:
+      - "127.0.0.1:8123:8123"   # POST /ctl/press {"entity":"switch.t_0"} = fysiek op de Tuya drukken
+volumes:
+  demo-data:
