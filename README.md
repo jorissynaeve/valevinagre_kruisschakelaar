@@ -40,3 +40,11 @@ In het demo-huis staat ook een nagebootste Home Assistant voor externe apparaten
 simuleer je met `curl -X POST localhost:8123/ctl/press -d '{"entity":"switch.t_0"}'`.
 
 Gebruik en opties: [addon/DOCS.md](addon/DOCS.md). Ontwerp en resultaten: DESIGN.md §9 en §16.
+
+## Installeren op Home Assistant
+
+1. Instellingen → Apps → App store → ⋮ → *Repositories* → voeg `https://github.com/jorissynaeve/valevinagre_kruisschakelaar` toe.
+2. Zoek *Kruisschakelaars* (eventueel eerst ⋮ → *Op updates controleren*), installeer en start de app.
+3. Na een nieuwe versie op GitHub: ⋮ → *Op updates controleren* (soms twee keer) en dan *Bijwerken*. HA bouwt alleen opnieuw als `version` in `addon/config.yaml` hoger is.
+
+Gebouwd en gestart op een Raspberry Pi 3 (aarch64). De app vindt Mosquitto en de HA-API zelf via de Supervisor.
