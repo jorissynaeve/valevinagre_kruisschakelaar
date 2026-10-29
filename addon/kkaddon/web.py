@@ -217,6 +217,19 @@ async def group_put(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def group_cmd(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    op = b.get("op", "toggle")
+    if op not in ("on", "off", "toggle"):
+        raise ModelError("op moet on, off of toggle zijn")
+    ent = b.get("entity")
+    if ent is not None and not isinstance(ent, str):
+        raise ModelError("entity moet een tekst zijn")
+    ok = ctx.engine.groups.command(request.match_info["gid"], None if op == "toggle" else op == "on", ent)
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
 async def group_delete(request: web.Request) -> web.Response:
     ok = request.app[CTX].model.remove_group(request.match_info["gid"])
     return web.json_response({"ok": ok}, status=200 if ok else 404)
@@ -346,6 +359,7 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/groups", groups_post)
     r.add_put("/api/groups/{gid}", group_put)
     r.add_delete("/api/groups/{gid}", group_delete)
+    r.add_post("/api/groups/{gid}/cmd", group_cmd)
     r.add_post("/api/virtual", virtual_post)
     r.add_put("/api/virtual/{vid}", virtual_put)
     r.add_delete("/api/virtual/{vid}", virtual_delete)

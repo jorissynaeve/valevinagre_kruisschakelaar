@@ -129,6 +129,43 @@ class EntityGroups:
         if m.known != target and gid in self.members and m in self.members[gid]:
             self.e._emit("sync", what="failed", group=gid, entity=m.entity, on=target, why="geen reactie van het apparaat")
 
+    # ------------------------------------------------------------ bevelen uit de UI
+
+    def command(self, gid: str, on: bool | None = None, entity: str | None = None) -> bool:
+        """Een kring of één lid bedienen. `on=None` wisselt.
+
+        Eén lid: een gewoon bevel aan die entiteit. Staat de kring aan, dan volgt de rest, net als bij een druk op de touch.
+        Hele kring: alle bereikbare leden naar dezelfde stand; staat de kring aan, dan zijn dat eigen bevelen (geen druk)."""
+        e = self.e
+        ms = self.members.get(gid)
+        if not ms:
+            return False
+        if entity is not None:
+            m = next((x for x in ms if x.entity == entity), None)
+            if m is None:
+                return False
+            target = on if on is not None else (None if m.known is None else not m.known)
+            targets = [(m, target)] if target is not None else []
+        else:
+            if on is None:
+                on = not any(x.known for x in ms)  # staat er iets aan: uit, anders aan
+            targets = [(x, on) for x in ms if x.avail and x.known is not None and (x.pend[-1][0] if x.pend else x.known) != on]
+            if not targets and any(x.avail and x.known is not None for x in ms):
+                return True  # alles staat al zo
+        sent = []
+        now = e._clock()
+        for m, target in targets:
+            if not (e.virt.link and e.ha_call and e.ha_call(m.entity, target)):
+                e._emit("sync", what="failed", group=gid, entity=m.entity, on=target, why="geen verbinding met HA")
+                continue
+            if entity is None:  # alleen bij de hele kring: de echo's zijn onze eigen bevelen
+                m.pend.append((target, now + PENDING_FOR))
+            sent.append((m.entity, target))
+            e._at(PENDING_FOR + 0.5, lambda m=m, t=target: self._check(gid, m, t))
+        if sent:
+            e._emit("sync", what="command", group=gid, entity=entity, on=sent[0][1], to=[x for x, _ in sent])
+        return bool(sent)
+
     # ------------------------------------------------------------ voor de UI
 
     def view(self) -> list[dict]:

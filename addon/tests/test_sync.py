@@ -151,3 +151,51 @@ def test_member_changes_are_announced_so_the_page_refreshes(tmp_path):
     e.ha_state(C, "unavailable")
     assert [x for x in rig.events if x["t"] == "grp"]
     assert not [x for x in e.log if x["t"] == "grp"], "geen ruis in het logboek"
+
+
+def test_controlling_a_single_member_works_with_the_group_off_and_is_a_press_when_it_is_on(tmp_path):
+    rig, e = start(tmp_path, enabled=False)
+    assert e.groups.command("keuken", entity=B) is True
+    assert rig.ha_calls == [(B, True)], "alleen dat ene lid, ook als de kring uit staat"
+    e.ha_state(B, "on")
+    assert rig.ha_calls == [(B, True)], "de kring staat uit: niets volgt"
+    rig.model.set_group("keuken", enabled=True)
+    rig.ha_calls.clear()
+    assert e.groups.command("keuken", entity=B) is True  # wisselt naar uit
+    assert rig.ha_calls == [(B, False)]
+    e.ha_state(B, "off")  # voor de kring is dit een druk: de rest volgt (A en C stonden al uit)
+    assert rig.ha_calls == [(B, False)]
+    rig.ha_calls.clear()
+    assert e.groups.command("keuken", entity=C, on=True)
+    assert rig.ha_calls == [(C, True)]
+    e.ha_state(C, "on")
+    assert set(rig.ha_calls) == {(C, True), (A, True), (B, True)}, "een lid bedienen in een actieve kring laat de andere volgen"
+
+
+def test_controlling_the_whole_group_sets_every_reachable_member_and_those_are_not_presses(tmp_path):
+    rig, e = start(tmp_path)
+    e.ha_state(C, "unavailable")
+    assert e.groups.command("keuken", on=True) is True
+    assert set(rig.ha_calls) == {(A, True), (B, True)}, "een niet-beschikbaar lid wordt overgeslagen"
+    e.ha_state(A, "on")
+    e.ha_state(B, "on")
+    assert len(rig.ha_calls) == 2, "de echo's van eigen bevelen zijn geen druk"
+    rig.ha_calls.clear()
+    assert e.groups.command("keuken") is True  # wisselen: er staat iets aan, dus uit
+    assert set(rig.ha_calls) == {(A, False), (B, False)}
+    e.ha_state(A, "off")
+    e.ha_state(B, "off")
+    rig.ha_calls.clear()
+    assert e.groups.command("keuken", on=False) is True, "alles staat al zo: geen bevelen, wel gelukt"
+    assert rig.ha_calls == []
+    assert [x for x in rig.events_of("sync") if x["what"] == "command"]
+
+
+def test_group_commands_report_failure_for_unknown_or_unreachable(tmp_path):
+    rig, e = start(tmp_path)
+    assert e.groups.command("bestaat-niet") is False
+    assert e.groups.command("keuken", entity="switch.onbekend") is False
+    e.ha_state(A, "unavailable")
+    assert e.groups.command("keuken", entity=A) is False, "een lid met onbekende stand kun je niet wisselen"
+    e.virt.set_link(False)
+    assert e.groups.command("keuken", on=True) is False and rig.ha_calls == []

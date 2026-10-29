@@ -13,6 +13,28 @@ function groupName(id) {
 const memberText = (m) => (m.on === true ? 'aan' : m.on === false ? 'uit' : 'niet beschikbaar');
 const memberColor = (m) => (m.on === true ? 'var(--on)' : m.on === false ? 'var(--mute)' : 'var(--bad)');
 
+// Aan/uit-knop en leden van een kring; op het tabblad Lichten én op HA-kringen
+function groupPower(g) {
+  const on = g.members.some((m) => m.on === true);
+  const unknown = g.members.every((m) => m.on === null);
+  return `<button class="power ${on ? 'on' : unknown ? 'unknown' : ''}" data-grp="gtoggle" data-id="${esc(g.id)}">${on ? 'Aan' : unknown ? 'Onbekend' : 'Uit'}</button>`;
+}
+
+function memberRow(g, m) {
+  return `<div class="gm"><span class="gdot" style="background:${memberColor(m)}"></span>
+    <a href="#" class="gml" data-grp="member" data-id="${esc(g.id)}" data-e="${esc(m.entity)}" title="Alleen deze entiteit wisselen"><code>${esc(m.entity)}</code></a> <span class="sub">${memberText(m)}</span></div>`;
+}
+
+// Op het tabblad Lichten: elke kring als een licht dat je kunt bedienen
+function groupLightCards() {
+  const gs = S.groups || [];
+  if (!gs.length) return '';
+  return `<h2>Kringen via Home Assistant</h2><div class="grid">${gs.map((g) => `<div class="card">
+      <div class="row sp"><h3>${esc(g.name)}</h3><span class="badge ${g.enabled ? 'ok' : ''}">${g.enabled ? 'volgt elkaar' : 'alleen bediening'}</span></div>
+      <div class="sub">${g.members.length} entiteiten</div>${groupPower(g)}
+      <details><summary class="sub" style="cursor:pointer">Entiteiten (klik om er één te wisselen)</summary>${g.members.map((m) => memberRow(g, m)).join('')}</details></div>`).join('')}</div>`;
+}
+
 function viewGroups() {
   const gs = S.groups || [];
   const active = gs.filter((g) => g.enabled).length;
@@ -22,8 +44,9 @@ function viewGroups() {
     return `<div class="card">
       <div class="row sp"><h3>${esc(g.name)}</h3>
         <label style="margin:0;color:var(--ink);cursor:pointer"><input type="checkbox" data-grp-toggle="${esc(g.id)}" ${g.enabled ? 'checked' : ''}> ${g.enabled ? 'Actief' : 'Uit'}</label></div>
-      <div class="sub">${g.members.length} entiteiten · ${g.enabled ? 'volgen elkaar' : 'doet niets (alleen meekijken)'}${mixed ? ' <span class="badge warn">staan niet gelijk</span>' : ''}</div>
-      <div>${g.members.map((m) => `<div class="gm"><span class="gdot" style="background:${memberColor(m)}"></span><code>${esc(m.entity)}</code> <span class="sub">${memberText(m)}</span></div>`).join('')}</div>
+      <div class="sub">${g.members.length} entiteiten · ${g.enabled ? 'volgen elkaar' : 'volgen elkaar niet (alleen meekijken en bedienen)'}${mixed ? ' <span class="badge warn">staan niet gelijk</span>' : ''}</div>
+      ${groupPower(g)}
+      <div>${g.members.map((m) => memberRow(g, m)).join('')}</div>
       <div class="row"><button class="btn small danger" data-grp="del" data-id="${esc(g.id)}">Verwijderen</button></div></div>`;
   }).join('');
   return `<p class="sub" style="margin-top:12px">Kringen zoals in AppDaemon (<code>kruisschakelaar</code>): verandert er één entiteit van een kring doordat iemand op een touch drukt,
@@ -64,6 +87,12 @@ function openGroupImport() {
 }
 
 const GROUP_ACTIONS = {
+  gtoggle: async (d) => {
+    await api('POST', `groups/${d.id}/cmd`, { op: 'toggle' }).catch((e) => { throw new Error(`${e.message}: geen enkel lid is bereikbaar?`); });
+  },
+  member: async (d) => {
+    await api('POST', `groups/${d.id}/cmd`, { op: 'toggle', entity: d.e }).catch((e) => { throw new Error(`${e.message}: ${d.e} is niet bereikbaar?`); });
+  },
   import: () => openGroupImport(),
   parse: async () => {
     const r = await api('POST', 'groups/parse', { yaml: $('#gyaml').value });

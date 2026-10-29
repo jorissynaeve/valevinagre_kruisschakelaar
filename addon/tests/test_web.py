@@ -405,3 +405,24 @@ def test_groups_parse_without_ha_still_works_but_cannot_check_entities(tmp_path)
             await c.close()
 
     run(go())
+
+
+def test_group_cmd_endpoint(tmp_path):
+    async def go():
+        env = Env(tmp_path)
+        env.rig.model.set_groups([{"id": "gang", "name": "Gang", "entities": ["switch.a", "switch.b"]}])
+        env.rig.engine.ha_snapshot({"switch.a": "off", "switch.b": "off"})
+        c = await env.client()
+        try:
+            r = await c.post("/api/groups/gang/cmd", json={"op": "on"})
+            assert r.status == 200 and set(env.rig.ha_calls) == {("switch.a", True), ("switch.b", True)}
+            env.rig.ha_calls.clear()
+            r = await c.post("/api/groups/gang/cmd", json={"op": "toggle", "entity": "switch.a"})
+            assert r.status == 200 and env.rig.ha_calls == [("switch.a", True)]
+            assert (await c.post("/api/groups/nope/cmd", json={"op": "on"})).status == 404
+            assert (await c.post("/api/groups/gang/cmd", json={"op": "boem"})).status == 400
+            assert (await c.post("/api/groups/gang/cmd", json={"op": "on", "entity": 5})).status == 400
+        finally:
+            await c.close()
+
+    run(go())

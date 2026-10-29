@@ -43,6 +43,8 @@ kies *Controleren* en daarna *OK*. Elke kring is een lijst entiteiten die elkaar
 binnen**: de add-on kijkt dan alleen mee en laat de stand zien. Zet een kring *Actief* en zet dezelfde kring **in AppDaemon uit**,
 anders schakelen ze allebei. Zo verhuis je kring per kring. *Alles uit* zet alle kringen hier uit.
 
+Elke kring staat ook op het tabblad *Lichten* met een aan/uit-knop. Daaronder klik je op één entiteit (bijvoorbeeld het relais dat de lamp aanstuurt) om alleen die te wisselen.
+
 ## Plattegrond
 
 Tabblad *Plattegrond* → *Bewerken*: voeg een verdieping toe, sleep kamers op de tekening en zet je schakelaars en

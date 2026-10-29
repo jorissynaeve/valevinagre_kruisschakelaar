@@ -67,7 +67,8 @@ function logText(e) {
       ? `${lightName(e.node, e.relay)} ${e.target ? 'aan' : 'uit'} bevestigd (${e.ms} ms)`
       : `${lightName(e.node, e.relay)} ${e.target ? 'aan' : 'uit'}: geen bevestiging, opdracht opgegeven`;
     case 'learn': return { started: 'Leer-modus gestart', stopped: 'Leer-modus gestopt', saved: 'Schakelaars opgeslagen', detected: `Leer-modus: ${nodeName(e.node)} knop ${e.btn + 1} gezien` }[e.what] || e.what;
-    case 'sync': return e.what === 'follow'
+    case 'sync': if (e.what === 'command') return `Kring ${groupName(e.group)}: ${e.entity ? e.entity : 'alle leden'} ${e.on ? 'aan' : 'uit'} gezet (bediening)`;
+      return e.what === 'follow'
       ? `Kring ${groupName(e.group)}: ${e.entity} ${e.on ? 'aan' : 'uit'} → ${e.to.length} ${e.to.length === 1 ? 'volgt' : 'volgen'}${e.skipped.length ? `, ${e.skipped.length} overgeslagen (niet beschikbaar)` : ''}`
       : `Kring ${groupName(e.group)}: ${e.entity} ${e.on ? 'aan' : 'uit'} mislukt (${e.why})`;
     default: return e.t;
@@ -112,7 +113,9 @@ function viewLights() {
   }).join('');
   const free = S.free_relays.map((f) => `<tr><td>${esc(nodeName(f.node))} · relais ${f.relay + 1}</td><td>${f.on === null ? '' : f.on ? 'aan' : 'uit'}</td>
       <td style="text-align:right"><button class="btn small" data-act="addlight" data-n="${f.node}" data-r="${f.relay}">Als licht toevoegen</button></td></tr>`).join('');
-  return `${cards ? `<div class="grid" style="margin-top:12px">${cards}</div>` : '<p class="empty">Nog geen lichten. Voeg hieronder een relais toe als licht, of wacht tot er nodes verschijnen.</p>'}
+  const hasGroups = (S.groups || []).length > 0;
+  return `${cards ? `<div class="grid" style="margin-top:12px">${cards}</div>` : hasGroups ? '' : '<p class="empty">Nog geen lichten. Voeg hieronder een relais toe als licht, of wacht tot er nodes verschijnen.</p>'}
+    ${groupLightCards()}
     ${free ? `<h2>Relais zonder licht</h2><div class="scroll"><table><tbody>${free}</tbody></table></div>` : ''}`;
 }
 
