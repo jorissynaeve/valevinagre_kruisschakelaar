@@ -45,6 +45,8 @@ anders schakelen ze allebei. Zo verhuis je kring per kring. *Alles uit* zet alle
 
 Elke kring staat ook op het tabblad *Lichten* met een aan/uit-knop. Daaronder klik je op één entiteit (bijvoorbeeld het relais dat de lamp aanstuurt) om alleen die te wisselen.
 
+**Welk relais schakelt de lamp?** Klik naast een entiteit op *lamp?* om haar als lamp-relais te markeren, of kies bij *HA-kringen* → *Lamp-relais kiezen op naam…* een stuk naam (bv. `dingtian`) voor alle kringen tegelijk. De knop toont dan de stand van dat relais en geeft het bevel daaraan eerst; de andere entiteiten blijven de kring volgen.
+
 ## Plattegrond
 
 Tabblad *Plattegrond* → *Bewerken*: voeg een verdieping toe, sleep kamers op de tekening en zet je schakelaars en

@@ -426,3 +426,22 @@ def test_group_cmd_endpoint(tmp_path):
             await c.close()
 
     run(go())
+
+
+def test_group_lamp_relay_via_api(tmp_path):
+    async def go():
+        env = Env(tmp_path)
+        env.rig.model.set_groups([{"id": "gang", "name": "Gang", "entities": ["switch.a", "switch.b"]}])
+        c = await env.client()
+        try:
+            assert (await c.put("/api/groups/gang", json={"lamp": ["switch.b"]})).status == 200
+            st = await (await c.get("/api/state")).json()
+            assert st["groups"][0]["lamp"] == ["switch.b"] and [m["lamp"] for m in st["groups"][0]["members"]] == [False, True]
+            assert (await c.put("/api/groups/gang", json={"lamp": ["switch.x"]})).status == 400
+            assert (await c.put("/api/groups/gang", json={"enabled": True})).status == 200
+            assert env.rig.model.groups["gang"]["lamp"] == ["switch.b"], "andere wijzigingen laten het lamp-relais staan"
+            assert (await (await c.get("/api/export")).json())["groups"]["gang"]["lamp"] == ["switch.b"]
+        finally:
+            await c.close()
+
+    run(go())

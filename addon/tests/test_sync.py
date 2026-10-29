@@ -199,3 +199,49 @@ def test_group_commands_report_failure_for_unknown_or_unreachable(tmp_path):
     assert e.groups.command("keuken", entity=A) is False, "een lid met onbekende stand kun je niet wisselen"
     e.virt.set_link(False)
     assert e.groups.command("keuken", on=True) is False and rig.ha_calls == []
+
+
+def test_lamp_relay_decides_the_group_state_and_gets_the_command_first(tmp_path):
+    rig, e = start(tmp_path, enabled=False)
+    rig.model.set_group("keuken", lamp=[B])
+    v = e.snapshot()["groups"][0]
+    assert v["lamp"] == [B] and [m["lamp"] for m in v["members"]] == [False, True, False]
+    # A (een touch-relais) staat aan, maar de lamp (B) staat uit: de kring is "uit", wisselen betekent dus aan
+    e.ha_state(A, "on")
+    rig.ha_calls.clear()
+    assert e.groups.command("keuken") is True
+    assert rig.ha_calls[0] == (B, True), "het lamp-relais krijgt het bevel eerst"
+    assert set(rig.ha_calls) == {(B, True), (C, True)}, "A staat al aan"
+    # zonder lamp-relais telt iedereen: A staat aan, dus wisselen betekent uit
+    rig2, e2 = start(tmp_path)
+    e2.ha_state(A, "on")
+    e2.ha_state(B, "on")
+    e2.ha_state(C, "on")
+    rig2.ha_calls.clear()
+    e2.groups.command("keuken")
+    assert {x[1] for x in rig2.ha_calls} == {False}
+
+
+def test_an_unreachable_lamp_relay_falls_back_to_all_members(tmp_path):
+    rig, e = start(tmp_path, enabled=False)
+    rig.model.set_group("keuken", lamp=[B])
+    e.ha_state(A, "on")
+    e.ha_state(B, "unavailable")
+    rig.ha_calls.clear()
+    assert e.groups.command("keuken") is True
+    assert {x[1] for x in rig.ha_calls} == {False}, "de lamp is onbereikbaar: A bepaalt, en staat aan"
+
+
+def test_lamp_relays_survive_reimport_and_follow_the_entity_list():
+    m = Model()
+    m.set_groups([{"id": "g", "name": "G", "entities": [A, B, C]}])
+    m.set_group("g", lamp=[B, A])
+    assert m.groups["g"]["lamp"] == [A, B], "in de volgorde van de kring"
+    m.set_groups([{"id": "g", "name": "G2", "entities": [A, C, "switch.d"]}])
+    assert m.groups["g"]["lamp"] == [A], "een lamp-relais dat uit de kring verdween valt weg"
+    m.set_group("g", entities=[C, "switch.d"])
+    assert m.groups["g"]["lamp"] == []
+    for bad in ([B], ["Nope"], "x", [5]):
+        with pytest.raises(ModelError):
+            m.set_group("g", lamp=bad)
+    m.set_group("g", lamp=[])

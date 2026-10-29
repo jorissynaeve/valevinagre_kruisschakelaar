@@ -15,14 +15,17 @@ const memberColor = (m) => (m.on === true ? 'var(--on)' : m.on === false ? 'var(
 
 // Aan/uit-knop en leden van een kring; op het tabblad Lichten én op HA-kringen
 function groupPower(g) {
-  const on = g.members.some((m) => m.on === true);
-  const unknown = g.members.every((m) => m.on === null);
+  const lamps = g.members.filter((m) => m.lamp && m.on !== null);
+  const basis = lamps.length ? lamps : g.members; // de lamp-relais bepalen de stand, anders iedereen
+  const on = basis.some((m) => m.on === true);
+  const unknown = basis.every((m) => m.on === null);
   return `<button class="power ${on ? 'on' : unknown ? 'unknown' : ''}" data-grp="gtoggle" data-id="${esc(g.id)}">${on ? 'Aan' : unknown ? 'Onbekend' : 'Uit'}</button>`;
 }
 
 function memberRow(g, m) {
   return `<div class="gm"><span class="gdot" style="background:${memberColor(m)}"></span>
-    <a href="#" class="gml" data-grp="member" data-id="${esc(g.id)}" data-e="${esc(m.entity)}" title="Alleen deze entiteit wisselen"><code>${esc(m.entity)}</code></a> <span class="sub">${memberText(m)}</span></div>`;
+    <a href="#" class="gml" data-grp="member" data-id="${esc(g.id)}" data-e="${esc(m.entity)}" title="Alleen deze entiteit wisselen"><code>${esc(m.entity)}</code></a> <span class="sub">${memberText(m)}</span>
+    <a href="#" class="lamptag ${m.lamp ? 'on' : ''}" data-grp="lamp" data-id="${esc(g.id)}" data-e="${esc(m.entity)}" title="${m.lamp ? 'Dit relais schakelt de lamp (klik om te wissen)' : 'Markeer als relais dat de lamp schakelt'}">${m.lamp ? 'lamp-relais' : 'lamp?'}</a></div>`;
 }
 
 // Op het tabblad Lichten: elke kring als een licht dat je kunt bedienen
@@ -52,6 +55,7 @@ function viewGroups() {
   return `<p class="sub" style="margin-top:12px">Kringen zoals in AppDaemon (<code>kruisschakelaar</code>): verandert er één entiteit van een kring doordat iemand op een touch drukt,
     dan krijgen de andere dezelfde stand. Een kring doet alleen iets als hij hier <b>Actief</b> is. <b>Zet dezelfde kring in AppDaemon uit</b>, anders werken ze elkaar tegen.</p>
     <div class="row"><button class="btn primary" data-grp="import">AppDaemon-YAML importeren</button>
+    <button class="btn" data-grp="lampmatch" ${gs.length ? '' : 'disabled'}>Lamp-relais kiezen op naam…</button>
     <button class="btn" data-grp="alloff" ${active ? '' : 'disabled'}>Alles uit${active ? ` (${active} actief)` : ''}</button></div>
     ${cards ? `<div class="grid" style="margin-top:12px">${cards}</div>` : '<p class="empty">Nog geen kringen. Plak je oude AppDaemon-configuratie bij <b>AppDaemon-YAML importeren</b>; alles komt uitgeschakeld binnen.</p>'}`;
 }
@@ -87,6 +91,22 @@ function openGroupImport() {
 }
 
 const GROUP_ACTIONS = {
+  lamp: async (d) => {
+    const g = S.groups.find((x) => x.id === d.id);
+    const lamp = g.lamp.includes(d.e) ? g.lamp.filter((x) => x !== d.e) : [...g.lamp, d.e];
+    await api('PUT', `groups/${d.id}`, { lamp });
+    await refresh();
+  },
+  lampmatch: async () => {
+    const word = (prompt('Welke entiteiten schakelen de lamp? Geef een deel van de naam, bv. dingtian. Alle kringen met zo\'n entiteit krijgen die als lamp-relais.', 'dingtian') || '').trim().toLowerCase();
+    if (!word) return;
+    const hits = S.groups.map((g) => ({ g, lamp: g.members.filter((m) => m.entity.toLowerCase().includes(word)).map((m) => m.entity) })).filter((x) => x.lamp.length);
+    if (!hits.length) throw new Error(`Geen entiteit met "${word}" gevonden`);
+    if (!confirm(`${hits.length} van ${S.groups.length} kringen hebben een entiteit met "${word}". Die worden hun lamp-relais (een eerdere keuze wordt vervangen). Doorgaan?`)) return;
+    for (const h of hits) await api('PUT', `groups/${h.g.id}`, { lamp: h.lamp });
+    toast(`Lamp-relais ingesteld bij ${hits.length} kringen`);
+    await refresh();
+  },
   gtoggle: async (d) => {
     await api('POST', `groups/${d.id}/cmd`, { op: 'toggle' }).catch((e) => { throw new Error(`${e.message}: geen enkel lid is bereikbaar?`); });
   },

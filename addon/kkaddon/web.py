@@ -213,7 +213,7 @@ async def group_put(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     gid = request.match_info["gid"]
     b = await _body(request)
-    ctx.model.set_group(gid, name=b.get("name"), entities=b.get("entities"), enabled=b.get("enabled"))
+    ctx.model.set_group(gid, name=b.get("name"), entities=b.get("entities"), enabled=b.get("enabled"), lamp=b.get("lamp"))
     return web.json_response({"ok": True})
 
 

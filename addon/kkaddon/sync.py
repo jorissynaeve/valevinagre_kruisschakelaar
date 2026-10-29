@@ -34,6 +34,7 @@ class Member:
     known: bool | None = None  # laatst bekende stand uit HA
     avail: bool = False
     pend: list[tuple[bool, float]] = field(default_factory=list)  # opgedragen standen met uiterste tijdstip
+    lamp: bool = False  # dit relais schakelt echt de lamp (de andere zijn touch-relais)
 
 
 class EntityGroups:
@@ -51,6 +52,7 @@ class EntityGroups:
             ms = []
             for ent in g["entities"]:
                 m = old.get(ent) or Member(ent)
+                m.lamp = ent in g.get("lamp", [])
                 ms.append(m)
                 self._by_entity[ent] = gid
             self.members[gid] = ms
@@ -148,8 +150,10 @@ class EntityGroups:
             targets = [(m, target)] if target is not None else []
         else:
             if on is None:
-                on = not any(x.known for x in ms)  # staat er iets aan: uit, anders aan
-            targets = [(x, on) for x in ms if x.avail and x.known is not None and (x.pend[-1][0] if x.pend else x.known) != on]
+                on = not any(x.known for x in self._basis(ms))  # staat de lamp aan: uit, anders aan
+            # het lamp-relais eerst: dat is waar het om gaat
+            targets = sorted(((x, on) for x in ms if x.avail and x.known is not None and (x.pend[-1][0] if x.pend else x.known) != on),
+                             key=lambda t: not t[0].lamp)
             if not targets and any(x.avail and x.known is not None for x in ms):
                 return True  # alles staat al zo
         sent = []
@@ -166,6 +170,12 @@ class EntityGroups:
             e._emit("sync", what="command", group=gid, entity=entity, on=sent[0][1], to=[x for x, _ in sent])
         return bool(sent)
 
+    @staticmethod
+    def _basis(ms: list[Member]) -> list[Member]:
+        """Welke leden bepalen de stand van de kring: de lamp-relais als die bereikbaar zijn, anders iedereen."""
+        lamps = [x for x in ms if x.lamp and x.known is not None]
+        return lamps or ms
+
     # ------------------------------------------------------------ voor de UI
 
     def view(self) -> list[dict]:
@@ -174,6 +184,7 @@ class EntityGroups:
             ms = self.members.get(gid, [])
             out.append({
                 "id": gid, "name": g["name"], "enabled": g["enabled"],
-                "members": [{"entity": m.entity, "on": m.known, "avail": m.avail} for m in ms],
+                "members": [{"entity": m.entity, "on": m.known, "avail": m.avail, "lamp": m.lamp} for m in ms],
+                "lamp": [m.entity for m in ms if m.lamp],
             })
         return out

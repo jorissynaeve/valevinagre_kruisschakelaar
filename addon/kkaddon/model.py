@@ -8,7 +8,8 @@ Bestandsformaat (network.json, ook voor export/import):
                "triggers": [{"node": 1, "btn": 1, "mode": "toggle"}]}],
    "follow": [{"node": 1, "ind": 1, "light": null}],      # handmatige indicator-koppelingen (null = geen)
    "groups": {"keuken": {"name": "Keuken", "enabled": false,
-                         "entities": ["switch.r4b01_sonoff_4ch_r4_01_relay_4", "light.t4b001_t4b001_relay_1"]}},
+                         "entities": ["switch.r4b01_sonoff_4ch_r4_01_relay_4", "light.t4b001_t4b001_relay_1"],
+                         "lamp": ["switch.r4b01_sonoff_4ch_r4_01_relay_4"]}},   # lamp: de relais die echt de lamp schakelen
    "plan":   {"floors": [{"id": "g", "name": "Begane grond", "w": 1000, "h": 640,
                           "rooms": [{"x": 20, "y": 20, "w": 300, "h": 200, "name": "Living"}],
                           "items": {"n5": [120, 80], "l2.1": [200, 90]}}]}}   # plattegrond, alleen weergave
@@ -90,7 +91,11 @@ def _group(gid, v) -> dict:
         if e in ents:
             raise ModelError(f"kring {gid}: {e} komt twee keer voor")
         ents.append(e)
-    return {"name": _name(v.get("name"), "kring.name") or gid, "enabled": bool(v.get("enabled", False)), "entities": ents}
+    lamp = v.get("lamp") or []
+    if not isinstance(lamp, list) or any(not isinstance(x, str) or x not in ents for x in lamp):
+        raise ModelError(f"kring {gid}: lamp-relais moeten entiteiten van de kring zijn")
+    return {"name": _name(v.get("name"), "kring.name") or gid, "enabled": bool(v.get("enabled", False)), "entities": ents,
+            "lamp": [e for e in ents if e in lamp]}
 
 
 def _groups(raw) -> dict[str, dict]:
@@ -318,7 +323,9 @@ class Model:
                 raise ModelError("kring moet een object zijn")
             gid = it.get("id")
             old = new.get(gid)
-            new[gid] = _group(gid, {"name": it.get("name"), "entities": it.get("entities"), "enabled": old["enabled"] if old else False})
+            ents = it.get("entities")
+            keep = [x for x in (old["lamp"] if old else []) if isinstance(ents, list) and x in ents]  # lamp-relais blijven bij opnieuw importeren
+            new[gid] = _group(gid, {"name": it.get("name"), "entities": ents, "enabled": old["enabled"] if old else False, "lamp": keep})
         if len(new) > MAX_GROUPS:
             raise ModelError(f"kringen: maximaal {MAX_GROUPS}")
         _conflicts(new, self.virtual)
@@ -326,14 +333,18 @@ class Model:
         self._changed()
         return [it["id"] for it in items]
 
-    def set_group(self, gid: str, name=None, entities=None, enabled=None) -> None:
+    def set_group(self, gid: str, name=None, entities=None, enabled=None, lamp=None) -> None:
         old = self.groups.get(gid)
         if old is None:
             raise ModelError("onbekende kring")
+        ents = old["entities"] if entities is None else entities
+        if lamp is None:  # nieuwe entiteitenlijst: lamp-relais die er niet meer in staan vallen weg
+            lamp = [x for x in old["lamp"] if isinstance(ents, list) and x in ents]
         new = _group(gid, {
             "name": old["name"] if name is None else name,
-            "entities": old["entities"] if entities is None else entities,
+            "entities": ents,
             "enabled": old["enabled"] if enabled is None else enabled,
+            "lamp": lamp,
         })
         groups = {**self.groups, gid: new}
         _conflicts(groups, self.virtual)

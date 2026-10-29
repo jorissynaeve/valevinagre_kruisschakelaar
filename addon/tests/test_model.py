@@ -134,7 +134,7 @@ def test_groups_are_saved_validated_and_new_ones_start_disabled(tmp_path):
     m = Model(p)
     assert "groups" not in m.to_dict()
     m.set_groups([{"id": "keuken", "name": "Keuken", "entities": ["switch.a", "light.b"]}])
-    assert m.groups["keuken"] == {"name": "Keuken", "enabled": False, "entities": ["switch.a", "light.b"]}, "een nieuwe kring staat uit"
+    assert m.groups["keuken"] == {"name": "Keuken", "enabled": False, "entities": ["switch.a", "light.b"], "lamp": []}, "een nieuwe kring staat uit"
     m.set_group("keuken", enabled=True)
     m.set_groups([{"id": "keuken", "name": "Keuken 2", "entities": ["switch.a", "light.b", "switch.c"]}])
     assert m.groups["keuken"]["enabled"] is True and m.groups["keuken"]["name"] == "Keuken 2", "opnieuw importeren houdt aan/uit"
