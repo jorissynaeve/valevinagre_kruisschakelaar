@@ -34,7 +34,7 @@ schema:
   peer_id: int(61440,65534)?
   udp_port: port?
   broadcast_addr: str?
-  peers: [str]?
+  peers: ["str"]
   hub: bool?
   mqtt_host: str?
   mqtt_port: port?

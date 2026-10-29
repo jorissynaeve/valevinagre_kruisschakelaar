@@ -12,7 +12,7 @@ ENV PATH=/opt/venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONPATH=/app
 COPY kkaddon ./kkaddon
 
 FROM base AS test
-RUN pip install --no-cache-dir pytest
+RUN pip install --no-cache-dir pytest pyyaml
 COPY tests ./tests
 CMD ["pytest", "-q", "tests"]
 

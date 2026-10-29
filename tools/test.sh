@@ -18,7 +18,7 @@ case "${1:-all}" in
     gcc "make -s build/kkvec && build/kkvec gen" > build/vectors_cpp.txt
     # 2. Python: eigen tests + de vectoren verifiëren, en eigen vectoren schrijven
     docker build -q --target test -t kk-addon-test addon > /dev/null
-    docker run --rm -v "${WIN_PATH}/build:/vec" -e KK_VECTORS=/vec kk-addon-test
+    docker run --rm -v "${WIN_PATH}/build:/vec" -v "${WIN_PATH}:/project:ro" -e KK_VECTORS=/vec -e KK_PROJECT=/project kk-addon-test
     # 3. de C++-kern leest wat Python maakte
     gcc "build/kkvec check build/vectors_py.txt"
     ;;
