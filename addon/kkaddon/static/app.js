@@ -293,6 +293,21 @@ async function openVirtual(id) {
 
 const MAX_GANGS = 8; // een node heeft knopindex 0..7; een relaisbox met 16 relais wordt dus in delen van 8 gesplitst
 
+// LED's, statuslampjes en verzamel-schakelaars zijn geen gang: standaard niet aangevinkt
+const NOT_A_GANG = /(^|_)(led|leds|all|all_relays|status|backlight|buzzer)(_|$)/;
+const natural = (a, b) => a.localeCompare(b, 'en', { numeric: true });
+
+// Gangvolgorde: eerst de schakelaars, dan de lichten, elk op natuurlijke volgorde van het id (relay_2 voor relay_10)
+function importEntities(d) {
+  const dom = (e) => (e.entity_id.startsWith('switch.') ? 0 : 1);
+  const ents = [...d.entities].sort((a, b) => dom(a) - dom(b) || natural(a.entity_id, b.entity_id));
+  const ids = ents.map((e) => e.entity_id.split('.')[1]);
+  let pre = ids[0] || '';
+  for (const id of ids) while (!id.startsWith(pre)) pre = pre.slice(0, -1);
+  pre = pre.slice(0, pre.lastIndexOf('_') + 1); // alleen op hele woorden afbreken
+  return ents.map((e, i) => ({ ...e, short: ids[i].slice(pre.length) || ids[i], gang: !NOT_A_GANG.test(ids[i]) }));
+}
+
 async function openImport() {
   let r = { connected: false, registry: false, devices: [] };
   try { r = await api('GET', 'ha/devices'); } catch { /* hieronder uitgelegd */ }
@@ -301,21 +316,23 @@ async function openImport() {
       <p class="sub">${r.connected ? 'Home Assistant geeft de apparatenlijst niet vrij.' : 'Home Assistant is niet verbonden.'} Voeg het apparaat dan met <b>Extern apparaat toevoegen</b> toe en kies de entiteiten zelf.</p>`, async () => {});
     return;
   }
-  const todo = r.devices.filter((d) => !d.imported).sort((a, b) => (b.platform === 'esphome') - (a.platform === 'esphome') || a.name.localeCompare(b.name));
-  const rows = todo.map((d, i) => `<label class="imp" data-q="${esc(`${d.name} ${d.area} ${d.platform}`.toLowerCase())}" style="display:block;padding:6px 0;border-top:1px solid var(--line)">
-      <input type="checkbox" data-i="${i}"> <b>${esc(d.name)}</b>${d.platform === 'esphome' ? ' <span class="badge ok">ESPHome</span>' : ''}${d.area ? ` <span class="sub">${esc(d.area)}</span>` : ''}
-      <div class="sub">${d.entities.length} ${d.entities.length === 1 ? 'schakelaar' : 'schakelaars'}: ${d.entities.map((e) => esc(e.entity_id)).join(', ')}${d.entities.length > MAX_GANGS ? ` (wordt ${Math.ceil(d.entities.length / MAX_GANGS)} apparaten van maximaal ${MAX_GANGS})` : ''}</div></label>`).join('');
+  const todo = r.devices.filter((d) => !d.imported).sort((a, b) => (b.platform === 'esphome') - (a.platform === 'esphome') || a.name.localeCompare(b.name))
+    .map((d) => ({ ...d, ents: importEntities(d) }));
+  const rows = todo.map((d, i) => `<div class="imp" data-q="${esc(`${d.name} ${d.area} ${d.platform}`.toLowerCase())}" style="padding:6px 0;border-top:1px solid var(--line)">
+      <label style="display:block;margin:0;color:var(--ink)"><input type="checkbox" data-d="${i}"> <b>${esc(d.name)}</b>${d.platform === 'esphome' ? ' <span class="badge ok">ESPHome</span>' : ''}${d.area ? ` <span class="sub">${esc(d.area)}</span>` : ''}</label>
+      <div class="sub" style="margin:3px 0 0 22px">${d.ents.map((e, j) => `<label style="display:inline-block;margin:0 12px 0 0" title="${esc(e.entity_id)}"><input type="checkbox" data-e="${i}:${j}" ${e.gang ? 'checked' : ''}> ${esc(e.short)}</label>`).join('')}</div></div>`).join('');
   smallDialog(`<h3>Importeren uit Home Assistant</h3>
-    <p class="sub">Elk gekozen apparaat wordt een extern apparaat met zijn schakelaars als gangen (de volgorde is die van de entiteit-id's). Alle gangen staan op <i>stuurt een lamp aan</i>: zet dat uit voor een touch die alleen een ander licht bedient. Al geïmporteerde apparaten staan niet in de lijst.</p>
+    <p class="sub">Elk gekozen apparaat wordt een extern apparaat. Elke aangevinkte entiteit is een gang, in de volgorde van de lijst (dat wordt knop 1, 2, …). LED's en verzamel-schakelaars staan standaard uit; vink aan wat bij een gang hoort. Meer dan ${MAX_GANGS} gangen wordt in delen van ${MAX_GANGS} gesplitst. Alle gangen staan op <i>stuurt een lamp aan</i>: zet dat daarna uit voor een touch die alleen een ander licht bedient.</p>
     ${todo.length ? `<input type="search" id="impq" style="width:100%" placeholder="Zoeken op naam, kamer of ESPHome" autocomplete="off"><div id="implist" style="max-height:50vh;overflow:auto;margin-top:8px">${rows}</div>`
       : '<p class="empty">Alle apparaten met schakelaars zijn al geïmporteerd.</p>'}`,
   async () => {
-    const picked = [...document.querySelectorAll('#implist input:checked')].map((c) => todo[+c.dataset.i]);
     let n = 0;
-    for (const d of picked) {
-      const parts = Math.ceil(d.entities.length / MAX_GANGS);
+    for (const box of document.querySelectorAll('#implist input[data-d]:checked')) {
+      const i = +box.dataset.d, d = todo[i];
+      const ents = d.ents.filter((e, j) => document.querySelector(`#implist input[data-e="${i}:${j}"]`).checked);
+      const parts = Math.ceil(ents.length / MAX_GANGS);
       for (let p = 0; p < parts; p++) {
-        const gangs = d.entities.slice(p * MAX_GANGS, (p + 1) * MAX_GANGS).map((e) => ({ entity: e.entity_id, name: e.name, lamp: true }));
+        const gangs = ents.slice(p * MAX_GANGS, (p + 1) * MAX_GANGS).map((e) => ({ entity: e.entity_id, name: e.name, lamp: true }));
         await api('POST', 'virtual', { name: parts > 1 ? `${d.name} (${p + 1}/${parts})` : d.name, room: d.area, gangs });
         n++;
       }
