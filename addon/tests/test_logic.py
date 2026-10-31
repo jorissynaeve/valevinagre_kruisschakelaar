@@ -359,6 +359,27 @@ def test_control_api_and_a_held_lamp_refuses_commands(tmp_path):
     asyncio.run(go())
 
 
+def test_a_new_lamp_can_start_with_any_entity_from_ha_without_a_block(tmp_path):
+    async def go():
+        rig = Rig(tmp_path)
+        s = Settings(data_dir=tmp_path, key=KEY, key_generated=False, dev_mode=True)
+        c = TestClient(TestServer(web.make_app(web.Ctx(s, rig.engine))))
+        await c.start_server()
+        try:
+            k = (await (await c.post("/api/schema/lamp", json={"name": "Oprit", "entity": "light.lamp_oprit_2"})).json())["key"]
+            g = rig.model.groups[k[2:]]
+            assert g["entities"] == g["lamp"] == ["light.lamp_oprit_2"] and g["enabled"] is False, "een uitgang, en de lamp staat uit"
+            bad = await c.post("/api/schema/lamp", json={"name": "Fout", "entity": "lamp oprit"})
+            assert bad.status == 400 and "fout" not in rig.model.groups, "geen halve lamp bij een tikfout"
+            assert (await c.post("/api/schema/wire", json={"lamp": k, "dir": "in", "ref": {"entity": "switch.los"}})).status == 200
+            lamp = next(b for b in (await (await c.get("/api/state")).json())["schema"]["blocks"] if b["key"] == k)
+            assert lamp["outputs"][0]["text"] == "light.lamp_oprit_2" and lamp["inputs"][0]["text"] == "switch.los"
+        finally:
+            await c.close()
+
+    asyncio.run(go())
+
+
 def test_module_api(tmp_path):
     async def go():
         rig = Rig(tmp_path)

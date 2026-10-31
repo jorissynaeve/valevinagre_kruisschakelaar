@@ -11,7 +11,7 @@ from aiohttp import WSMsgType, web
 
 from . import __version__, appdaemon_import, schema
 from .engine import Engine
-from .model import Model, ModelError
+from .model import ENTITY_RE, Model, ModelError
 from .settings import Settings, key_header
 
 log = logging.getLogger("kk.web")
@@ -371,7 +371,12 @@ async def schema_lamp(request: web.Request) -> web.Response:
     """Een nieuw, leeg lamp-blok, meteen op zijn plek."""
     ctx: Ctx = request.app[CTX]
     b = await _body(request)
+    ent = b.get("entity")
+    if ent is not None and (not isinstance(ent, str) or not ENTITY_RE.match(ent)):  # voor de lamp bestaat: geen halve lamp bij een tikfout
+        raise ModelError(f"ongeldige entiteit {ent!r} (verwacht bv. light.lamp_oprit)")
     gid = ctx.model.add_group(b.get("name"))
+    if ent:
+        schema.wire(ctx.model, ctx.engine, f"g:{gid}", "out", {"entity": ent})
     if b.get("page"):
         schema.place(ctx.model, ctx.engine.snapshot(), f"g:{gid}", b["page"], b.get("x", 0), b.get("y", 0))
     return web.json_response({"ok": True, "key": f"g:{gid}"})

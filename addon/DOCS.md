@@ -25,6 +25,7 @@ staan ze samen, en de verwijzingen tonen er geen ruimtenaam. *Opnieuw indelen* v
 
 * Een **lamp-blok** heeft links de **ingangen** (de touches die de lamp bedienen) en rechts de **uitgangen** (de relais die de lamp
   echt schakelen). De bol zet de lamp aan of uit. *Actief* of *uit* zet je in de zijbalk.
+* **Een lamp uit HA kiezen**: bij *+ Module → Lamp* zoek je de lamp of het relais meteen op, ook `light.*`. Dat zoekveld staat ook bij de ingangen en uitgangen in de zijbalk van een lamp en bij *Schakelaar*. Het kent alle schakelaars en lampen uit HA. De keuzelijst *Uit Home Assistant* bij *Schakelaar* toont alleen wat aan een apparaat hangt; een groep, template of helper vind je via het zoekveld.
 * Een **schakelaar-blok** is een toestel met per gang links een **touch** (ingang) en rechts een **relais** (uitgang).
 * Klik op een blok voor de eigenschappen in de zijbalk: een **eigen naam** naast de technische naam uit HA, en de **ruimte**.
 * **Draad trekken**: sleep van een poort naar een andere poort, of klik op de ene en daarna op de andere (handig op een tablet).

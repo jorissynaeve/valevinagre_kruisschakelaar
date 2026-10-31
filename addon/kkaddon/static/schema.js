@@ -244,15 +244,12 @@ function scSprinklerPanel(b, props) {
     return `<select data-spinput="${esc(p.name)}"><option value="">${p.name === 'block' ? 'niet aangesloten' : 'waarde hierboven gebruiken'}</option>${srcs.map((s) => `<option value="${esc(s.key)}" ${s.key === p.ref ? 'selected' : ''}>${esc(s.name)} (nu ${scOut(s)})</option>`).join('')}</select>`;
   };
   const port = (n) => b.ports.find((p) => p.name === n);
-  if (!SC.haEnts) { // eenmalig: de relais uit HA om uit te kiezen, ook zonder schakelaar-blok
-    SC.haEnts = [];
-    api('GET', 'ha/entities').then((r) => { SC.haEnts = r.entities; SC.force = true; render(); }, () => {});
-  }
+  scLoadEnts();
   const zones = b.zones.map((z, i) => `<div class="tmd"><div class="row sp"><b>Zone ${i + 1}</b>${b.status.zone === i ? '<span class="badge ok">aan</span>' : ''}
       ${b.zones.length > 1 ? `<button class="btn small danger" type="button" data-sc="spdelzone" data-k="${esc(b.key)}" data-i="${i}" title="Zone weghalen">✕</button>` : ''}</div>
     <label>Naam</label><input type="text" maxlength="60" data-spzone="name" data-i="${i}" value="${esc(z.name)}">
     <label>Aan-tijd in seconden</label><input type="number" min="0" max="86400" step="1" data-spzone="seconds" data-i="${i}" value="${z.seconds}">
-    <label>Relais</label><input type="text" list="spents" spellcheck="false" autocomplete="off" placeholder="switch.relaisbox_relay_1" data-spzone="entity" data-i="${i}" value="${esc(z.entity || '')}"></div>`).join('');
+    <label>Relais</label><input type="text" list="haents" spellcheck="false" autocomplete="off" placeholder="switch.relaisbox_relay_1" data-spzone="entity" data-i="${i}" value="${esc(z.entity || '')}"></div>`).join('');
   const st = b.status;
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${st.running ? 'ok' : ''}">${esc(scSprText(b))}</span><span class="sub">${esc(S.clock.time)} · ${esc(S.clock.tz)}</span></div>
     ${props}
@@ -269,7 +266,7 @@ function scSprinklerPanel(b, props) {
     <h2>Zones</h2>
     <div class="row"><button class="btn small" type="button" data-sc="spbox" data-k="${esc(b.key)}">Zones uit relaisbox…</button></div>
     <div class="sub">Een relais hoeft geen schakelaar-blok te zijn: kies een relaisbox of typ de entiteit bij de zone.</div>
-    <datalist id="spents">${(SC.haEnts || []).map((e) => `<option value="${esc(e.entity_id)}">${esc(e.name)}</option>`).join('')}</datalist>${zones}
+    ${scEntList()}${zones}
     <div class="row" style="margin-top:6px">${b.zones.length < 16 ? `<button class="btn small" type="button" data-sc="spaddzone" data-k="${esc(b.key)}">+ Zone</button>` : ''}<button class="btn small danger" type="button" data-sc="delsprinkler" data-id="${esc(b.id)}">Sprinkler verwijderen</button></div>`;
 }
 
@@ -435,6 +432,22 @@ function scConnRow(b, c, i, dir) {
     ${c.fixed ? '<span class="badge">vast</span>' : `<button class="btn small danger" type="button" data-sc="unwire" data-w="${esc(b.key)}|${dir}|${i}" title="Verbinding weghalen">✕</button>`}</div>`;
 }
 
+// Alle schakelaars en lampen uit HA, ook die zonder apparaat in HA (groepen, templates, helpers), om in te zoeken
+function scFreshEnts() {
+  return api('GET', 'ha/entities').then((r) => { SC.haEnts = r.entities; }, () => { SC.haEnts = SC.haEnts || []; });
+}
+function scLoadEnts() { // eenmalig voor de zijbalk
+  if (SC.haEnts) return;
+  SC.haEnts = [];
+  scFreshEnts().then(() => { SC.force = true; render(); });
+}
+const scEntList = () => `<datalist id="haents">${(SC.haEnts || []).map((e) => `<option value="${esc(e.entity_id)}">${esc(e.name)}</option>`).join('')}</datalist>`;
+
+function scAddEntity(b, dir) { // aansluiten zonder schakelaar-blok
+  if (b.source !== 'ha') return '';
+  return `<input type="text" list="haents" spellcheck="false" autocomplete="off" data-scent="${dir}" data-k="${esc(b.key)}" placeholder="+ zoek in Home Assistant, bv. light.lamp_oprit">`;
+}
+
 function scAddSelect(b, dir) {
   if (dir === 'out' && b.source === 'node') return '';
   const taken = new Set((dir === 'in' ? b.inputs : b.outputs).map((c) => `${c.sw}|${c.gang}`));
@@ -446,6 +459,7 @@ function scAddSelect(b, dir) {
 }
 
 function scLampPanel(b, pages) {
+  scLoadEnts();
   const onoff = b.on === true ? 'Aan' : b.on === false ? 'Uit' : 'Onbekend';
   const active = b.source === 'ha'
     ? `<label style="margin:0;color:var(--ink);cursor:pointer"><input type="checkbox" data-grp-toggle="${esc(b.id)}" ${b.enabled ? 'checked' : ''}> ${b.enabled ? 'Actief: volgen elkaar' : 'Uit: alleen bediening'}</label>` : '';
@@ -462,8 +476,8 @@ function scLampPanel(b, pages) {
   const mixed = b.source === 'ha' && known.some((c) => c.on !== known[0].on) ? '<span class="badge warn">relais staan niet gelijk</span>' : '';
   return `<h3>${esc(b.name)}</h3>${pages}${ctl}${dis}${active}${mixed}
     <button class="power ${b.on === true ? 'on' : b.on === null ? 'unknown' : ''} ${b.pending ? 'pending' : ''}" data-sc="toggle" data-k="${esc(b.key)}">${onoff}</button>
-    <h2>Ingangen</h2>${b.inputs.map((c, i) => scConnRow(b, c, i, 'in')).join('') || '<div class="sub">Nog geen touches.</div>'}${scAddSelect(b, 'in')}
-    <h2>Uitgangen</h2>${b.outputs.map((c, i) => scConnRow(b, c, i, 'out')).join('') || '<div class="sub">Nog geen relais: de lamp weet niet welk relais hem schakelt.</div>'}${scAddSelect(b, 'out')}
+    <h2>Ingangen</h2>${b.inputs.map((c, i) => scConnRow(b, c, i, 'in')).join('') || '<div class="sub">Nog geen touches.</div>'}${scAddSelect(b, 'in')}${scAddEntity(b, 'in')}
+    <h2>Uitgangen</h2>${b.outputs.map((c, i) => scConnRow(b, c, i, 'out')).join('') || '<div class="sub">Nog geen relais: de lamp weet niet welk relais hem schakelt.</div>'}${scAddSelect(b, 'out')}${scAddEntity(b, 'out')}${b.source === 'ha' ? scEntList() : ''}
     <div class="row" style="margin-top:6px">${tail}</div>
     ${b.source === 'ha' ? '<p class="sub">Een relais op een uitgang reageert nog op zijn eigen touch, en een touch-relais volgt de lamp mee (daar hangt zijn LED aan).</p>' : ''}`;
 }
@@ -682,7 +696,8 @@ function scSwitchDialog(b) {
       ${devs.length ? `<label for="swdev">Uit Home Assistant</label><select id="swdev"><option value="">Kies een apparaat…</option>${devs.map((d, i) => `<option value="${i}">${esc(d.name)}${d.area ? ` (${esc(d.area)})` : ''}</option>`).join('')}</select>` : ''}
       <label for="swname">Naam</label><input type="text" id="swname" maxlength="60" value="${esc(b ? b.name : '')}" placeholder="bv. Touch keuken">
       <label for="swents">Gangen: per regel een entiteit, eventueel met een naam</label>
-      <textarea id="swents" rows="5" spellcheck="false" placeholder="switch.touch_keuken_relay_1 = Links">${esc(lines)}</textarea>`, async () => {
+      <textarea id="swents" rows="5" spellcheck="false" placeholder="switch.touch_keuken_relay_1 = Links">${esc(lines)}</textarea>
+      <label for="swadd">Entiteit zoeken en toevoegen (ook zonder apparaat in HA)</label><input type="text" id="swadd" list="haents" spellcheck="false" autocomplete="off" placeholder="bv. light.lamp_oprit">${scEntList()}`, async () => {
     const body = { name: $('#swname').value.trim(), gangs: parse() };
     if (b) {
       await api('PUT', `schema/switch/${b.id}`, body);
@@ -691,8 +706,8 @@ function scSwitchDialog(b) {
       SC.sel = SC.reveal = r.key;
     }
   });
-  if (b) { open([]); return; }
-  api('GET', 'ha/devices').then((r) => r.devices, () => []).then((devs) => {
+  if (b) { scFreshEnts().then(() => open([])); return; }
+  Promise.all([api('GET', 'ha/devices').then((r) => r.devices, () => []), scFreshEnts()]).then(([devs]) => {
     SC.devs = devs;
     open(devs);
   });
@@ -814,10 +829,14 @@ const SC_ACTIONS = {
     SC.sel = null;
     await refresh();
   },
-  newlamp: () => {
+  newlamp: async () => {
     if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
-    smallDialog('<h3>Nieuwe lamp</h3><p class="sub">Een lege lamp via Home Assistant, eerst uitgeschakeld. Trek daarna draden naar de touches en het relais.</p><label for="lpname">Naam</label><input type="text" id="lpname" maxlength="60" placeholder="bv. Spots keuken">', async () => {
-      const r = await api('POST', 'schema/lamp', { name: $('#lpname').value.trim(), page: SC.page, ...scFreeSpot('lamp') });
+    await scFreshEnts();
+    smallDialog(`<h3>Nieuwe lamp</h3><p class="sub">Een lamp via Home Assistant, eerst uitgeschakeld. Kies wat de lamp schakelt, of laat het leeg en trek later een draad.</p>
+      <label for="lpent">Lamp of relais uit Home Assistant</label><input type="text" id="lpent" list="haents" spellcheck="false" autocomplete="off" placeholder="zoek, bv. light.lamp_oprit">${scEntList()}
+      <label for="lpname">Naam</label><input type="text" id="lpname" maxlength="60" placeholder="bv. Spots keuken">`, async () => {
+      const entity = $('#lpent').value.trim();
+      const r = await api('POST', 'schema/lamp', { name: $('#lpname').value.trim(), ...(entity ? { entity } : {}), page: SC.page, ...scFreeSpot('lamp') });
       SC.sel = SC.reveal = r.key;
     });
   },
@@ -1004,6 +1023,23 @@ document.addEventListener('change', (ev) => {
     t.blur();
     act(async () => {
       try { await api('POST', 'schema/disable', { lamp: k, timer }); } finally { SC.force = true; await refresh(); }
+    })();
+  }
+  if (t.id === 'lpent' && !$('#lpname').value.trim()) {
+    const hit = (SC.haEnts || []).find((e) => e.entity_id === t.value.trim());
+    if (hit) $('#lpname').value = hit.name.slice(0, 60);
+  }
+  if (t.id === 'swadd' && t.value.trim()) {
+    const box = $('#swents'), hit = (SC.haEnts || []).find((e) => e.entity_id === t.value.trim());
+    box.value = `${box.value.trim() ? `${box.value.trim()}\n` : ''}${t.value.trim()}${hit ? ` = ${hit.name}` : ''}`;
+    if (hit && !$('#swname').value.trim()) $('#swname').value = hit.name.slice(0, 60);
+    t.value = '';
+  }
+  if (t.dataset && t.dataset.scent && t.value.trim()) {
+    const lamp = t.dataset.k, dir = t.dataset.scent, entity = t.value.trim();
+    t.blur();
+    act(async () => {
+      try { await api('POST', 'schema/wire', { lamp, dir, ref: { entity } }); } finally { SC.force = true; await refresh(); }
     })();
   }
   if (t.id === 'spdev') $('#spboxlist').innerHTML = t.value === '' ? '' : scBoxRelays(SC.boxDevs[+t.value]);
