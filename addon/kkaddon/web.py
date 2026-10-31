@@ -263,6 +263,13 @@ async def schema_place(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def schema_name(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    schema.set_name(ctx.model, ctx.engine.snapshot(), str(b.get("key")), b.get("name"))
+    return web.json_response({"ok": True})
+
+
 async def schema_pages(request: web.Request) -> web.Response:
     schema.set_pages(request.app[CTX].model, (await _body(request)).get("pages"))
     return web.json_response({"ok": True})
@@ -416,6 +423,7 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/plan", plan_put)
     r.add_post("/api/schema/convert", schema_convert)
     r.add_post("/api/schema/place", schema_place)
+    r.add_post("/api/schema/name", schema_name)
     r.add_put("/api/schema/pages", schema_pages)
     r.add_post("/api/schema/wire", schema_wire)
     r.add_post("/api/schema/lamp", schema_lamp)

@@ -378,16 +378,17 @@ De oude opzet had per lamp een AppDaemon-app (`module: kruisschakelaar`) met een
 
 Tabblad *Schema*, nu de startpagina: per ruimte een tabblad met blokken en draden. Code: `kkaddon/schema.py` (blokken, draden, omzetten), `static/schema.js` (tekenen en slepen), `schema` in `network.json`.
 
-| Blok | Sleutel | Links | Rechts |
+| Blok | Sleutel | Links (ingang) | Rechts (uitgang) |
 |---|---|---|---|
 | Lamp via HA (een kring) | `g:<id>` | ingangen: leden die geen lamp-relais zijn | uitgangen: de lamp-relais |
 | Lamp op het netwerk (een licht) | `l<node>.<relais>` | ingangen: de triggers | één vaste uitgang: het eigen relais |
-| Schakelaar: node of extern apparaat | `n<id>` | relais per gang | touch per gang |
-| Schakelaar: HA-apparaat | `d:<id>` | relais per gang | touch per gang |
+| Schakelaar: node of extern apparaat | `n<id>` | touch per gang | relais per gang |
+| Schakelaar: HA-apparaat | `d:<id>` | touch per gang | relais per gang |
 
 - **Eén waarheid**: een draad is geen eigen gegeven maar een lid van een kring of een trigger van een licht. `schema.wire` is de enige plek waar het schema de schakelingen wijzigt, via de bestaande `set_group` en `set_triggers`, dus met dezelfde controles (een actieve entiteit heeft één eigenaar, maximaal 12 triggers). In `schema` staan alleen ruimtes, plekken en de `d:`-blokken. Dat bewaren verhoogt `rev` niet en geeft geen herconfiguratie, net als bij de plattegrond.
 - **Ingang of uitgang**: bij een HA-toestel zijn touch en relais één entiteit, want we zien een druk alleen als een stand-wijziging. Een lid is daarom ingang óf uitgang. Dat is hetzelfde onderscheid als `lamp` in §20. **Het gedrag is ongewijzigd**: alle leden volgen elkaar nog. Een touch-relais moet de lamp volgen omdat zijn LED eraan hangt, en een lamp-relais blijft op zijn eigen touch reageren.
 - **Omzetten** (`POST /api/schema/convert`): maakt `d:`-blokken uit het HA-apparatenregister, of zonder register op de naam van de entiteit (`…_relay_3`). Een schakelaar komt in zijn HA-gebied of de kamer van de node, anders in *Centraal*: waar een toestel hangt valt niet te raden, en op de echte installatie hebben 70 van de 71 apparaten geen gebied. Een lamp hoort bij zijn naamfamilie (`Quarto philippe bed links` bij `Quarto philippe`, `Buiten keuken` bij `Buiten terras`), anders een ruimte in zijn naam, anders waar de meeste touches zitten, anders een eigen ruimte met zijn naam. Een pagina zonder lampen wordt een raster. *Opnieuw indelen* (`{"reset": true}`) wist ruimtes en plekken, niet de draden. Kan herhaald worden: wat staat blijft staan. Een toestel zonder draden en een extern licht zonder bediening blijven in de lijst links.
+- **Eigen naam**: `schema.names` geeft een schakelaar-blok een naam naast de technische naam uit HA of het model; die laatste blijft zichtbaar en doorzoekbaar. Alleen weergave. Een lamp heeft geen aparte eigen naam: de naam van de kring of het licht wordt gewijzigd.
 - **Andere ruimte**: een blok staat op één pagina. Een draad naar een andere pagina is een `↗`-regel op de lamp en een klikbare verwijzing op de schakelaar. Zo'n aansluiting maak je via het zijpaneel, op de lamp of op de schakelaar.
 - **Verhuizen naar een extern apparaat**: een gang van een extern apparaat gaat voor op een `d:`-blok. Importeer je een toestel, dan verhuizen de draden vanzelf en verdwijnt het lege `d:`-blok.
 - **Een lamp mag leeg zijn**: een kring heeft geen minimum van 2 entiteiten meer, want een lamp-blok krijgt zijn relais één voor één. Import en *Nieuwe kring* vragen wel nog 2.

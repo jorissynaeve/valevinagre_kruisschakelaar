@@ -15,7 +15,8 @@ Bestandsformaat (network.json, ook voor export/import):
                           "items": {"n5": [120, 80], "l2.1": [200, 90]}}]},   # plattegrond, alleen weergave
    "schema": {"pages": [{"id": "keuken", "name": "Keuken"}],                    # schema: één pagina per ruimte, alleen weergave
               "blocks": {"g:keuken": {"page": "keuken", "x": 420, "y": 40}},    # g:<kring>, l<node>.<relais>, n<node>, d:<schakelaar>
-              "switches": {"abc": {"name": "Touch keuken", "gangs": [{"entity": "switch.a", "name": "relay_1"}]}}}}
+              "switches": {"abc": {"name": "T4B001", "gangs": [{"entity": "switch.a", "name": "relay_1"}]}},
+              "names": {"d:abc": "Touch keuken"}}}                              # eigen naam van een schakelaar-blok, naast de technische
 """
 from __future__ import annotations
 
@@ -148,7 +149,7 @@ def _schema(raw) -> dict:
     """Het schema: pagina's per ruimte, de plek van elk blok, en de schakelaar-blokken die geen node zijn.
     De draden staan hier niet in: die volgen uit de kringen en de triggers."""
     if raw in (None, {}):
-        return {"pages": [], "blocks": {}, "switches": {}}
+        return {"pages": [], "blocks": {}, "switches": {}, "names": {}}
     if not isinstance(raw, dict):
         raise ModelError("schema: object verwacht")
     pages_in, blocks_in, sw_in = raw.get("pages") or [], raw.get("blocks") or {}, raw.get("switches") or {}
@@ -175,7 +176,16 @@ def _schema(raw) -> dict:
         if not SWITCH_ID_RE.match(str(sid)) or not isinstance(s, dict):
             raise ModelError(f"schema: ongeldige schakelaar {sid!r}")
         switches[sid] = {"name": _name(s.get("name"), "schakelaar.name") or sid, "gangs": _switch_gangs(s.get("gangs"))}
-    return {"pages": pages, "blocks": dict(sorted(blocks.items())), "switches": switches}
+    names_in = raw.get("names") or {}
+    if not isinstance(names_in, dict) or len(names_in) > MAX_BLOCKS:
+        raise ModelError("schema: te veel namen")
+    names = {}
+    for k, n in names_in.items():
+        if not BLOCK_RE.match(str(k)):
+            raise ModelError(f"schema: onbekend blok {k!r}")
+        if _name(n, "blok.name"):
+            names[k] = _name(n, "blok.name")
+    return {"pages": pages, "blocks": dict(sorted(blocks.items())), "switches": switches, "names": dict(sorted(names.items()))}
 
 
 def _plan(raw) -> dict:
@@ -328,7 +338,7 @@ class Model:
             d["plan"] = self.plan
         if self.groups:
             d["groups"] = self.groups
-        if self.schema["pages"] or self.schema["switches"]:
+        if self.schema["pages"] or self.schema["switches"] or self.schema["names"]:
             d["schema"] = self.schema
         return d
 

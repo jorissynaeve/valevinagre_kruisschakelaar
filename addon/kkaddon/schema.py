@@ -23,7 +23,7 @@ NO_ROOM = "Centraal"
 # Hoogte en kolommen van de automatische indeling; de hoogtes zijn dezelfde als in static/schema.js
 HEAD, ROW, FOOT, GAP = 42, 24, 10, 24
 COL_IN, COL_LAMP, COL_OUT = 40, 460, 920
-GRID_X, GRID_STEP, GRID_COLS = 220, 600, 2  # een pagina zonder lampen (Centraal): een raster, met naast elk blok plaats voor de verwijzingen
+GRID_X, GRID_STEP, GRID_COLS = 20, 600, 2  # een pagina zonder lampen (Centraal): een raster, met naast elk blok plaats voor de verwijzingen
 NOT_A_GANG = re.compile(r"(^|_)(led|leds|all|all_relays|status|backlight|buzzer)(_|$)")  # zoals in de import van app.js
 NUMBER_END = re.compile(r"_?(?:relay|relais|gang|channel|ch|switch|lamp|light|output|r|l)?_?\d+$")
 
@@ -89,6 +89,9 @@ def _switch_blocks(model: Model, snap: dict, owners: dict, states: dict) -> list
                  for i, g in enumerate(s["gangs"])]
         if any(owners.get(g["entity"]) == (key, g["i"]) for g in gangs):  # anders is alles al naar een extern apparaat verhuisd
             out.append({"key": key, "kind": "switch", "source": "ha", "id": sid, "name": s["name"], "room": "", "online": True, "gangs": gangs})
+    for b in out:  # de technische naam blijft zichtbaar naast een eigen naam
+        b["tech"], b["alias"] = b["name"], model.schema["names"].get(b["key"], "")
+        b["name"] = b["alias"] or b["tech"]
     return out
 
 
@@ -102,7 +105,7 @@ def _lamp_blocks(model: Model, snap: dict, owners: dict) -> list[dict]:
         for m in g["members"]:
             sw, gang = owners.get(m["entity"], (None, None))
             conns["out" if m["lamp"] else "in"].append({"ref": {"entity": m["entity"]}, "sw": sw, "gang": gang, "on": m["on"], "text": m["entity"]})
-        out.append({"key": f"g:{g['id']}", "kind": "lamp", "source": "ha", "id": g["id"], "name": g["name"], "enabled": g["enabled"], "on": on,
+        out.append({"key": f"g:{g['id']}", "kind": "lamp", "source": "ha", "id": g["id"], "name": g["name"], "tech": g["id"], "enabled": g["enabled"], "on": on,
                     "pending": False, "online": any(m["avail"] for m in g["members"]), "inputs": conns["in"], "outputs": conns["out"]})
     for l in snap["lights"]:
         inputs = [{"ref": {"node": t["node"], "btn": t["btn"]}, "mode": t["mode"], "sw": f"n{t['node']}", "gang": t["btn"], "on": None,
@@ -110,7 +113,8 @@ def _lamp_blocks(model: Model, snap: dict, owners: dict) -> list[dict]:
         output = {"ref": {"node": l["node"], "relay": l["relay"]}, "sw": f"n{l['node']}", "gang": l["relay"], "on": l["on"], "fixed": True,
                   "text": f"{model.node_name(l['node'])} relais {l['relay'] + 1}"}
         out.append({"key": f"l{l['node']}.{l['relay']}", "kind": "lamp", "source": "node", "node": l["node"], "relay": l["relay"],
-                    "name": l["name"] or f"{model.node_name(l['node'])} relais {l['relay'] + 1}", "enabled": True, "on": l["on"],
+                    "name": l["name"] or f"{model.node_name(l['node'])} relais {l['relay'] + 1}",
+                    "tech": f"{model.node_name(l['node'])} relais {l['relay'] + 1}", "enabled": True, "on": l["on"],
                     "pending": l["pending"], "online": l["online"], "inputs": inputs, "outputs": [output]})
     return out
 
@@ -220,6 +224,16 @@ def place(model: Model, snap: dict, key: str, page, x=0, y=0) -> None:
     model.set_schema(s)
 
 
+def set_name(model: Model, snap: dict, key: str, name) -> None:
+    """Eigen naam van een schakelaar-blok; leeg = weer de technische naam."""
+    b = next((x for x in view(model, snap)["blocks"] if x["key"] == key), None)
+    if b is None or b["kind"] != "switch":
+        raise ModelError(f"onbekende schakelaar {key}")
+    s = copy.deepcopy(model.schema)
+    s["names"][key] = name
+    model.set_schema(s)
+
+
 def set_pages(model: Model, pages) -> None:
     """Toevoegen, hernoemen, herschikken en verwijderen. Blokken van een verwijderde ruimte gaan terug naar de lijst; de draden blijven."""
     if not isinstance(pages, list):
@@ -251,6 +265,7 @@ def remove_switch(model: Model, sid: str) -> bool:
     s = copy.deepcopy(model.schema)
     del s["switches"][sid]
     s["blocks"].pop(f"d:{sid}", None)
+    s["names"].pop(f"d:{sid}", None)
     model.set_schema(s)
     return True
 

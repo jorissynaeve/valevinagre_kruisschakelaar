@@ -25,7 +25,8 @@ zie je draden, tussen ruimtes verwijzingen. *Opnieuw indelen* verdeelt alles opn
 
 * Een **lamp-blok** heeft links de **ingangen** (de touches die de lamp bedienen) en rechts de **uitgangen** (de relais die de lamp
   echt schakelen). De bol zet de lamp aan of uit. *Actief* of *uit* is hetzelfde als op het tabblad *HA-kringen*.
-* Een **schakelaar-blok** is een toestel met per gang rechts een **touch** en links een **relais**.
+* Een **schakelaar-blok** is een toestel met per gang links een **touch** (ingang) en rechts een **relais** (uitgang).
+* Klik op een blok voor de eigenschappen in de zijbalk: een **eigen naam** naast de technische naam uit HA, en de **ruimte**.
 * **Draad trekken**: sleep van een poort naar een andere poort, of klik op de ene en daarna op de andere (handig op een tablet).
   Een draad weghalen: klik erop en druk op Delete, of kies ✕ rechts. Een draad in een actieve lamp geldt **meteen**.
 * Een aansluiting in een **andere ruimte** staat als `↗` op de lamp en als blauwe verwijzing op de schakelaar (klik om erheen te gaan).

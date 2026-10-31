@@ -15,6 +15,7 @@ const SC = {
 const SC_HEAD = 42, SC_ROW = 24, SC_FOOT = 10; // dezelfde maten als de automatische indeling in schema.py
 const SW_W = 250, LAMP_W = 340;
 const SC_GRID = 10;
+const SC_MARGIN = 200; // links van x=0: de verwijzingen en draden aan de touch-kant
 
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
@@ -40,9 +41,9 @@ function scConns() { // alle draden: elke verbinding tussen een lamp en een gang
 const scSame = (x) => x.sw && x.sw.page && x.sw.page === x.lamp.page;
 const wireSel = (x) => SC.sel && SC.sel.lamp === x.lamp.key && SC.sel.dir === x.dir && SC.sel.i === x.i;
 
-function wirePath(x0, y0, x1, y1) {
-  const d = x1 > x0 ? Math.max(50, (x1 - x0) / 2) : 60; // terug naar links: een kleine bocht, anders loopt hij uit de tekening
-  return `M ${x0} ${y0} C ${x0 + d} ${y0} ${x1 - d} ${y1} ${x1} ${y1}`;
+function wirePath(x0, y0, dir0, x1, y1, dir1) { // dir: naar welke kant de poort kijkt (-1 links, 1 rechts)
+  const d = clampN(Math.abs(x1 - x0) / 2, 50, 160);
+  return `M ${x0} ${y0} C ${x0 + dir0 * d} ${y0} ${x1 + dir1 * d} ${y1} ${x1} ${y1}`;
 }
 
 // ---------------------------------------------------------------- tekenen
@@ -50,8 +51,8 @@ function wirePath(x0, y0, x1, y1) {
 function scWire(x) {
   const { lamp: l, sw } = x;
   let d;
-  if (x.dir === 'in') d = wirePath(sw.x + SW_W, rowY(sw, x.c.gang), l.x, rowY(l, x.i));
-  else d = wirePath(l.x + LAMP_W, rowY(l, x.i), sw.x, rowY(sw, x.c.gang));
+  if (x.dir === 'in') d = wirePath(sw.x, rowY(sw, x.c.gang), -1, l.x, rowY(l, x.i), -1);
+  else d = wirePath(l.x + LAMP_W, rowY(l, x.i), 1, sw.x + SW_W, rowY(sw, x.c.gang), 1);
   const on = l.on === true ? 'on' : '';
   return `<path class="wire ${on} ${wireSel(x) ? 'sel' : ''}" d="${d}"/>
     <path class="wirehit" d="${d}" data-wire="${esc(l.key)}|${x.dir}|${x.i}"><title>${esc(x.c.swName || '')} ${esc(x.c.label || '')} ${x.dir === 'in' ? '→' : '←'} ${esc(l.name)}</title></path>`;
@@ -65,16 +66,16 @@ function scSwitch(b, tags) {
     const st = g.on === true ? 'on' : g.on === null ? 'unknown' : '';
     return `<line class="bkrule" x1="${b.x}" x2="${b.x + SW_W}" y1="${y - SC_ROW / 2}" y2="${y - SC_ROW / 2}"/>
       <text class="bkt" x="${b.x + SW_W / 2}" y="${y + 4}" text-anchor="middle">${esc(scCut(g.label, 18))}</text>
-      ${g.relay ? `<circle class="pt rel ${st}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="relay" data-g="${g.i}"><title>Relais: wordt geschakeld</title></circle><text class="ptl" x="${b.x + 11}" y="${y + 4}">relais</text>` : ''}
-      ${g.touch ? `<circle class="pt tou" cx="${b.x + SW_W}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="touch" data-g="${g.i}"><title>Touch: geeft de druk door</title></circle><text class="ptl" x="${b.x + SW_W - 11}" y="${y + 4}" text-anchor="end">touch</text>` : ''}
-      ${(tags.get(`${b.key}|${g.i}|in`) || []).map((t, n) => `<text class="stub" x="${b.x + SW_W + 11}" y="${y + 4 + n * 13}" data-sc="go" data-k="${esc(t.key)}">→ ${esc(scCut(t.text, 24))}<title>${esc(t.text)}</title></text>`).join('')}
-      ${(tags.get(`${b.key}|${g.i}|out`) || []).map((t, n) => `<text class="stub" x="${b.x - 11}" y="${y + 4 + n * 13}" text-anchor="end" data-sc="go" data-k="${esc(t.key)}">${esc(scCut(t.text, 30))} ←</text>`).join('')}`;
+      ${g.touch ? `<circle class="pt tou" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="touch" data-g="${g.i}"><title>Touch: geeft de druk door (ingang)</title></circle><text class="ptl" x="${b.x + 11}" y="${y + 4}">touch</text>` : ''}
+      ${g.relay ? `<circle class="pt rel ${st}" cx="${b.x + SW_W}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="relay" data-g="${g.i}"><title>Relais: wordt geschakeld (uitgang)</title></circle><text class="ptl" x="${b.x + SW_W - 11}" y="${y + 4}" text-anchor="end">relais</text>` : ''}
+      ${(tags.get(`${b.key}|${g.i}|in`) || []).map((t, n) => `<text class="stub" x="${b.x - 11}" y="${y + 4 + n * 13}" text-anchor="end" data-sc="go" data-k="${esc(t.key)}">${esc(scCut(t.text, 28))} ←<title>${esc(t.text)}</title></text>`).join('')}
+      ${(tags.get(`${b.key}|${g.i}|out`) || []).map((t, n) => `<text class="stub" x="${b.x + SW_W + 11}" y="${y + 4 + n * 13}" data-sc="go" data-k="${esc(t.key)}">→ ${esc(scCut(t.text, 28))}<title>${esc(t.text)}</title></text>`).join('')}`;
   }).join('');
   return `<g class="bk sw ${sel ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 28))}</text>
-    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">${sub}${b.online ? '' : ' · offline'}</text>${rows}</g>`;
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">${b.alias ? `${esc(scCut(b.tech, 20))} · ` : ''}${sub}${b.online ? '' : ' · offline'}</text>${rows}</g>`;
 }
 
 function scRowText(c, name) { // de gang is het belangrijkste: inkorten gaat ten koste van de toestelnaam
@@ -134,7 +135,7 @@ function scDrawTemp() { // alleen dit ene pad: de poort onder de cursor moet bli
 function scPortPos(p) {
   const b = scBlock(p.b);
   if (!b) return null;
-  if (b.kind === 'switch') return [p.role === 'relay' ? b.x : b.x + SW_W, rowY(b, +p.g)];
+  if (b.kind === 'switch') return [p.role === 'relay' ? b.x + SW_W : b.x, rowY(b, +p.g)];
   const n = p.role === 'in' ? b.inputs.length : b.outputs.length;
   return [p.role === 'in' ? b.x : b.x + LAMP_W, rowY(b, p.i === 'new' ? n : +p.i)];
 }
@@ -148,7 +149,7 @@ function scTabs() {
 
 function scTray() {
   const q = SC.q.trim().toLowerCase();
-  const hit = (b) => !q || b.name.toLowerCase().includes(q);
+  const hit = (b) => !q || b.name.toLowerCase().includes(q) || b.tech.toLowerCase().includes(q);
   const item = (b) => `<div class="tri ${SC.sel === b.key ? 'on' : ''}" data-sc="trayitem" data-k="${esc(b.key)}"><span class="trd ${b.kind === 'lamp' ? (b.on ? 'on' : '') : 'sw'}"></span>
       <span class="trn">${esc(b.name)}</span><span class="sub">${b.page ? esc(scPageName(b.page)) : '<b>+ plaatsen</b>'}</span></div>`;
   const part = (title, kind) => {
@@ -167,7 +168,9 @@ function scPanel() {
       <p class="sub">Wijzigingen aan draden gelden meteen. Blokken verplaatsen verandert niets aan de schakelingen.</p>`;
   }
   const pages = `<label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
-  return b.kind === 'lamp' ? scLampPanel(b, pages) : scSwitchPanel(b, pages);
+  const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'lamp' ? b.name : b.alias)}" placeholder="${esc(b.tech)}">
+    <div class="sub">Technische naam: <code>${esc(b.tech)}</code></div>${pages}`;
+  return b.kind === 'lamp' ? scLampPanel(b, props) : scSwitchPanel(b, props);
 }
 
 function scConnRow(b, c, i, dir) {
@@ -191,13 +194,13 @@ function scLampPanel(b, pages) {
   const active = b.source === 'ha'
     ? `<label style="margin:0;color:var(--ink);cursor:pointer"><input type="checkbox" data-grp-toggle="${esc(b.id)}" ${b.enabled ? 'checked' : ''}> ${b.enabled ? 'Actief: volgen elkaar' : 'Uit: alleen bediening'}</label>` : '';
   const tail = b.source === 'ha'
-    ? `<button class="btn small" data-sc="renamelamp" data-id="${esc(b.id)}">Naam wijzigen</button><button class="btn small danger" data-sc="dellamp" data-id="${esc(b.id)}">Verwijderen</button>`
+    ? `<button class="btn small danger" data-sc="dellamp" data-id="${esc(b.id)}">Verwijderen</button>`
     : `<button class="btn small primary" data-act="learn" data-n="${b.node}" data-r="${b.relay}">Schakelaars leren</button><button class="btn small" data-act="edit" data-n="${b.node}" data-r="${b.relay}">Bewerken</button>`;
-  return `<h3>${esc(b.name)}</h3>${active}
+  return `<h3>${esc(b.name)}</h3>${pages}${active}
     <button class="power ${b.on === true ? 'on' : b.on === null ? 'unknown' : ''} ${b.pending ? 'pending' : ''}" data-sc="toggle" data-k="${esc(b.key)}">${onoff}</button>
     <h2>Ingangen</h2>${b.inputs.map((c, i) => scConnRow(b, c, i, 'in')).join('') || '<div class="sub">Nog geen touches.</div>'}${scAddSelect(b, 'in')}
     <h2>Uitgangen</h2>${b.outputs.map((c, i) => scConnRow(b, c, i, 'out')).join('') || '<div class="sub">Nog geen relais: de lamp weet niet welk relais hem schakelt.</div>'}${scAddSelect(b, 'out')}
-    ${pages}<div class="row" style="margin-top:6px">${tail}</div>
+    <div class="row" style="margin-top:6px">${tail}</div>
     ${b.source === 'ha' ? '<p class="sub">Een relais op een uitgang reageert nog op zijn eigen touch, en een touch-relais volgt de lamp mee (daar hangt zijn LED aan).</p>' : ''}`;
 }
 
@@ -222,9 +225,9 @@ function scSwitchPanel(b, pages) {
   const tail = b.source === 'ha'
     ? `<button class="btn small" data-sc="editswitch" data-id="${esc(b.id)}">Bewerken</button><button class="btn small danger" data-sc="delswitch" data-id="${esc(b.id)}">Blok verwijderen</button>`
     : b.source === 'virtual' ? `<button class="btn small" data-act="vedit" data-n="${b.node}">Bewerken</button>`
-      : `<button class="btn small" data-act="nodename" data-n="${b.node}">Naam</button><button class="btn small" data-act="identify" data-n="${b.node}">Knipper</button>`;
-  return `<h3>${esc(b.name)}</h3><div class="sub">${b.source === 'ha' ? 'HA-apparaat' : b.source === 'virtual' ? 'Extern apparaat' : 'Node'}${b.online ? '' : ' · offline'}</div>
-    <h2>Gangen</h2>${rows}${pages}<div class="row" style="margin-top:6px">${tail}</div>`;
+      : `<button class="btn small" data-act="identify" data-n="${b.node}">Knipper</button>`;
+  return `<h3>${esc(b.name)}</h3><div class="sub">${b.source === 'ha' ? 'HA-apparaat' : b.source === 'virtual' ? 'Extern apparaat' : 'Node'}${b.online ? '' : ' · offline'}</div>${pages}
+    <h2>Gangen</h2>${rows}<div class="row" style="margin-top:6px">${tail}</div>`;
 }
 
 function scWirePanel() {
@@ -266,7 +269,7 @@ function scDraw() {
   const need = scNeed(list);
   const z = scZoomNow(need);
   const w = Math.max(need, box.clientWidth / z), h = Math.max(...list.map((b) => b.y + scH(b) + 120), box.clientHeight / z);
-  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.setAttribute('viewBox', `${-SC_MARGIN} 0 ${w} ${h}`);
   svg.setAttribute('width', w * z);
   svg.setAttribute('height', h * z);
   svg.innerHTML = scInner(list);
@@ -274,7 +277,7 @@ function scDraw() {
 }
 
 // een schakelaar heeft rechts plaats nodig voor zijn verwijzingen
-const scNeed = (list) => Math.max(...list.map((b) => b.x + scW(b) + (b.kind === 'switch' ? 200 : 40)), 300);
+const scNeed = (list) => SC_MARGIN + Math.max(...list.map((b) => b.x + scW(b) + (b.kind === 'switch' ? 200 : 40)), 300);
 
 function scZoomNow(need) {
   return SC.zoom !== null ? SC.zoom : clampN($('#sccanvas').clientWidth / need, 0.55, 1);
@@ -291,7 +294,7 @@ function schemaUpdate() {
   scDraw();
   const panel = $('#scpanel'), html = scPanel(), active = document.activeElement;
   // een lijst die net open staat of een veld waarin je typt niet onder je handen vervangen
-  if (html !== SC.lastPanel && !(active && panel.contains(active) && active.tagName === 'SELECT')) {
+  if (html !== SC.lastPanel && !(active && panel.contains(active) && /SELECT|INPUT/.test(active.tagName))) {
     panel.innerHTML = html;
     SC.lastPanel = html;
   }
@@ -432,8 +435,6 @@ const SC_ACTIONS = {
     SC.sel = null;
     await refresh();
   },
-  renamelamp: (d) => smallDialog(`<h3>Lamp hernoemen</h3><label for="lpname">Naam</label><input type="text" id="lpname" maxlength="60" value="${esc(groupName(d.id))}">`,
-    () => api('PUT', `groups/${d.id}`, { name: $('#lpname').value.trim() || undefined })),
   dellamp: async (d) => {
     if (!confirm(`Lamp "${groupName(d.id)}" verwijderen? De kring verdwijnt; de toestellen zelf blijven zoals ze zijn.`)) return;
     await api('DELETE', `groups/${d.id}`);
@@ -506,9 +507,9 @@ document.addEventListener('pointerdown', (ev) => {
     const b = scBlock(bk.dataset.block);
     ev.preventDefault();
     SC.sel = b.key;
+    render(); // eerst tekenen: tijdens het slepen slaat render() over, en de zijbalk moet meteen open
     SC.drag = { k: b.key, dx: b.x - pt.x, dy: b.y - pt.y, moved: false };
     svg.setPointerCapture(ev.pointerId);
-    render();
     return;
   }
   SC.sel = null;
@@ -574,6 +575,21 @@ document.addEventListener('input', (ev) => {
 
 document.addEventListener('change', (ev) => {
   const t = ev.target;
+  if (t.id === 'scname') {
+    const b = scBlock(t.dataset.k), name = t.value.trim();
+    act(async () => {
+      try {
+        if (b.kind === 'switch') await api('POST', 'schema/name', { key: b.key, name });
+        else if (!name) throw new Error('Een lamp heeft een naam nodig');
+        else if (b.source === 'ha') await api('PUT', `groups/${b.id}`, { name });
+        else await api('PUT', `light/${b.node}/${b.relay}`, { name });
+      } finally {
+        t.blur();
+        SC.lastPanel = ''; // ook bij een weigering: het veld terug naar wat er echt staat
+        await refresh();
+      }
+    })();
+  }
   if (t.id === 'scroom') {
     const b = scBlock(t.dataset.k);
     const dest = t.value;

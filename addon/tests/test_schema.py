@@ -247,3 +247,22 @@ def test_a_new_layout_honours_the_area_of_a_block_that_already_exists(tmp_path):
     assert r.model.schema["blocks"] == {} and r.model.schema["switches"], "de blokken zelf blijven"
     schema.convert(r.model, r.engine.snapshot, devs)
     assert r.model.schema["blocks"][f"d:{sid}"]["page"] == "zolder"
+
+
+def test_a_switch_can_have_its_own_name_next_to_the_technical_one(tmp_path):
+    r = make(tmp_path)
+    schema.convert(r.model, r.engine.snapshot, DEVICES)
+    schema.set_name(r.model, r.engine.snapshot(), "d:dev1", "Touch aan de deur")
+    b = blocks(r)
+    assert b["d:dev1"]["name"] == "Touch aan de deur" and b["d:dev1"]["tech"] == "Touch keuken"
+    assert b["g:spots"]["inputs"][0]["swName"] == "Touch aan de deur"
+    assert Model(tmp_path / "network.json").schema["names"] == {"d:dev1": "Touch aan de deur"}
+    schema.convert(r.model, r.engine.snapshot, DEVICES)
+    assert blocks(r)["d:dev1"]["name"] == "Touch aan de deur", "opnieuw omzetten laat de eigen naam staan"
+    schema.set_name(r.model, r.engine.snapshot(), "d:dev1", "  ")
+    assert blocks(r)["d:dev1"]["name"] == "Touch keuken" and r.model.schema["names"] == {}, "leeg: weer de technische naam"
+    with pytest.raises(ModelError):
+        schema.set_name(r.model, r.engine.snapshot(), "g:spots", "Een lamp heeft zijn eigen naam")
+    with pytest.raises(ModelError):
+        schema.set_name(r.model, r.engine.snapshot(), "d:dev1", "x" * 61)
+    assert blocks(r)["g:spots"]["tech"] == "spots"
