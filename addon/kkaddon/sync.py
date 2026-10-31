@@ -12,6 +12,8 @@ touch drukt, dan krijgen de andere dezelfde stand (absoluut, dus ook als er eent
     drukken achter elkaar geen heen-en-weer geven: we geven alleen een bevel als de laatst opgedragen (of bekende)
     stand afwijkt.
   * Een entiteit die niet beschikbaar is wordt overgeslagen; een bevel dat niet wordt opgevolgd wordt gemeld.
+  * Geeft de `control`-bron (aan/uit-ingang) van een actieve kring 0 of 1, dan staat de lamp op die stand en blijft hij daar:
+    wat afwijkt wordt teruggezet, ook een druk op een touch. Geeft ze onbekend, dan werkt de lamp gewoon. Control gaat voor op disable.
   * Geeft de `disable`-bron (timer of module) van een kring 1, dan bedient een touch de lamp niet. Zijn eigen relais is dan al omgezet
     (dat doet het toestel zelf), dus dat zetten we terug op de stand van de lamp. Bedienen via de UI of HA blijft kunnen.
 
@@ -28,6 +30,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from .engine import Engine
 
 PENDING_FOR = 10.0  # s: zo lang wachten we op de echo van een eigen bevel voordat we het opgeven
+HOLD_EVERY = 5.0  # s: zo vaak kijken we of een lamp met een aan/uit-ingang nog goed staat
+HOLD_RETRY = 60.0  # s: reageert een toestel niet, dan zo lang wachten voor we het opnieuw proberen
 
 
 @dataclass
@@ -44,6 +48,7 @@ class EntityGroups:
         self.e = eng
         self.members: dict[str, list[Member]] = {}
         self._by_entity: dict[str, str] = {}
+        self._retry: dict[str, tuple[bool, float]] = {}  # kring -> laatst opgedragen stand en wanneer opnieuw
 
     # ------------------------------------------------------------ opbouw
 
@@ -105,7 +110,11 @@ class EntityGroups:
                 del m.pend[: i + 1]
                 return
         if self.enabled(gid):
-            if self.blocked(gid) and not m.lamp:
+            want = self.held(gid)
+            if want is not None:
+                if on != want:
+                    self._hold(gid, m, prev, want, "kept")
+            elif self.blocked(gid) and not m.lamp:
                 self._hold(gid, m, prev)
             else:
                 self._follow(gid, m)
@@ -114,17 +123,42 @@ class EntityGroups:
         g = self.e.model.groups.get(gid)
         return bool(g and g.get("disable") and self.e.source_on(g["disable"]))
 
-    def _hold(self, gid: str, src: Member, prev: bool) -> None:
-        """Een druk terwijl de lamp geblokkeerd is: alleen de touch terug naar de stand van de lamp."""
+    def held(self, gid: str) -> bool | None:
+        """De stand die de aan/uit-ingang oplegt, of None als hij dat niet doet (geen bron, onbekend, of de kring staat uit)."""
+        g = self.e.model.groups.get(gid)
+        return self.e.source_value(g["control"]) if g and g["enabled"] and g.get("control") else None
+
+    def hold_tick(self) -> None:
+        """Brengt lampen met een aan/uit-ingang op hun stand: als de ingang omslaat, en wat daarna nog afwijkt."""
         e = self.e
-        lamps = [x for x in self.members[gid] if x.lamp and x.known is not None]
-        back = any(x.known for x in lamps) if lamps else prev
+        if not (e.virt.link and e.ha_call):
+            return
+        now = e._clock()
+        for gid, ms in self.members.items():
+            want = self.held(gid)
+            for m in ms:
+                m.pend = [(t, d) for t, d in m.pend if d > now]
+            if want is None or not any(m.avail and m.known is not None and m.known != want for m in ms):
+                self._retry.pop(gid, None)
+                continue
+            last = self._retry.get(gid)
+            if last and last[0] == want and now < last[1]:
+                continue
+            self._retry[gid] = (want, now + HOLD_RETRY)
+            self.command(gid, want, what="held")
+
+    def _hold(self, gid: str, src: Member, prev: bool, back: bool | None = None, what: str = "blocked") -> None:
+        """Een druk terwijl de lamp geblokkeerd of vastgehouden is: alleen dit relais terug naar de stand van de lamp."""
+        e = self.e
+        if back is None:
+            lamps = [x for x in self.members[gid] if x.lamp and x.known is not None]
+            back = any(x.known for x in lamps) if lamps else prev
         if back != src.known:
             if not (e.virt.link and e.ha_call and e.ha_call(src.entity, back)):
                 e._emit("sync", what="failed", group=gid, entity=src.entity, on=back, why="geen verbinding met HA")
                 return
             src.pend.append((back, e._clock() + PENDING_FOR))
-        e._emit("sync", what="blocked", group=gid, entity=src.entity, on=back)
+        e._emit("sync", what=what, group=gid, entity=src.entity, on=back)
 
     def _follow(self, gid: str, src: Member) -> None:
         e = self.e
@@ -154,7 +188,7 @@ class EntityGroups:
 
     # ------------------------------------------------------------ bevelen uit de UI
 
-    def command(self, gid: str, on: bool | None = None, entity: str | None = None) -> bool:
+    def command(self, gid: str, on: bool | None = None, entity: str | None = None, what: str = "command") -> bool:
         """Een kring of één lid bedienen. `on=None` wisselt.
 
         Eén lid: een gewoon bevel aan die entiteit. Staat de kring aan, dan volgt de rest, net als bij een druk op de touch.
@@ -188,7 +222,7 @@ class EntityGroups:
             sent.append((m.entity, target))
             e._at(PENDING_FOR + 0.5, lambda m=m, t=target: self._check(gid, m, t))
         if sent:
-            e._emit("sync", what="command", group=gid, entity=entity, on=sent[0][1], to=[x for x, _ in sent])
+            e._emit("sync", what=what, group=gid, entity=entity, on=sent[0][1], to=[x for x, _ in sent])
         return bool(sent)
 
     @staticmethod
@@ -207,6 +241,6 @@ class EntityGroups:
                 "id": gid, "name": g["name"], "enabled": g["enabled"],
                 "members": [{"entity": m.entity, "on": m.known, "avail": m.avail, "lamp": m.lamp} for m in ms],
                 "lamp": [m.entity for m in ms if m.lamp],
-                "disable": g.get("disable"), "blocked": self.blocked(gid),
+                "disable": g.get("disable"), "blocked": self.blocked(gid), "control": g.get("control"), "held": self.held(gid),
             })
         return out

@@ -68,7 +68,13 @@ Verbind door van een uitgang (rechts) naar een ingang (links) te slepen, of kies
 de verkeerde soort aansluiten of een lus maken wordt geweigerd. Een uitgang die niet te bepalen is (losse ingang, locatie nog niet bekend) toont `?` en blokkeert niets.
 
 Een uitgang met 0 of 1 past op de **disable-ingang** van een lamp. Voorbeeld: touches alleen laten werken tussen zonsondergang en zonsopgang. Zet een *Tussen* met *van* = Zonsopgang
-en *tot* = Zonsondergang op de disable: overdag is hij 1 en blokkeert hij de touches. Modules schakelen zelf nog niets: er is nog geen ingang die een lamp aan- of uitzet.
+en *tot* = Zonsondergang op de disable: overdag is hij 1 en blokkeert hij de touches. 
+### Aan/uit-ingang
+
+Een lamp via Home Assistant heeft ook een **aan/uit-ingang** (boven de disable). Sluit er een uitgang met 0 of 1 op aan, bv. een *Tussen* van Zonsondergang tot Zonsopgang. Op 1 gaat de lamp aan en
+blijft hij aan, op 0 gaat hij uit en blijft hij uit. Drukt iemand op een touch of verandert iets anders de stand (ook via HA), dan wordt dat meteen teruggezet; bedienen in de add-on wordt geweigerd.
+De lamp reageert binnen 5 seconden op de ingang, en dat werkt alleen als de lamp *Actief* is en HA verbonden is. Een ingang die onbekend geeft (`?`) houdt niets vast: de lamp werkt dan gewoon. De aan/uit-ingang gaat voor op disable.
+Op lichten op het netwerk kan dit nog niet.
 
 ## Een licht instellen
 

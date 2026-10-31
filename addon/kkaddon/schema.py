@@ -108,7 +108,7 @@ def _lamp_blocks(model: Model, snap: dict, owners: dict) -> list[dict]:
             conns["out" if m["lamp"] else "in"].append({"ref": {"entity": m["entity"]}, "sw": sw, "gang": gang, "on": m["on"], "text": m["entity"]})
         out.append({"key": f"g:{g['id']}", "kind": "lamp", "source": "ha", "id": g["id"], "name": g["name"], "tech": g["id"], "enabled": g["enabled"], "on": on,
                     "pending": False, "online": any(m["avail"] for m in g["members"]), "inputs": conns["in"], "outputs": conns["out"],
-                    "disable": g.get("disable"), "blocked": g.get("blocked", False)})
+                    "disable": g.get("disable"), "blocked": g.get("blocked", False), "control": g.get("control"), "held": g.get("held")})
     for l in snap["lights"]:
         inputs = [{"ref": {"node": t["node"], "btn": t["btn"]}, "mode": t["mode"], "sw": f"n{t['node']}", "gang": t["btn"], "on": None,
                    "text": f"{model.node_name(t['node'])} knop {t['btn'] + 1}"} for t in l["triggers"]]
@@ -250,6 +250,15 @@ def set_disable(model: Model, lamp: str, timer) -> None:
     model.set_group(lamp[2:], disable=timer)
 
 
+def set_control(model: Model, lamp: str, source) -> None:
+    """De aan/uit-ingang van een lamp: een timer-id, een module (`m:<id>`) of None. Net als disable alleen via Home Assistant."""
+    if not lamp.startswith("g:"):
+        raise ModelError("De aan/uit-ingang kan voorlopig alleen op een lamp via Home Assistant.")
+    if lamp[2:] not in model.groups:
+        raise ModelError("onbekende lamp")
+    model.set_group(lamp[2:], control=source)
+
+
 def set_name(model: Model, snap: dict, key: str, name) -> None:
     """Eigen naam van een schakelaar-blok; leeg = weer de technische naam."""
     b = next((x for x in view(model, snap)["blocks"] if x["key"] == key), None)
@@ -337,7 +346,7 @@ def _height(b: dict) -> int:
         return HEAD + ROW + FOOT
     if b["kind"] == "module":
         return HEAD + max(len(b["ports"]), 1) * ROW + FOOT
-    rows = len(b["gangs"]) if b["kind"] == "switch" else max(len(b["inputs"]), len(b["outputs"])) + (2 if b["source"] == "ha" else 1)
+    rows = len(b["gangs"]) if b["kind"] == "switch" else max(len(b["inputs"]), len(b["outputs"])) + (3 if b["source"] == "ha" else 1)
     return HEAD + rows * ROW + FOOT
 
 
@@ -381,8 +390,9 @@ def _rooms(blocks: list[dict], rooms: dict[str, str], areas: set[str]) -> dict[s
             if p["ref"]:
                 upstream(p["ref"], room)
     for l in lamps:
-        if l.get("disable"):
-            upstream(disable_ref(l["disable"]), out[l["key"]])
+        for src in (l.get("control"), l.get("disable")):
+            if src:
+                upstream(disable_ref(src), out[l["key"]])
     return out
 
 

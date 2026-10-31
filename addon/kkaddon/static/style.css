@@ -74,7 +74,7 @@ input[type=text], select { width: 100%; padding: 7px 9px; border-radius: 8px; bo
 /* schema: blokken en draden per ruimte */
 body.wide { height: 100vh; display: flex; flex-direction: column; }
 body.wide main { max-width: none; width: 100%; padding-bottom: 8px; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.scbar { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: flex-end; margin-top: 10px; border-bottom: 1px solid var(--line); }
+.scbar { position: relative; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: flex-end; margin-top: 10px; border-bottom: 1px solid var(--line); }
 .sctabs { display: flex; flex-wrap: wrap; gap: 2px; }
 .sctab { background: var(--chip); border: 1px solid var(--line); border-bottom: 0; border-radius: 8px 8px 0 0; padding: 5px 12px; color: var(--mute); cursor: pointer; }
 .sctab.on { background: var(--card); color: var(--ink); font-weight: 600; box-shadow: inset 0 2px 0 var(--accent); }
@@ -121,6 +121,7 @@ body.wide main { max-width: none; width: 100%; padding-bottom: 8px; flex: 1; min
 .stub:hover { text-decoration: underline; }
 .pt { stroke: var(--card); stroke-width: 2; cursor: crosshair; touch-action: none; }
 .pt.dis { fill: var(--c5); } .pt.dis.on { fill: var(--bad); }
+.pt.ctl { fill: var(--c5); } .pt.ctl.on { fill: var(--on); }
 .pt.v-time { fill: var(--c4); } .pt.v-bool { fill: var(--c5); } .pt.v-bool.on { fill: var(--bad); }
 .pt.tou { fill: var(--c0); } .pt.rel { fill: var(--c1); }
 .pt.rel.on { fill: var(--on); stroke: var(--c1); }
@@ -144,9 +145,8 @@ body.wide main { max-width: none; width: 100%; padding-bottom: 8px; flex: 1; min
 #scpanel label { margin: 4px 0 0; }
 #scpanel .scc > div { min-width: 0; flex: 1; }
 
-.scmenu { position: relative; }
 .scmenu summary { list-style: none; } .scmenu summary::-webkit-details-marker { display: none; }
-.scmenupop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 5; width: min(780px, 90vw); max-height: 75vh; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px 14px; padding: 10px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, .25); }
+.scmenupop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 5; width: min(780px, 100%); /* gemeten aan de balk: blijft altijd binnen het kader */ max-height: 75vh; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px 14px; padding: 10px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, .25); }
 .scmenugroup h2 { margin: 4px 0; font-size: 12.5px; }
 .scmenuitem { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 6px; padding: 4px 6px; cursor: pointer; }
 .scmenuitem:hover, .scmenuitem:focus-visible { background: var(--chip); }

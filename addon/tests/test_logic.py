@@ -11,6 +11,7 @@ from kkaddon import schema, web
 from kkaddon.logic import evaluate, sun_times
 from kkaddon.model import Model, ModelError
 from kkaddon.settings import Settings
+from kkaddon.sync import HOLD_EVERY
 from rig import KEY, Rig
 from test_habridge import Env, run
 
@@ -231,6 +232,131 @@ def test_a_loose_module_goes_to_centraal(tmp_path):
     r.model.add_module("sunset")
     schema.convert(r.model, r.engine.snapshot, [])
     assert r.model.schema["blocks"]["m:zonsondergang"]["page"] == "centraal"
+
+
+# ---------------------------------------------------------------- de aan/uit-ingang
+
+
+EVENING = {d: [{"from": "18:00", "to": "22:00"}] for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}
+
+
+def held_lamp(tmp_path):
+    m = Model()
+    m.set_groups([{"id": "g", "name": "G", "entities": [A, B]}])
+    m.set_group("g", enabled=True, lamp=[B])
+    rig = Rig(tmp_path, model=m)
+    e = rig.engine
+    e.set_tz("Europe/Lisbon")
+    e.ha_snapshot({A: "off", B: "off"})
+    tid = m.save_timer(None, "Avond", EVENING)
+    m.set_group("g", control=tid)
+    return rig, e, tid
+
+
+def tick(rig):
+    rig.advance(HOLD_EVERY + 0.1, step=0.05)
+
+
+def test_the_input_switches_the_lamp_and_holds_it_against_a_touch(tmp_path):
+    rig, e, _ = held_lamp(tmp_path)
+    at(rig, 20)
+    tick(rig)
+    assert sorted(rig.ha_calls) == [(A, True), (B, True)], "de ingang slaat om naar 1: alles aan"
+    assert rig.events_of("sync", what="held")[-1]["on"] is True
+    e.ha_state(A, "on")
+    e.ha_state(B, "on")
+    rig.ha_calls.clear()
+    tick(rig)
+    assert rig.ha_calls == [], "het staat goed"
+    assert e.snapshot()["groups"][0]["held"] is True
+    e.ha_state(A, "off")  # iemand drukt
+    assert rig.ha_calls == [(A, True)] and rig.events_of("sync", what="kept")[-1]["entity"] == A, "alleen die touch meteen terug, de lamp volgt niet"
+    e.ha_state(A, "on")
+    e.ha_state(B, "off")  # ook via HA op het lamp-relais
+    assert rig.ha_calls[-1] == (B, True)
+    e.ha_state(B, "on")
+    rig.ha_calls.clear()
+    at(rig, 23)
+    tick(rig)
+    assert sorted(rig.ha_calls) == [(A, False), (B, False)], "de ingang slaat om naar 0: alles uit"
+    e.ha_state(A, "off")
+    e.ha_state(B, "off")
+    rig.ha_calls.clear()
+    e.ha_state(A, "on")
+    assert rig.ha_calls == [(A, False)], "ook vast uit"
+
+
+def test_a_device_that_does_not_react_gets_a_new_command_only_once_a_minute(tmp_path):
+    rig, e, _ = held_lamp(tmp_path)
+    at(rig, 20)
+    tick(rig)
+    n = len(rig.ha_calls)
+    rig.advance(30, step=0.05)
+    assert len(rig.ha_calls) == n
+    rig.advance(35, step=0.05)
+    assert len(rig.ha_calls) == 2 * n
+
+
+def test_nothing_is_held_when_the_lamp_is_off_or_the_input_is_unknown(tmp_path):
+    rig, e, _ = held_lamp(tmp_path)
+    at(rig, 20)
+    rig.model.set_group("g", enabled=False)
+    tick(rig)
+    assert rig.ha_calls == [] and e.snapshot()["groups"][0]["held"] is None
+    rig.model.set_group("g", enabled=True)
+    n = rig.model.add_module("after")  # geen tijd aangesloten: onbekend
+    rig.model.set_group("g", control=f"m:{n}")
+    tick(rig)
+    assert rig.ha_calls == []
+    e.ha_state(A, "on")
+    assert rig.ha_calls == [(B, True)], "de touch werkt gewoon"
+
+
+def test_without_ha_nothing_is_sent_or_logged_and_the_control_wins_over_disable(tmp_path):
+    rig, e, tid = held_lamp(tmp_path)
+    at(rig, 20)
+    rig.model.set_group("g", disable=tid)
+    e.virt.set_link(False)
+    tick(rig)
+    assert rig.ha_calls == [] and not rig.events_of("sync", what="failed")
+    e.virt.set_link(True)
+    e.ha_snapshot({A: "off", B: "off"})
+    tick(rig)
+    assert sorted(rig.ha_calls) == [(A, True), (B, True)], "disable op 1 houdt de ingang niet tegen"
+
+
+def test_deleting_the_source_frees_the_lamp_and_a_time_does_not_fit(tmp_path):
+    rig, e, tid = held_lamp(tmp_path)
+    z = rig.model.add_module("sunset")
+    with pytest.raises(ModelError, match="0 of 1"):
+        schema.set_control(rig.model, "g:g", f"m:{z}")
+    with pytest.raises(ModelError, match="Home Assistant"):
+        schema.set_control(rig.model, "l2.0", tid)
+    rig.model.set_groups([{"id": "g", "name": "G", "entities": [A, B]}])
+    assert rig.model.groups["g"]["control"] == tid, "opnieuw importeren laat de ingang staan"
+    assert Model.remove_timer(rig.model, tid) and "control" not in rig.model.groups["g"]
+
+
+def test_control_api_and_a_held_lamp_refuses_commands(tmp_path):
+    async def go():
+        rig, e, tid = held_lamp(tmp_path)
+        at(rig, 20)
+        s = Settings(data_dir=tmp_path, key=KEY, key_generated=False, dev_mode=True)
+        c = TestClient(TestServer(web.make_app(web.Ctx(s, e))))
+        await c.start_server()
+        try:
+            r = await c.post("/api/groups/g/cmd", json={"op": "toggle"})
+            assert r.status == 400 and "vastgehouden" in (await r.json())["error"]
+            st = await (await c.get("/api/state")).json()
+            lamp = next(b for b in st["schema"]["blocks"] if b["key"] == "g:g")
+            assert lamp["control"] == tid and lamp["held"] is True
+            assert (await c.post("/api/schema/control", json={"lamp": "g:g", "source": None})).status == 200
+            assert "control" not in rig.model.groups["g"]
+            assert (await c.post("/api/groups/g/cmd", json={"op": "toggle"})).status == 200
+        finally:
+            await c.close()
+
+    asyncio.run(go())
 
 
 def test_module_api(tmp_path):

@@ -434,5 +434,18 @@ Code: `logic.py` (types, berekening, zon), `model.py` (`modules`, controles), bl
 
 ### Niet getest / open
 - Unit-tests tegen de engine en een nagebootste HA, en de pagina in een browser. Niet tegen de echte HA en niet met een echte touch.
-- Er is geen ingang die een lamp echt aan- of uitzet: dat is de routine die hierna komt. Die heeft wel een planner nodig (een overgang van 0 naar 1 is een moment). Voor nu kan een module alleen touches blokkeren.
 - Geen `niet`-module: overdag blokkeren geeft hetzelfde als alleen 's nachts toelaten.
+
+## 24. Aan/uit-ingang van een lamp
+
+`groups.<id>.control` wijst, net als `disable`, naar een timer of `m:<id>`. Code: `sync.py` (`held`, `hold_tick`), `engine.py` (`source_value`, elke 5 s `_hold_tick`).
+
+- **Niveau, geen puls**: de lamp volgt de waarde en wordt erop gehouden. Geen geheugen dus: na een herstart volgt de stand opnieuw uit de klok. Omslaan is er zonder apart moment: wat afwijkt wordt rechtgezet.
+- **Afwijkingen**: een stand-wijziging die niet van ons komt wordt meteen teruggezet (`_hold`, ook een lamp-relais, anders dan bij disable). De andere leden corrigeert de volgende tick. Bedienen via de API wordt geweigerd, want de tick zou het toch terugdraaien.
+- **Onbekend en uit**: geeft de bron onbekend of staat de kring uit, dan doet de ingang niets en werkt de lamp gewoon.
+- **Geen spam**: reageert een toestel niet, dan wordt per kring hooguit elke 60 s opnieuw bevolen. Zonder HA-verbinding gebeurt er niets; bij het terugkomen zet de eerste tick het recht.
+
+### Niet getest / open
+- Tegen de nagebootste engine en in de browser, niet tegen de echte HA of een echte touch.
+- Alleen lampen via HA. Op een licht op het netwerk beslist de node; daar kan de add-on alleen achteraf bevelen.
+- Er is geen handmatige uitzondering: wie 's nachts de lamp uit wil, moet de ingang loskoppelen.

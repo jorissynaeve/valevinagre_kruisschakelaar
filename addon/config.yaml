@@ -1,5 +1,5 @@
 name: Huisconfig
-version: "0.5.0"
+version: "0.6.0"
 slug: kruisschakelaars
 description: Configuratie van het huis in blokken (schakelaars en lampen over ESP-NOW en Home Assistant, timers, tijd- en logicamodules)
 url: https://github.com/jorissynaeve/valevinagre_kruisschakelaar

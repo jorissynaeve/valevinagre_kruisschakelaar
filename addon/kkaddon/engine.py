@@ -26,7 +26,7 @@ from .logic import disable_ref, evaluate, sun_times
 from .model import Model, ModelError, timer_active
 from .proto import CF_BRIDGE, DEFAULT_TTL, LINK_LOCAL, T, Frame, Mode
 from .replay import ReplayTable
-from .sync import EntityGroups
+from .sync import HOLD_EVERY, EntityGroups
 from .virtual import Virtuals
 
 log = logging.getLogger("kk.engine")
@@ -164,6 +164,7 @@ class Engine:
         self.groups.rebuild()
         self.model.on_change(self._model_changed)
         self._at(self.t.maintenance, self._maintenance)
+        self._at(HOLD_EVERY, self._hold_tick)
 
     # ------------------------------------------------------------ klok en timers
 
@@ -244,10 +245,20 @@ class Engine:
         now = self.local_now()
         return evaluate(self.model.modules, lambda t: self.timer_on(t) if t in self.model.timers else None, now.hour * 60 + now.minute, self.sun_today())
 
+    def source_value(self, source: str) -> bool | None:
+        """Wat de bron op een ingang van een lamp nu geeft: 0, 1 of onbekend."""
+        ref = disable_ref(source)
+        if ref.startswith("t:"):
+            return self.timer_on(ref[2:]) if ref[2:] in self.model.timers else None
+        return self.module_values().get(ref[2:])
+
     def source_on(self, disable: str) -> bool:
         """Geeft de bron op een disable-ingang nu 1? Onbekend telt als 0: een lamp blijft dan gewoon te bedienen."""
-        ref = disable_ref(disable)
-        return self.timer_on(ref[2:]) if ref.startswith("t:") else self.module_values().get(ref[2:]) is True
+        return self.source_value(disable) is True
+
+    def _hold_tick(self) -> None:
+        self._at(HOLD_EVERY, self._hold_tick)
+        self.groups.hold_tick()
 
     def _model_changed(self) -> None:
         self.virt.rebuild()

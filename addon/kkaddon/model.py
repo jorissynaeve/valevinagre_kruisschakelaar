@@ -10,7 +10,7 @@ Bestandsformaat (network.json, ook voor export/import):
    "groups": {"keuken": {"name": "Keuken", "enabled": false,
                          "entities": ["switch.r4b01_sonoff_4ch_r4_01_relay_4", "light.t4b001_t4b001_relay_1"],
                          "lamp": ["switch.r4b01_sonoff_4ch_r4_01_relay_4"],     # lamp: de relais die echt de lamp schakelen
-                         "disable": "nacht"}},                                  # optioneel: timer die de touches blokkeert
+                         "disable": "nacht"}},                                  # optioneel: timer of module (m:<id>) die de touches blokkeert; "control": bron die de lamp aan of uit zet en houdt
    "timers": {"nacht": {"name": "Nacht", "days": {"mon": [{"from": "03:00", "to": "07:00"}]}}},  # per dag tot 3 intervallen; "to" 00:00 = middernacht
    "modules": {"donker": {"type": "between", "name": "Donker", "inputs": {"from": "m:avond", "to": "m:ochtend"}},   # tijd en logica, zie logic.py
                "pauze": {"type": "time", "name": "Pauze", "value": "02:30", "inputs": {}}},
@@ -112,11 +112,12 @@ def _group(gid, v) -> dict:
         raise ModelError(f"kring {gid}: lamp-relais moeten entiteiten van de kring zijn")
     out = {"name": _name(v.get("name"), "kring.name") or gid, "enabled": bool(v.get("enabled", False)), "entities": ents,
            "lamp": [e for e in ents if e in lamp]}
-    dis = v.get("disable")
-    if dis is not None:
-        if not isinstance(dis, str) or not DISABLE_RE.match(dis):
-            raise ModelError(f"kring {gid}: ongeldige timer {dis!r}")
-        out["disable"] = dis
+    for key in ("disable", "control"):
+        src = v.get(key)
+        if src is not None:
+            if not isinstance(src, str) or not DISABLE_RE.match(src):
+                raise ModelError(f"kring {gid}: ongeldige bron {src!r}")
+            out[key] = src
     return out
 
 
@@ -248,12 +249,12 @@ def _check_modules(modules: dict[str, dict], timers: dict[str, dict]) -> None:
 
 def _check_disable(disable, modules: dict[str, dict], timers: dict[str, dict]) -> None:
     if not isinstance(disable, str) or not DISABLE_RE.match(disable):
-        raise ModelError(f"ongeldige bron voor disable: {disable!r}")
+        raise ModelError(f"ongeldige bron: {disable!r}")
     got = _source_type(disable_ref(disable), modules, timers)
     if got is None:
         raise ModelError("onbekende module" if disable.startswith("m:") else "onbekende timer")
     if got != BOOL:
-        raise ModelError("De disable-ingang heeft een 0 of 1 nodig, geen tijd. Zet er een Tussen, Na of Voor tussen.")
+        raise ModelError("Deze ingang heeft een 0 of 1 nodig, geen tijd. Zet er een Tussen, Na of Voor tussen.")
 
 
 def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]]) -> None:
@@ -534,8 +535,9 @@ class Model:
             _conflicts(groups, virtual)
             _check_modules(modules, timers)
             for g in groups.values():
-                if g.get("disable", "").startswith("m:"):
-                    _check_disable(g["disable"], modules, timers)
+                for key in ("disable", "control"):
+                    if g.get(key, "").startswith("m:"):
+                        _check_disable(g[key], modules, timers)
         self.nodes, self.lights, self.follow, self.virtual, self.plan, self.groups, self.schema, self.timers = nodes, lights, follow, virtual, plan, groups, schema, timers
         self.modules = modules
         if save:
@@ -556,7 +558,7 @@ class Model:
                 raise ModelError(f"kring {gid}: minstens 2 entiteiten verwacht")
             keep = [x for x in (old["lamp"] if old else []) if isinstance(ents, list) and x in ents]  # lamp-relais blijven bij opnieuw importeren
             new[gid] = _group(gid, {"name": it.get("name"), "entities": ents, "enabled": old["enabled"] if old else False, "lamp": keep,
-                                    "disable": old.get("disable") if old else None})
+                                    "disable": old.get("disable") if old else None, "control": old.get("control") if old else None})
         if len(new) > MAX_GROUPS:
             raise ModelError(f"kringen: maximaal {MAX_GROUPS}")
         _conflicts(new, self.virtual)
@@ -579,7 +581,7 @@ class Model:
         self._changed()
         return gid
 
-    def set_group(self, gid: str, name=None, entities=None, enabled=None, lamp=None, disable=...) -> None:
+    def set_group(self, gid: str, name=None, entities=None, enabled=None, lamp=None, disable=..., control=...) -> None:
         old = self.groups.get(gid)
         if old is None:
             raise ModelError("onbekende kring")
@@ -590,8 +592,13 @@ class Model:
             disable = old.get("disable")
         elif disable is not None:
             _check_disable(disable, self.modules, self.timers)
+        if control is ...:
+            control = old.get("control")
+        elif control is not None:
+            _check_disable(control, self.modules, self.timers)
         new = _group(gid, {
             "disable": disable,
+            "control": control,
             "name": old["name"] if name is None else name,
             "entities": ents,
             "enabled": old["enabled"] if enabled is None else enabled,
@@ -621,7 +628,7 @@ class Model:
         if tid not in self.timers:
             return False
         self.timers = {k: v for k, v in self.timers.items() if k != tid}
-        self.groups = {k: {x: y for x, y in g.items() if not (x == "disable" and y == tid)} for k, g in self.groups.items()}
+        self.groups = {k: {x: y for x, y in g.items() if not (x in ("disable", "control") and y == tid)} for k, g in self.groups.items()}
         self.modules = self._without_source(f"t:{tid}")
         self._changed()
         return True
@@ -673,7 +680,7 @@ class Model:
         ref = f"m:{mid}"
         self.modules = self._without_source(ref)
         self.modules.pop(mid)
-        self.groups = {k: {x: y for x, y in g.items() if not (x == "disable" and y == ref)} for k, g in self.groups.items()}
+        self.groups = {k: {x: y for x, y in g.items() if not (x in ("disable", "control") and y == ref)} for k, g in self.groups.items()}
         self.schema = {**self.schema, "blocks": {k: v for k, v in self.schema["blocks"].items() if k != ref}}
         self._changed()
         return True

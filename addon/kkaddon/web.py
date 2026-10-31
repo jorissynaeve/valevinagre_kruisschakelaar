@@ -227,6 +227,8 @@ async def group_cmd(request: web.Request) -> web.Response:
     ent = b.get("entity")
     if ent is not None and not isinstance(ent, str):
         raise ModelError("entity moet een tekst zijn")
+    if ctx.engine.groups.held(request.match_info["gid"]) is not None:
+        raise ModelError("Deze lamp wordt vastgehouden door zijn aan/uit-ingang.")
     ok = ctx.engine.groups.command(request.match_info["gid"], None if op == "toggle" else op == "on", ent)
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
@@ -266,6 +268,12 @@ async def schema_place(request: web.Request) -> web.Response:
 async def schema_disable(request: web.Request) -> web.Response:
     b = await _body(request)
     schema.set_disable(request.app[CTX].model, str(b.get("lamp")), b.get("timer"))
+    return web.json_response({"ok": True})
+
+
+async def schema_control(request: web.Request) -> web.Response:
+    b = await _body(request)
+    schema.set_control(request.app[CTX].model, str(b.get("lamp")), b.get("source"))
     return web.json_response({"ok": True})
 
 
@@ -471,6 +479,7 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/schema/place", schema_place)
     r.add_post("/api/schema/name", schema_name)
     r.add_post("/api/schema/disable", schema_disable)
+    r.add_post("/api/schema/control", schema_control)
     r.add_post("/api/timers", timer_post)
     r.add_put("/api/timers/{tid}", timer_put)
     r.add_delete("/api/timers/{tid}", timer_delete)
