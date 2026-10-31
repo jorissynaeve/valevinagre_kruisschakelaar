@@ -3,6 +3,7 @@
   --accent: #2563eb; --accent-ink: #fff; --on: #f5b301; --on-ink: #3b2a00;
   --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --chip: #eef1f5;
   /* kleuren van de kringen op de plattegrond (geen geel: dat is "aan") */
+  --t-lamp: #fdf0b5; --t-sw: #cfeeda; --t-box: #fcdcc2; --t-ext: #cdebf3; --t-node: #d9e2fb;
   --c0: #2563eb; --c1: #d55e00; --c2: #15803d; --c3: #c026d3; --c4: #0891b2; --c5: #7c3aed; --c6: #92400e; --c7: #475569;
 }
 @media (prefers-color-scheme: dark) {
@@ -10,6 +11,7 @@
     --bg: #12161d; --card: #1b212b; --ink: #e8ecf2; --mute: #98a2b3; --line: #2b3340;
     --accent: #5b8def; --accent-ink: #0b1220; --on: #f5b301; --on-ink: #221800;
     --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --chip: #252d3a;
+    --t-lamp: #54470f; --t-sw: #1d4d33; --t-box: #5a3519; --t-ext: #17475a; --t-node: #283665;
     --c0: #6ea0ff; --c1: #ff8a3d; --c2: #4ade80; --c3: #e879f9; --c4: #22d3ee; --c5: #a78bfa; --c6: #d6a45c; --c7: #94a3b8;
   }
 }
@@ -123,7 +125,10 @@ body.wide main { max-width: none; width: 100%; padding-bottom: 8px; flex: 1; min
 .tri .sub { grid-column: 2; font-size: 11.5px; } .tri b { color: var(--accent); font-weight: 600; }
 .trn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
 .trd { width: 10px; height: 10px; border-radius: 50%; background: var(--chip); border: 1.5px solid var(--mute); }
-.trd.on { background: var(--on); border-color: var(--on); } .trd.sw { border-radius: 2px; }
+.trd.on { background: var(--on); border-color: var(--on); }
+.trd.t-lamp:not(.on) { background: var(--t-lamp); }
+.trd.t-sw, .trd.t-box, .trd.t-ext, .trd.t-node { border-radius: 2px; }
+.trd.t-sw { background: var(--t-sw); } .trd.t-box { background: var(--t-box); } .trd.t-ext { background: var(--t-ext); } .trd.t-node { background: var(--t-node); }
 #sccanvas { overflow: auto; background-color: var(--card); background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 20px 20px; border: 1px solid var(--line); border-radius: 12px; }
 #scsvg { display: block; user-select: none; -webkit-user-select: none; }
 .scempty { max-width: 460px; margin: 60px auto; padding: 0 16px; text-align: center; }
@@ -132,6 +137,8 @@ body.wide main { max-width: none; width: 100%; padding-bottom: 8px; flex: 1; min
 .bk.sel .bkbox { stroke: var(--accent); stroke-width: 3; }
 .bk.off .bkbox { stroke-dasharray: 5 4; }
 .bkhead { fill: var(--chip); stroke: none; }
+.t-lamp .bkhead { fill: var(--t-lamp); } .t-sw .bkhead { fill: var(--t-sw); } .t-box .bkhead { fill: var(--t-box); }
+.t-ext .bkhead { fill: var(--t-ext); } .t-node .bkhead { fill: var(--t-node); }
 .bkhead.lamph.on { fill: var(--on); }
 .lamph.on ~ .bkn, .lamph.on ~ .bks, .lamph.on ~ .bkbadge { fill: var(--on-ink); }
 .bkrule { stroke: var(--line); stroke-width: 1; }

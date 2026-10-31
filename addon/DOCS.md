@@ -21,15 +21,16 @@ ze nu lopen. Aan de schakelingen verandert daarbij niets. Later kun je opnieuw *
 
 Een lamp komt in de ruimte uit zijn naam (`Quarto philippe bed links` bij `Quarto philippe`) of zijn HA-gebied. Een schakelaar komt in
 zijn eigen HA-gebied of kamer, en anders in **Centraal**. Zet hem via *Ruimte* in het paneel op zijn echte plek: binnen een ruimte
-zie je draden, tussen ruimtes verwijzingen. *Opnieuw indelen* verdeelt alles opnieuw en wist eigen plekken, nooit draden.
+staan ze samen, en de verwijzingen tonen er geen ruimtenaam. *Opnieuw indelen* verdeelt alles opnieuw en wist eigen plekken, nooit draden.
 
 * Een **lamp-blok** heeft links de **ingangen** (de touches die de lamp bedienen) en rechts de **uitgangen** (de relais die de lamp
   echt schakelen). De bol zet de lamp aan of uit. *Actief* of *uit* is hetzelfde als op het tabblad *HA-kringen*.
 * Een **schakelaar-blok** is een toestel met per gang links een **touch** (ingang) en rechts een **relais** (uitgang).
 * Klik op een blok voor de eigenschappen in de zijbalk: een **eigen naam** naast de technische naam uit HA, en de **ruimte**.
 * **Draad trekken**: sleep van een poort naar een andere poort, of klik op de ene en daarna op de andere (handig op een tablet).
-  Een draad weghalen: klik erop en druk op Delete, of kies ✕ rechts. Een draad in een actieve lamp geldt **meteen**.
-* Een aansluiting in een **andere ruimte** staat als `↗` op de lamp en als blauwe verwijzing op de schakelaar (klik om erheen te gaan).
+  Een verbinding weghalen: klik op de regel in de lamp en druk op Delete, of kies ✕ rechts. Een verbinding in een actieve lamp geldt **meteen**.
+* Elke verbinding staat voorlopig als **verwijzing**: `↗` op de lamp en een blauwe tekst op de schakelaar (klik om erheen te gaan). Er worden geen lijnen getekend.
+* De kleur toont het type: lamp geel, schakelaar groen, relaisbox oranje, extern apparaat cyaan, node blauw.
   Maak hem in het paneel rechts, op de lamp of op de schakelaar.
 * Een relais op een uitgang reageert nog op zijn eigen touch, en een touch-relais volgt de lamp mee (daar hangt zijn LED aan).
   Dat gedrag is hetzelfde als voorheen.

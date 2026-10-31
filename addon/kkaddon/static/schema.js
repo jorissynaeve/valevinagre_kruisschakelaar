@@ -15,6 +15,7 @@ const SC = {
 const SC_HEAD = 42, SC_ROW = 24, SC_FOOT = 10; // dezelfde maten als de automatische indeling in schema.py
 const SW_W = 250, LAMP_W = 340;
 const SC_GRID = 10;
+const SC_WIRES = false; // voorlopig geen lijnen: elke verbinding is een verwijzing, ook binnen een ruimte
 const SC_MARGIN = 200; // links van x=0: de verwijzingen en draden aan de touch-kant
 
 const scBlocks = () => S.schema.blocks;
@@ -39,6 +40,15 @@ function scConns() { // alle draden: elke verbinding tussen een lamp en een gang
 }
 
 const scSame = (x) => x.sw && x.sw.page && x.sw.page === x.lamp.page;
+
+function scType(b) { // bepaalt de kleur van het blok
+  if (b.kind === 'lamp') return 'lamp';
+  if (b.source === 'node') return 'node';
+  if (b.source === 'virtual') return 'ext';
+  const conns = scConns().filter((x) => x.sw && x.sw.key === b.key);
+  return conns.length && conns.every((x) => x.dir === 'out') ? 'box' : 'sw'; // alleen geschakeld, nooit bediend: een relaisbox
+}
+const SC_TYPE_NL = { node: 'Node', ext: 'Extern apparaat', box: 'Relaisbox · HA', sw: 'Schakelaar · HA' };
 const wireSel = (x) => SC.sel && SC.sel.lamp === x.lamp.key && SC.sel.dir === x.dir && SC.sel.i === x.i;
 
 function wirePath(x0, y0, dir0, x1, y1, dir1) { // dir: naar welke kant de poort kijkt (-1 links, 1 rechts)
@@ -60,7 +70,7 @@ function scWire(x) {
 
 function scSwitch(b, tags) {
   const sel = SC.sel === b.key;
-  const sub = b.source === 'ha' ? 'HA-apparaat' : b.source === 'virtual' ? 'Extern apparaat' : 'Node';
+  const type = scType(b), sub = SC_TYPE_NL[type];
   const rows = b.gangs.map((g) => {
     const y = rowY(b, g.i);
     const st = g.on === true ? 'on' : g.on === null ? 'unknown' : '';
@@ -71,7 +81,7 @@ function scSwitch(b, tags) {
       ${(tags.get(`${b.key}|${g.i}|in`) || []).map((t, n) => `<text class="stub" x="${b.x - 11}" y="${y + 4 + n * 13}" text-anchor="end" data-sc="go" data-k="${esc(t.key)}">${esc(scCut(t.text, 28))} ←<title>${esc(t.text)}</title></text>`).join('')}
       ${(tags.get(`${b.key}|${g.i}|out`) || []).map((t, n) => `<text class="stub" x="${b.x + SW_W + 11}" y="${y + 4 + n * 13}" data-sc="go" data-k="${esc(t.key)}">→ ${esc(scCut(t.text, 28))}<title>${esc(t.text)}</title></text>`).join('')}`;
   }).join('');
-  return `<g class="bk sw ${sel ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
+  return `<g class="bk sw t-${type} ${sel ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 28))}</text>
@@ -88,9 +98,10 @@ function scLamp(b) {
   const st = b.on === true ? 'on' : b.on === null ? 'unknown' : '';
   const row = (c, i, dir) => {
     const y = rowY(b, i), left = dir === 'in';
-    const same = c.sw && scBlock(c.sw) && scBlock(c.sw).page === b.page;
+    const same = SC_WIRES && c.sw && scBlock(c.sw) && scBlock(c.sw).page === b.page;
+    const here = c.sw && scBlock(c.sw) && scBlock(c.sw).page === b.page;
     const name = c.sw ? `${c.swName} · ${c.label}` : c.text;
-    const away = c.sw && !same ? (scBlock(c.sw).page ? ` (${scPageName(scBlock(c.sw).page)})` : ' (niet geplaatst)') : !c.sw ? ' (geen blok)' : '';
+    const away = c.sw && !here ? (scBlock(c.sw).page ? ` (${scPageName(scBlock(c.sw).page)})` : ' (niet geplaatst)') : !c.sw ? ' (geen blok)' : '';
     return `<text class="bkt ${same ? '' : 'away'}" x="${left ? b.x + 11 : b.x + LAMP_W - 11}" y="${y + 4}" ${left ? '' : 'text-anchor="end"'} data-sc="wiresel" data-w="${esc(b.key)}|${dir}|${i}"><title>${esc(name + away)}${c.mode && c.mode !== 'toggle' ? ` (${MODE_NL[c.mode]})` : ''}</title>${same ? '' : '↗ '}${esc(scRowText(c, name))}</text>
       <circle class="pt ${left ? 'tou' : 'rel'} used" cx="${left ? b.x : b.x + LAMP_W}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="${dir}" data-i="${i}"/>`;
   };
@@ -101,7 +112,7 @@ function scLamp(b) {
       <text class="ptl" x="${left ? b.x + 11 : b.x + LAMP_W - 11}" y="${y + 4}" ${left ? '' : 'text-anchor="end"'}>+ ${left ? 'ingang' : 'uitgang'}</text>`;
   };
   const badge = b.source === 'node' ? 'netwerk' : b.enabled ? 'actief' : 'uit';
-  return `<g class="bk lampb ${sel ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
+  return `<g class="bk lampb t-lamp ${sel ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${LAMP_W}" height="${scH(b)}" rx="8"/>
     <rect class="bkhead lamph ${st}" x="${b.x}" y="${b.y}" width="${LAMP_W}" height="${SC_HEAD}" rx="8"/>
     <circle class="bulb ${st} ${b.pending ? 'pending' : ''}" cx="${b.x + 22}" cy="${b.y + 21}" r="12" data-sc="toggle" data-k="${esc(b.key)}"><title>Aan of uit zetten</title></circle>
@@ -116,13 +127,13 @@ function scInner(list) {
   const conns = scConns();
   const tags = new Map(); // verwijzing op een gang naar een lamp in een andere ruimte
   for (const x of conns) {
-    if (!x.sw || !x.sw.page || !x.c.sw || x.lamp.page === x.sw.page) continue;
+    if (!x.sw || !x.sw.page || !x.c.sw || (SC_WIRES && x.lamp.page === x.sw.page)) continue;
     const k = `${x.sw.key}|${x.c.gang}|${x.dir}`;
     if (!tags.has(k)) tags.set(k, []);
-    tags.get(k).push({ key: x.lamp.key, text: `${x.lamp.name}${x.lamp.page ? ` (${scPageName(x.lamp.page)})` : ''}` });
+    tags.get(k).push({ key: x.lamp.key, text: `${x.lamp.name}${x.lamp.page && x.lamp.page !== x.sw.page ? ` (${scPageName(x.lamp.page)})` : ''}` });
   }
   const shown = new Set(list.map((b) => b.key));
-  const wires = conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
+  const wires = !SC_WIRES ? '' : conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
   const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : scSwitch(b, tags))).join('');
   return `<g class="wires">${wires}</g>${blocks}<path id="sctemp" class="wire temp"/>`; // draden onder de blokken: anders liggen ze over de poorten
 }
@@ -150,7 +161,7 @@ function scTabs() {
 function scTray() {
   const q = SC.q.trim().toLowerCase();
   const hit = (b) => !q || b.name.toLowerCase().includes(q) || b.tech.toLowerCase().includes(q);
-  const item = (b) => `<div class="tri ${SC.sel === b.key ? 'on' : ''}" data-sc="trayitem" data-k="${esc(b.key)}"><span class="trd ${b.kind === 'lamp' ? (b.on ? 'on' : '') : 'sw'}"></span>
+  const item = (b) => `<div class="tri ${SC.sel === b.key ? 'on' : ''}" data-sc="trayitem" data-k="${esc(b.key)}"><span class="trd t-${scType(b)} ${b.kind === 'lamp' && b.on ? 'on' : ''}"></span>
       <span class="trn">${esc(b.name)}</span><span class="sub">${b.page ? esc(scPageName(b.page)) : '<b>+ plaatsen</b>'}</span></div>`;
   const part = (title, kind) => {
     const all = scBlocks().filter((b) => b.kind === kind && hit(b));
@@ -164,8 +175,8 @@ function scPanel() {
   if (SC.sel && SC.sel.lamp) return scWirePanel();
   const b = SC.sel && scBlock(SC.sel);
   if (!b) {
-    return `<h3>Schema</h3><p class="sub">Trek een draad van een <b>touch</b> naar een <b>ingang</b> van een lamp, of van een <b>uitgang</b> naar het <b>relais</b> dat de lamp schakelt. Klik op een blok of draad om het te bewerken.</p>
-      <p class="sub">Wijzigingen aan draden gelden meteen. Blokken verplaatsen verandert niets aan de schakelingen.</p>`;
+    return `<h3>Schema</h3><p class="sub">Verbind door te slepen van een <b>touch</b> naar een <b>ingang</b> van een lamp, of van een <b>uitgang</b> naar het <b>relais</b> dat de lamp schakelt. Elke verbinding staat als verwijzing op beide blokken: klik erop om erheen te gaan. Klik op een blok om het te bewerken.</p>
+      <p class="sub">Wijzigingen aan verbindingen gelden meteen. Blokken verplaatsen verandert niets aan de schakelingen.</p>`;
   }
   const pages = `<label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
   const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'lamp' ? b.name : b.alias)}" placeholder="${esc(b.tech)}">
@@ -176,7 +187,7 @@ function scPanel() {
 function scConnRow(b, c, i, dir) {
   const name = c.sw ? `${c.swName} · ${c.label}` : c.text;
   return `<div class="scc"><a href="#" data-sc="wiresel" data-w="${esc(b.key)}|${dir}|${i}">${esc(name)}</a>${c.mode && c.mode !== 'toggle' ? ` <span class="badge">${MODE_NL[c.mode]}</span>` : ''}
-    ${c.fixed ? '<span class="badge">vast</span>' : `<button class="btn small danger" type="button" data-sc="unwire" data-w="${esc(b.key)}|${dir}|${i}" title="Draad weghalen">✕</button>`}</div>`;
+    ${c.fixed ? '<span class="badge">vast</span>' : `<button class="btn small danger" type="button" data-sc="unwire" data-w="${esc(b.key)}|${dir}|${i}" title="Verbinding weghalen">✕</button>`}</div>`;
 }
 
 function scAddSelect(b, dir) {
@@ -236,9 +247,9 @@ function scWirePanel() {
   if (!c) { SC.sel = null; return scPanel(); }
   const name = c.sw ? `${c.swName} · ${c.label}` : c.text;
   const w = `${l.key}|${SC.sel.dir}|${SC.sel.i}`;
-  return `<h3>Draad</h3><p>${SC.sel.dir === 'in' ? `<b>${esc(name)}</b> bedient <b>${esc(l.name)}</b>` : `<b>${esc(l.name)}</b> schakelt <b>${esc(name)}</b>`}</p>
-    ${c.sw && scBlock(c.sw).page && scBlock(c.sw).page !== l.page ? `<p><a href="#" data-sc="go" data-k="${esc(c.sw)}">↗ Naar ${esc(c.swName)} (${esc(scPageName(scBlock(c.sw).page))})</a></p>` : ''}
-    ${c.fixed ? '<p class="sub">Deze uitgang ligt vast: het is het relais van de node zelf.</p>' : `<div class="row"><button class="btn small danger" data-sc="unwire" data-w="${esc(w)}">Draad weghalen</button><span class="sub">of druk op Delete</span></div>`}`;
+  return `<h3>Verbinding</h3><p>${SC.sel.dir === 'in' ? `<b>${esc(name)}</b> bedient <b>${esc(l.name)}</b>` : `<b>${esc(l.name)}</b> schakelt <b>${esc(name)}</b>`}</p>
+    ${c.sw && scBlock(c.sw).page ? `<p><a href="#" data-sc="go" data-k="${esc(c.sw)}">↗ Naar ${esc(c.swName)} (${esc(scPageName(scBlock(c.sw).page))})</a></p>` : ''}
+    ${c.fixed ? '<p class="sub">Deze uitgang ligt vast: het is het relais van de node zelf.</p>' : `<div class="row"><button class="btn small danger" data-sc="unwire" data-w="${esc(w)}">Verbinding weghalen</button><span class="sub">of druk op Delete</span></div>`}`;
 }
 
 function scEmpty() {
