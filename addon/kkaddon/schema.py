@@ -19,10 +19,11 @@ from collections import Counter
 from .model import MAX_SWITCH_GANGS, Model, ModelError
 from .proto import is_virtual
 
-NO_ROOM = "Zonder ruimte"
+NO_ROOM = "Centraal"
 # Hoogte en kolommen van de automatische indeling; de hoogtes zijn dezelfde als in static/schema.js
 HEAD, ROW, FOOT, GAP = 42, 24, 10, 24
-COL_IN, COL_LAMP, COL_OUT, COL_ALONE = 40, 460, 920, 260  # COL_ALONE: een relaisbox alleen op zijn pagina, met links plaats voor de verwijzingen
+COL_IN, COL_LAMP, COL_OUT = 40, 460, 920
+GRID_X, GRID_STEP, GRID_COLS = 220, 600, 2  # een pagina zonder lampen (Centraal): een raster, met naast elk blok plaats voor de verwijzingen
 NOT_A_GANG = re.compile(r"(^|_)(led|leds|all|all_relays|status|backlight|buzzer)(_|$)")  # zoals in de import van app.js
 NUMBER_END = re.compile(r"_?(?:relay|relais|gang|channel|ch|switch|lamp|light|output|r|l)?_?\d+$")
 
@@ -264,7 +265,7 @@ def _new_switches(model: Model, devices: list[dict]) -> tuple[dict, dict]:
     claimed = {g["entity"] for gs in model.virtual.values() for g in gs} | {g["entity"] for s in switches.values() for g in s["gangs"]}
     needed = [e for g in model.groups.values() for e in g["entities"] if e not in claimed]
     wanted = set(needed)
-    rooms = {}
+    rooms = {f"d:{_slug(str(d['id']))[:80]}": d.get("area") or "" for d in devices}  # ook van blokken die al bestaan
     def order(ents):
         return sorted(ents, key=lambda e: (0 if e.startswith("switch.") else 1, _natural(e)))
     for d in devices:
@@ -275,7 +276,6 @@ def _new_switches(model: Model, devices: list[dict]) -> tuple[dict, dict]:
         sid = _slug(str(d["id"]))[:80]
         labels = _short_labels(ents)
         switches[sid] = {"name": d.get("name") or sid, "gangs": [{"entity": e, "name": labels[e]} for e in ents]}
-        rooms[f"d:{sid}"] = d.get("area") or ""
         claimed.update(ents)
     by_prefix: dict[str, list[str]] = {}
     for e in needed:
@@ -288,7 +288,6 @@ def _new_switches(model: Model, devices: list[dict]) -> tuple[dict, dict]:
             sid = _slug(pre) if part == 0 else f"{_slug(pre)}_{part // MAX_SWITCH_GANGS + 1}"
             labels = _short_labels(chunk)
             switches[sid] = {"name": pre.replace("_", " "), "gangs": [{"entity": e, "name": labels[e]} for e in chunk]}
-            rooms[f"d:{sid}"] = ""
     return switches, rooms
 
 
@@ -297,23 +296,44 @@ def _height(b: dict) -> int:
     return HEAD + rows * ROW + FOOT
 
 
+def _families(lamps: list[dict]) -> dict[str, str]:
+    """Lampen die bij elkaar horen op naam: `Quarto philippe bed links` bij `Quarto philippe`, en `Buiten keuken` bij `Buiten terras`."""
+    names = {b["key"]: b["name"] for b in lamps}
+    out, bases = {}, set()
+    for k, n in names.items():
+        hits = [o for o in names.values() if n.casefold().startswith(o.casefold() + " ")]
+        if hits:
+            out[k] = max(hits, key=len)
+            bases.add(out[k])
+    rest = {k: n.split()[0] for k, n in names.items() if k not in out and n not in bases and " " in n}
+    count = Counter(w.casefold() for w in rest.values())
+    out.update({k: w.capitalize() for k, w in rest.items() if count[w.casefold()] > 1})
+    return out
+
+
 def _rooms(blocks: list[dict], rooms: dict[str, str], areas: set[str]) -> dict[str, str]:
-    """In welke ruimte hoort elk blok. Een touch weet het via zijn HA-gebied of de kamer van de node. Een lamp hoort bij de
-    ruimte in zijn naam, anders waar de meeste van zijn touches zitten, anders bij zijn relais."""
+    """In welke ruimte hoort elk blok. Een schakelaar: zijn eigen HA-gebied of de kamer van de node, anders Centraal (waar een
+    toestel hangt valt niet te raden). Een lamp: zijn naamfamilie, anders een ruimte in zijn naam, anders waar de meeste van
+    zijn touches zitten, anders heet de ruimte zoals de lamp. Een naamloos relais gaat naar Centraal."""
     out = {b["key"]: rooms.get(b["key"]) or b.get("room") or "" for b in blocks if b["kind"] == "switch"}
     named = sorted(areas | {r for r in out.values() if r}, key=len, reverse=True)
     lamps = [b for b in blocks if b["kind"] == "lamp"]
+    fam = _families(lamps)
     def most(conns):
         c = Counter(out[x["sw"]] for x in conns if out.get(x["sw"]))
         return c.most_common(1)[0][0] if c else ""
     for b in lamps:
-        hit = next((a for a in named if a.casefold() in b["name"].casefold()), "")
-        out[b["key"]] = hit or most(b["inputs"]) or most(b["outputs"])
-    for b in blocks:  # een schakelaar zonder gebied: daar waar zijn lampen staan
-        if b["kind"] == "switch" and not out[b["key"]]:
-            c = Counter(out[l["key"]] for l in lamps for x in l["inputs"] + l["outputs"] if x["sw"] == b["key"] and out[l["key"]])
-            out[b["key"]] = c.most_common(1)[0][0] if c else ""
+        hit = next((a for a in named if re.search(rf"\b{re.escape(a.casefold())}\b", b["name"].casefold())), "")
+        own = "" if re.search(r" relais \d+$", b["name"]) else b["name"]
+        out[b["key"]] = fam.get(b["key"]) or hit or most(b["inputs"]) or own
     return out
+
+
+def reset_layout(model: Model) -> None:
+    """Alle ruimtes en plekken weg, voor een nieuwe indeling. De schakelaar-blokken en alle draden blijven."""
+    s = copy.deepcopy(model.schema)
+    s["pages"], s["blocks"] = [], {}
+    model.set_schema(s)
 
 
 def convert(model: Model, engine_snapshot, devices: list[dict] | None = None, areas: set[str] | None = None) -> dict:
@@ -358,6 +378,7 @@ def convert(model: Model, engine_snapshot, devices: list[dict] | None = None, ar
         col = COL_LAMP if k[0] in "gl" else COL_IN
         bottom[(pos["page"], col)] = max(bottom.get((pos["page"], col), 0), pos["y"] + heights.get(k, 0) + GAP)
     placed = 0
+    before = set(s["blocks"])
     todo = [b for b in blocks if b["key"] not in s["blocks"] and wanted(b)]
     # eerst de lampen; daarna elke schakelaar in de volgorde van de eerste lamp die hij bedient, zodat de draden kort blijven
     lamp_order = {b["key"]: i for i, b in enumerate(b for b in blocks if b["kind"] == "lamp")}
@@ -372,10 +393,14 @@ def convert(model: Model, engine_snapshot, devices: list[dict] | None = None, ar
         bottom[(page, col)] = y + heights[b["key"]] + GAP
         placed += 1
     for p in s["pages"]:
-        here = [v for v in s["blocks"].values() if v["page"] == p["id"]]
-        if here and all(v["x"] == COL_OUT for v in here):
-            for v in here:
-                v["x"] = COL_ALONE
+        here = [k for k, v in s["blocks"].items() if v["page"] == p["id"]]
+        if not here or before.intersection(here) or any(k[0] in "gl" for k in here):
+            continue
+        ys = [30] * GRID_COLS
+        for k in here:  # steeds in de kortste kolom
+            col = ys.index(min(ys))
+            s["blocks"][k].update(x=GRID_X + col * GRID_STEP, y=ys[col])
+            ys[col] += heights[k] + GAP
     # een lege ruimte (bv. alles later verplaatst) blijft staan: de gebruiker heeft hem misschien zelf gemaakt
     model.set_schema(s)
     return {"pages": len(s["pages"]), "placed": placed, "switches": added}

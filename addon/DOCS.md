@@ -16,8 +16,12 @@ knop", leert welke schakelaar welk licht bedient en houdt de configuratie van de
 ## Schema (zoals Loxone Config)
 
 Tabblad *Schema*: per ruimte een tabblad met blokken en draden. Kies de eerste keer **Huidige configuratie omzetten**. De add-on
-maakt dan de ruimtes uit de gebieden van Home Assistant en zet je kringen, lichten en toestellen op hun plek, met de draden zoals
+maakt dan de ruimtes en zet je kringen, lichten en toestellen op hun plek, met de draden zoals
 ze nu lopen. Aan de schakelingen verandert daarbij niets. Later kun je opnieuw *Omzetten*: wat al staat blijft staan.
+
+Een lamp komt in de ruimte uit zijn naam (`Quarto philippe bed links` bij `Quarto philippe`) of zijn HA-gebied. Een schakelaar komt in
+zijn eigen HA-gebied of kamer, en anders in **Centraal**. Zet hem via *Ruimte* in het paneel op zijn echte plek: binnen een ruimte
+zie je draden, tussen ruimtes verwijzingen. *Opnieuw indelen* verdeelt alles opnieuw en wist eigen plekken, nooit draden.
 
 * Een **lamp-blok** heeft links de **ingangen** (de touches die de lamp bedienen) en rechts de **uitgangen** (de relais die de lamp
   echt schakelen). De bol zet de lamp aan of uit. *Actief* of *uit* is hetzelfde als op het tabblad *HA-kringen*.
@@ -25,7 +29,7 @@ ze nu lopen. Aan de schakelingen verandert daarbij niets. Later kun je opnieuw *
 * **Draad trekken**: sleep van een poort naar een andere poort, of klik op de ene en daarna op de andere (handig op een tablet).
   Een draad weghalen: klik erop en druk op Delete, of kies ✕ rechts. Een draad in een actieve lamp geldt **meteen**.
 * Een aansluiting in een **andere ruimte** staat als `↗` op de lamp en als blauwe verwijzing op de schakelaar (klik om erheen te gaan).
-  Maak hem rechts via *ingang toevoegen* of *uitgang toevoegen*.
+  Maak hem in het paneel rechts, op de lamp of op de schakelaar.
 * Een relais op een uitgang reageert nog op zijn eigen touch, en een touch-relais volgt de lamp mee (daar hangt zijn LED aan).
   Dat gedrag is hetzelfde als voorheen.
 

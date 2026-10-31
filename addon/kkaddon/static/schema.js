@@ -77,6 +77,11 @@ function scSwitch(b, tags) {
     <text class="bks" x="${b.x + 12}" y="${b.y + 34}">${sub}${b.online ? '' : ' · offline'}</text>${rows}</g>`;
 }
 
+function scRowText(c, name) { // de gang is het belangrijkste: inkorten gaat ten koste van de toestelnaam
+  if (!c.sw || name.length <= 23) return scCut(name, 23);
+  return `${scCut(c.swName, Math.max(6, 20 - c.label.length))} · ${scCut(c.label, 16)}`;
+}
+
 function scLamp(b) {
   const sel = SC.sel === b.key;
   const st = b.on === true ? 'on' : b.on === null ? 'unknown' : '';
@@ -85,7 +90,7 @@ function scLamp(b) {
     const same = c.sw && scBlock(c.sw) && scBlock(c.sw).page === b.page;
     const name = c.sw ? `${c.swName} · ${c.label}` : c.text;
     const away = c.sw && !same ? (scBlock(c.sw).page ? ` (${scPageName(scBlock(c.sw).page)})` : ' (niet geplaatst)') : !c.sw ? ' (geen blok)' : '';
-    return `<text class="bkt ${same ? '' : 'away'}" x="${left ? b.x + 11 : b.x + LAMP_W - 11}" y="${y + 4}" ${left ? '' : 'text-anchor="end"'} data-sc="wiresel" data-w="${esc(b.key)}|${dir}|${i}"><title>${esc(name + away)}${c.mode && c.mode !== 'toggle' ? ` (${MODE_NL[c.mode]})` : ''}</title>${same ? '' : '↗ '}${esc(scCut(name, 23))}</text>
+    return `<text class="bkt ${same ? '' : 'away'}" x="${left ? b.x + 11 : b.x + LAMP_W - 11}" y="${y + 4}" ${left ? '' : 'text-anchor="end"'} data-sc="wiresel" data-w="${esc(b.key)}|${dir}|${i}"><title>${esc(name + away)}${c.mode && c.mode !== 'toggle' ? ` (${MODE_NL[c.mode]})` : ''}</title>${same ? '' : '↗ '}${esc(scRowText(c, name))}</text>
       <circle class="pt ${left ? 'tou' : 'rel'} used" cx="${left ? b.x : b.x + LAMP_W}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="${dir}" data-i="${i}"/>`;
   };
   const free = (dir, i) => {
@@ -196,6 +201,14 @@ function scLampPanel(b, pages) {
     ${b.source === 'ha' ? '<p class="sub">Een relais op een uitgang reageert nog op zijn eigen touch, en een touch-relais volgt de lamp mee (daar hangt zijn LED aan).</p>' : ''}`;
 }
 
+function scConnSelect(s, g) { // een verwijzing maken vanaf de schakelaar: de lamp mag in elke ruimte staan
+  const lamps = scBlocks().filter((l) => l.kind === 'lamp' && (l.source !== 'ha' || g.entity));
+  const opt = (dir) => lamps.filter((l) => (dir === 'in' ? g.touch : g.relay && l.source === 'ha'))
+    .filter((l) => !(dir === 'in' ? l.inputs : l.outputs).some((c) => c.sw === s.key && c.gang === g.i))
+    .map((l) => `<option value="${esc(l.key)}|${dir}">${esc(l.name)}</option>`).join('');
+  return `<select data-scconn="${esc(s.key)}|${g.i}"><option value="">+ verbinden met een lamp…</option><optgroup label="Touch als ingang">${opt('in')}</optgroup><optgroup label="Relais als uitgang">${opt('out')}</optgroup></select>`;
+}
+
 function scSwitchPanel(b, pages) {
   const conns = scConns().filter((x) => x.sw && x.sw.key === b.key);
   const free = b.source === 'node' ? S.free_relays.filter((f) => f.node === b.node) : [];
@@ -203,6 +216,7 @@ function scSwitchPanel(b, pages) {
     const to = conns.filter((x) => x.c.gang === g.i);
     return `<div class="scc"><div><b>${esc(g.label)}</b>${g.entity ? `<div class="sub"><code>${esc(g.entity)}</code></div>` : ''}
       ${to.map((x) => `<div class="sub"><a href="#" data-sc="go" data-k="${esc(x.lamp.key)}">${x.dir === 'in' ? 'touch →' : 'relais ←'} ${esc(x.lamp.name)}</a></div>`).join('') || '<div class="sub">niet aangesloten</div>'}
+      ${scConnSelect(b, g)}
       ${free.some((f) => f.relay === g.i) ? `<button class="btn small" data-act="addlight" data-n="${b.node}" data-r="${g.i}">Als lamp toevoegen</button>` : ''}</div></div>`;
   }).join('');
   const tail = b.source === 'ha'
@@ -220,6 +234,7 @@ function scWirePanel() {
   const name = c.sw ? `${c.swName} · ${c.label}` : c.text;
   const w = `${l.key}|${SC.sel.dir}|${SC.sel.i}`;
   return `<h3>Draad</h3><p>${SC.sel.dir === 'in' ? `<b>${esc(name)}</b> bedient <b>${esc(l.name)}</b>` : `<b>${esc(l.name)}</b> schakelt <b>${esc(name)}</b>`}</p>
+    ${c.sw && scBlock(c.sw).page && scBlock(c.sw).page !== l.page ? `<p><a href="#" data-sc="go" data-k="${esc(c.sw)}">↗ Naar ${esc(c.swName)} (${esc(scPageName(scBlock(c.sw).page))})</a></p>` : ''}
     ${c.fixed ? '<p class="sub">Deze uitgang ligt vast: het is het relais van de node zelf.</p>' : `<div class="row"><button class="btn small danger" data-sc="unwire" data-w="${esc(w)}">Draad weghalen</button><span class="sub">of druk op Delete</span></div>`}`;
 }
 
@@ -235,6 +250,7 @@ function viewSchema() {
       <button class="btn small" data-sc="zoom" data-d="-0.1" title="Kleiner">−</button><button class="btn small" data-sc="zoom" data-d="0.1" title="Groter">+</button>
       <button class="btn small" data-sc="renamepage">Ruimte hernoemen</button><button class="btn small danger" data-sc="delpage">Ruimte verwijderen</button>
       <button class="btn small" data-sc="convert" title="Nieuwe kringen en toestellen op hun plek zetten. Wat al staat blijft staan.">Omzetten</button>
+      <button class="btn small" data-sc="relayout" title="Alles opnieuw verdelen over de ruimtes">Opnieuw indelen</button>
       <button class="btn small" data-sc="newswitch">+ Schakelaar</button><button class="btn small primary" data-sc="newlamp">+ Lamp</button></span></div>
     <div class="scwrap"><aside class="card sctray"><input type="search" id="scq" placeholder="Zoek een blok" autocomplete="off" value="${esc(SC.q)}"><div id="sctraylist"></div></aside>
       <div id="sccanvas"><div id="scempty"></div><svg id="scsvg" role="img" aria-label="Schema van de ruimte"></svg></div>
@@ -247,7 +263,7 @@ function scDraw() {
   const svg = $('#scsvg');
   if (!svg) return;
   const list = scOnPage(), box = $('#sccanvas');
-  const need = Math.max(...list.map((b) => b.x + scW(b) + 40), 300);
+  const need = scNeed(list);
   const z = scZoomNow(need);
   const w = Math.max(need, box.clientWidth / z), h = Math.max(...list.map((b) => b.y + scH(b) + 120), box.clientHeight / z);
   svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
@@ -256,6 +272,9 @@ function scDraw() {
   svg.innerHTML = scInner(list);
   scDrawTemp();
 }
+
+// een schakelaar heeft rechts plaats nodig voor zijn verwijzingen
+const scNeed = (list) => Math.max(...list.map((b) => b.x + scW(b) + (b.kind === 'switch' ? 200 : 40)), 300);
 
 function scZoomNow(need) {
   return SC.zoom !== null ? SC.zoom : clampN($('#sccanvas').clientWidth / need, 0.55, 1);
@@ -280,8 +299,8 @@ function schemaUpdate() {
 
 // ---------------------------------------------------------------- bewerken
 
-function scFreeSpot(kind) {
-  const list = scOnPage();
+function scFreeSpot(kind, page = SC.page) {
+  const list = scBlocks().filter((b) => b.page === page);
   const col = kind === 'lamp' ? 460 : 40;
   const y = Math.max(30, ...list.filter((b) => Math.abs(b.x - col) < 200).map((b) => b.y + scH(b) + 24));
   return { x: col, y: Math.ceil(y / SC_GRID) * SC_GRID };
@@ -358,7 +377,7 @@ const SC_ACTIONS = {
     await scPlace(d.k, SC.page, p.x, p.y);
   },
   zoom: (d) => {
-    const now = scZoomNow(Math.max(...scOnPage().map((b) => b.x + scW(b) + 40), 300));
+    const now = scZoomNow(scNeed(scOnPage()));
     SC.zoom = clampN(+(now + +d.d).toFixed(1), 0.4, 1.6);
     scDraw();
   },
@@ -386,7 +405,14 @@ const SC_ACTIONS = {
   convert: async () => {
     const r = await api('POST', 'schema/convert', {});
     await refresh();
-    toast(`${r.placed} ${r.placed === 1 ? 'blok' : 'blokken'} geplaatst, ${r.pages} ${r.pages === 1 ? 'ruimte' : 'ruimtes'}${r.registry ? '' : '. Home Assistant gaf geen apparatenlijst: alles staat onder "Zonder ruimte"'}.`, 6000);
+    toast(`${r.placed} ${r.placed === 1 ? 'blok' : 'blokken'} geplaatst, ${r.pages} ${r.pages === 1 ? 'ruimte' : 'ruimtes'}${r.registry ? '' : '. Home Assistant gaf geen apparatenlijst: schakelaars staan onder "Centraal"'}.`, 6000);
+  },
+  relayout: async () => {
+    if (!confirm('Alle ruimtes en plekken opnieuw indelen? Wat je zelf verplaatst hebt gaat verloren. De draden en schakelingen blijven.')) return;
+    SC.sel = null;
+    const r = await api('POST', 'schema/convert', { reset: true });
+    await refresh();
+    toast(`${r.placed} blokken verdeeld over ${r.pages} ruimtes.`, 6000);
   },
   newlamp: () => {
     if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
@@ -553,9 +579,8 @@ document.addEventListener('change', (ev) => {
     const dest = t.value;
     t.blur();
     act(async () => {
-      const list = scBlocks().filter((x) => x.page === dest && x.kind === b.kind);
-      const y = Math.max(30, ...list.map((x) => x.y + scH(x) + 24));
-      await scPlace(b.key, dest, list.length ? list[0].x : b.x, Math.ceil(y / SC_GRID) * SC_GRID);
+      const p = scFreeSpot(b.kind, dest); // niet bovenop wat er al staat
+      await scPlace(b.key, dest, p.x, p.y);
       if (dest) SC.page = dest;
       render();
     })();
@@ -563,6 +588,14 @@ document.addEventListener('change', (ev) => {
   if (t.dataset && t.dataset.scadd && t.value) {
     const [sk, g] = t.value.split('|');
     const sw = scBlock(sk), lamp = t.dataset.k, dir = t.dataset.scadd;
+    t.blur();
+    act(async () => {
+      await api('POST', 'schema/wire', { lamp, dir, ref: scRef(sw, sw.gangs[+g]) });
+      await refresh();
+    })();
+  }
+  if (t.dataset && t.dataset.scconn && t.value) {
+    const [sk, g] = t.dataset.scconn.split('|'), [lamp, dir] = t.value.split('|'), sw = scBlock(sk);
     t.blur();
     act(async () => {
       await api('POST', 'schema/wire', { lamp, dir, ref: scRef(sw, sw.gangs[+g]) });

@@ -249,6 +249,8 @@ async def plan_put(request: web.Request) -> web.Response:
 async def schema_convert(request: web.Request) -> web.Response:
     """Het huidige omzetten naar blokken en pagina's. Zonder HA-register wordt op entiteit-id gegroepeerd en zijn er geen ruimtes."""
     ctx: Ctx = request.app[CTX]
+    if (await _body(request)).get("reset"):
+        schema.reset_layout(ctx.model)
     r = await ctx.ha.devices() if ctx.ha else {"registry": False, "devices": []}
     res = schema.convert(ctx.model, ctx.engine.snapshot, r["devices"])
     return web.json_response({"ok": True, "registry": r["registry"], **res})

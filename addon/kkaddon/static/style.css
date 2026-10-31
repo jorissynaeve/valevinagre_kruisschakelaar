@@ -104,7 +104,8 @@ input[type=text], select { width: 100%; padding: 7px 9px; border-radius: 8px; bo
 #planpanel a { color: var(--accent); text-decoration: none; }
 
 /* schema: blokken en draden per ruimte */
-body.wide main { max-width: none; }
+body.wide { height: 100vh; display: flex; flex-direction: column; }
+body.wide main { max-width: none; width: 100%; padding-bottom: 8px; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .scbar { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: flex-end; margin-top: 10px; border-bottom: 1px solid var(--line); }
 .sctabs { display: flex; flex-wrap: wrap; gap: 2px; }
 .sctab { background: var(--chip); border: 1px solid var(--line); border-bottom: 0; border-radius: 8px 8px 0 0; padding: 5px 12px; color: var(--mute); cursor: pointer; }
@@ -112,8 +113,8 @@ body.wide main { max-width: none; }
 .sctab .n { margin-left: 6px; font-size: 12px; font-weight: 400; color: var(--mute); }
 .sctab.add { font-weight: 700; }
 .scbar > .row { padding-bottom: 6px; }
-.scwrap { display: grid; grid-template-columns: 220px minmax(0, 1fr) 300px; gap: 10px; margin-top: 10px; align-items: stretch; height: calc(100vh - 190px); min-height: 480px; }
-@media (max-width: 1000px) { .scwrap { grid-template-columns: 1fr; height: auto; } .sctray { max-height: 200px; } #sccanvas { height: 65vh; } }
+.scwrap { display: grid; grid-template-columns: 220px minmax(0, 1fr) 300px; gap: 10px; margin-top: 10px; align-items: stretch; flex: 1; min-height: 0; }
+@media (max-width: 1000px) { body.wide { height: auto; } .scwrap { grid-template-columns: 1fr; } .sctray { max-height: 200px; } #sccanvas { height: 65vh; } }
 .sctray, #scpanel { overflow: auto; gap: 6px; }
 .sctray h2, #scpanel h2 { margin: 10px 0 2px; font-size: 12.5px; }
 .sctray input { width: 100%; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); }
@@ -138,7 +139,7 @@ body.wide main { max-width: none; }
 .bks, .bkbadge { font-size: 11.5px; fill: var(--mute); pointer-events: none; }
 .bkbadge.ok { fill: var(--ok); font-weight: 600; }
 .bkt { font-size: 12.5px; fill: var(--ink); }
-.lampb .bkt { cursor: pointer; } .bkt.away { fill: var(--mute); font-style: italic; }
+.lampb .bkt { cursor: pointer; } .bkt.away { fill: var(--accent); font-style: italic; }
 .ptl { font-size: 11px; fill: var(--mute); pointer-events: none; }
 .stub { font-size: 11.5px; fill: var(--accent); cursor: pointer; }
 .stub:hover { text-decoration: underline; }
@@ -162,6 +163,7 @@ body.wide main { max-width: none; }
 .scc code { word-break: break-all; font-size: 11.5px; }
 #scpanel a { color: var(--accent); text-decoration: none; }
 #scpanel select { margin-top: 3px; }
+#scpanel .scc > div { min-width: 0; flex: 1; }
 
 /* HA-kringen */
 textarea { width: 100%; font: 13px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; }

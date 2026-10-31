@@ -62,7 +62,7 @@ def test_convert_without_registry_groups_on_entity_name(tmp_path):
     r = make(tmp_path, ("switch.touch01_relay_1", "switch.touch01_relay_2", "light.t4b_x_relay_1", "switch.gang"))
     r.model.set_group("spots", lamp=["light.t4b_x_relay_1"])
     schema.convert(r.model, r.engine.snapshot, [])
-    assert [p["name"] for p in r.model.schema["pages"]] == [schema.NO_ROOM]
+    assert {p["name"] for p in r.model.schema["pages"]} == {schema.NO_ROOM, "Spots keuken"}, "schakelaars zonder ruimte naar Centraal"
     sw = r.model.schema["switches"]
     assert [g["entity"] for g in sw["touch01"]["gangs"]] == ["switch.touch01_relay_1", "switch.touch01_relay_2"]
     assert set(sw) == {"touch01", "t4b_x", "gang"}
@@ -220,3 +220,30 @@ def test_api_flow(tmp_path):
             await c.close()
 
     asyncio.run(go())
+
+
+def test_rooms_come_from_lamp_names_and_switches_without_a_room_go_to_centraal(tmp_path):
+    r = Rig(tmp_path)
+    names = ["Keuken", "Buiten keuken", "Buiten terras", "Quarto philippe", "Quarto philippe bed links", "Quarto das visitas", "Quarto das visitas badkamer", "Hal"]
+    r.model.set_groups([{"id": f"g{i}", "name": n, "entities": [f"switch.t{i}_1", f"switch.box_relay_{i}"]} for i, n in enumerate(names)])
+    res = schema.convert(r.model, r.engine.snapshot, [])
+    rooms = {p["id"]: p["name"] for p in r.model.schema["pages"]}
+    room = {n: rooms[r.model.schema["blocks"][f"g:g{i}"]["page"]] for i, n in enumerate(names)}
+    assert room == {"Keuken": "Keuken", "Buiten keuken": "Buiten", "Buiten terras": "Buiten", "Quarto philippe": "Quarto philippe",
+                    "Quarto philippe bed links": "Quarto philippe", "Quarto das visitas": "Quarto das visitas",
+                    "Quarto das visitas badkamer": "Quarto das visitas", "Hal": "Hal"}
+    b = r.model.schema["blocks"]
+    assert b["d:box"]["page"] == b["d:t0"]["page"] == "centraal" and res["placed"] == len(b)
+    here = [v for v in b.values() if v["page"] == "centraal"]
+    assert len({(v["x"], v["y"]) for v in here}) == len(here) and len({v["x"] for v in here}) > 1, "een raster, niets op elkaar"
+
+
+def test_a_new_layout_honours_the_area_of_a_block_that_already_exists(tmp_path):
+    r = make(tmp_path)
+    schema.convert(r.model, r.engine.snapshot, [])
+    sid = next(k for k, v in r.model.schema["switches"].items() if v["gangs"][0]["entity"] == "switch.touch_relay_2")
+    devs = [{"id": sid, "name": "T", "area": "Zolder", "entities": [{"entity_id": "switch.touch_relay_2"}]}]
+    schema.reset_layout(r.model)
+    assert r.model.schema["blocks"] == {} and r.model.schema["switches"], "de blokken zelf blijven"
+    schema.convert(r.model, r.engine.snapshot, devs)
+    assert r.model.schema["blocks"][f"d:{sid}"]["page"] == "zolder"
