@@ -249,7 +249,7 @@ function scSprinklerPanel(b, props) {
       ${b.zones.length > 1 ? `<button class="btn small danger" type="button" data-sc="spdelzone" data-k="${esc(b.key)}" data-i="${i}" title="Zone weghalen">✕</button>` : ''}</div>
     <label>Naam</label><input type="text" maxlength="60" data-spzone="name" data-i="${i}" value="${esc(z.name)}">
     <label>Aan-tijd in seconden</label><input type="number" min="0" max="86400" step="1" data-spzone="seconds" data-i="${i}" value="${z.seconds}">
-    <label>Relais</label><input type="text" list="haents" spellcheck="false" autocomplete="off" placeholder="switch.relaisbox_relay_1" data-spzone="entity" data-i="${i}" value="${esc(z.entity || '')}"></div>`).join('');
+    <label>Relais</label>${scEntSelect(`data-spzone="entity" data-i="${i}"`, z.entity, 'niet aangesloten')}</div>`).join('');
   const st = b.status;
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${st.running ? 'ok' : ''}">${esc(scSprText(b))}</span><span class="sub">${esc(S.clock.time)} · ${esc(S.clock.tz)}</span></div>
     ${props}
@@ -265,8 +265,8 @@ function scSprinklerPanel(b, props) {
     <div class="sub">Herstelt een gemist bevel, ook "uit". Valt de add-on, HA of de wifi weg, dan helpt alleen een limiet in het toestel zelf.</div>
     <h2>Zones</h2>
     <div class="row"><button class="btn small" type="button" data-sc="spbox" data-k="${esc(b.key)}">Zones uit relaisbox…</button></div>
-    <div class="sub">Een relais hoeft geen schakelaar-blok te zijn: kies een relaisbox of typ de entiteit bij de zone.</div>
-    ${scEntList()}${zones}
+    <div class="sub">Een relais hoeft geen schakelaar-blok te zijn: kies een relaisbox of kies het relais bij de zone.</div>
+    ${zones}
     <div class="row" style="margin-top:6px">${b.zones.length < 16 ? `<button class="btn small" type="button" data-sc="spaddzone" data-k="${esc(b.key)}">+ Zone</button>` : ''}<button class="btn small danger" type="button" data-sc="delsprinkler" data-id="${esc(b.id)}">Sprinkler verwijderen</button></div>`;
 }
 
@@ -441,11 +441,24 @@ function scLoadEnts() { // eenmalig voor de zijbalk
   SC.haEnts = [];
   scFreshEnts().then(() => { SC.force = true; render(); });
 }
-const scEntList = () => `<datalist id="haents">${(SC.haEnts || []).map((e) => `<option value="${esc(e.entity_id)}">${esc(e.name)}</option>`).join('')}</datalist>`;
+const SC_DOMAINS = [['light', 'Lampen'], ['switch', 'Schakelaars'], ['input_boolean', 'Helpers'], ['fan', 'Ventilatoren']];
+
+// Een keuzelijst met alles uit HA, per soort en op naam. Kent HA (nog) niets, dan kun je de entiteit typen.
+function scEntSelect(attrs, cur, first, hide = []) {
+  const ents = SC.haEnts || [];
+  if (!ents.length) return `<input type="text" ${attrs} spellcheck="false" autocomplete="off" value="${esc(cur || '')}" placeholder="bv. light.lamp_oprit">`;
+  const label = (e) => (e.name && e.name !== e.entity_id ? `${e.name} (${e.entity_id})` : e.entity_id);
+  const groups = SC_DOMAINS.map(([dom, title]) => {
+    const list = ents.filter((e) => e.entity_id.startsWith(`${dom}.`) && !hide.includes(e.entity_id)).sort((x, y) => label(x).localeCompare(label(y), 'nl'));
+    return list.length ? `<optgroup label="${title}">${list.map((e) => `<option value="${esc(e.entity_id)}" ${e.entity_id === cur ? 'selected' : ''}>${esc(label(e))}</option>`).join('')}</optgroup>` : '';
+  }).join('');
+  const gone = cur && !ents.some((e) => e.entity_id === cur) ? `<option value="${esc(cur)}" selected>${esc(cur)} (niet in HA)</option>` : ''; // nooit stil een keuze kwijtraken
+  return `<select ${attrs}><option value="">${esc(first)}</option>${gone}${groups}</select>`;
+}
 
 function scAddEntity(b, dir) { // aansluiten zonder schakelaar-blok
   if (b.source !== 'ha') return '';
-  return `<input type="text" list="haents" spellcheck="false" autocomplete="off" data-scent="${dir}" data-k="${esc(b.key)}" placeholder="+ zoek in Home Assistant, bv. light.lamp_oprit">`;
+  return scEntSelect(`data-scent="${dir}" data-k="${esc(b.key)}"`, null, `+ ${dir === 'in' ? 'ingang' : 'uitgang'} uit Home Assistant…`, (dir === 'in' ? b.inputs : b.outputs).map((c) => c.ref.entity));
 }
 
 function scAddSelect(b, dir) {
@@ -477,7 +490,7 @@ function scLampPanel(b, pages) {
   return `<h3>${esc(b.name)}</h3>${pages}${ctl}${dis}${active}${mixed}
     <button class="power ${b.on === true ? 'on' : b.on === null ? 'unknown' : ''} ${b.pending ? 'pending' : ''}" data-sc="toggle" data-k="${esc(b.key)}">${onoff}</button>
     <h2>Ingangen</h2>${b.inputs.map((c, i) => scConnRow(b, c, i, 'in')).join('') || '<div class="sub">Nog geen touches.</div>'}${scAddSelect(b, 'in')}${scAddEntity(b, 'in')}
-    <h2>Uitgangen</h2>${b.outputs.map((c, i) => scConnRow(b, c, i, 'out')).join('') || '<div class="sub">Nog geen relais: de lamp weet niet welk relais hem schakelt.</div>'}${scAddSelect(b, 'out')}${scAddEntity(b, 'out')}${b.source === 'ha' ? scEntList() : ''}
+    <h2>Uitgangen</h2>${b.outputs.map((c, i) => scConnRow(b, c, i, 'out')).join('') || '<div class="sub">Nog geen relais: de lamp weet niet welk relais hem schakelt.</div>'}${scAddSelect(b, 'out')}${scAddEntity(b, 'out')}
     <div class="row" style="margin-top:6px">${tail}</div>
     ${b.source === 'ha' ? '<p class="sub">Een relais op een uitgang reageert nog op zijn eigen touch, en een touch-relais volgt de lamp mee (daar hangt zijn LED aan).</p>' : ''}`;
 }
@@ -697,7 +710,7 @@ function scSwitchDialog(b) {
       <label for="swname">Naam</label><input type="text" id="swname" maxlength="60" value="${esc(b ? b.name : '')}" placeholder="bv. Touch keuken">
       <label for="swents">Gangen: per regel een entiteit, eventueel met een naam</label>
       <textarea id="swents" rows="5" spellcheck="false" placeholder="switch.touch_keuken_relay_1 = Links">${esc(lines)}</textarea>
-      <label for="swadd">Entiteit zoeken en toevoegen (ook zonder apparaat in HA)</label><input type="text" id="swadd" list="haents" spellcheck="false" autocomplete="off" placeholder="bv. light.lamp_oprit">${scEntList()}`, async () => {
+      <label for="swadd">Losse entiteit toevoegen (ook zonder apparaat in HA)</label>${scEntSelect('id="swadd"', null, 'Kies een entiteit…')}`, async () => {
     const body = { name: $('#swname').value.trim(), gangs: parse() };
     if (b) {
       await api('PUT', `schema/switch/${b.id}`, body);
@@ -833,7 +846,7 @@ const SC_ACTIONS = {
     if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
     await scFreshEnts();
     smallDialog(`<h3>Nieuwe lamp</h3><p class="sub">Een lamp via Home Assistant, eerst uitgeschakeld. Kies wat de lamp schakelt, of laat het leeg en trek later een draad.</p>
-      <label for="lpent">Lamp of relais uit Home Assistant</label><input type="text" id="lpent" list="haents" spellcheck="false" autocomplete="off" placeholder="zoek, bv. light.lamp_oprit">${scEntList()}
+      <label for="lpent">Lamp of relais uit Home Assistant</label>${scEntSelect('id="lpent"', null, 'Later aansluiten')}
       <label for="lpname">Naam</label><input type="text" id="lpname" maxlength="60" placeholder="bv. Spots keuken">`, async () => {
       const entity = $('#lpent').value.trim();
       const r = await api('POST', 'schema/lamp', { name: $('#lpname').value.trim(), ...(entity ? { entity } : {}), page: SC.page, ...scFreeSpot('lamp') });
