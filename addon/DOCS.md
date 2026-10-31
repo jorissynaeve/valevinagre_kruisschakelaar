@@ -80,7 +80,7 @@ Op lichten op het netwerk kan dit nog niet.
 
 *+ Module* → *Routines* → **Sprinkler**. Elke zone gaat na de vorige aan: zone 1 staat zijn aan-tijd aan en gaat uit, dan volgt de wachttijd, dan zone 2, enzovoort, en dat het aantal cycli lang.
 
-* **Zones**: per zone een naam, een aan-tijd in seconden en een relais. Sleep van de zone rechts op het blok naar het **relais** van een schakelaar, of kies het in de zijbalk. Een zone zonder relais of met 0 seconden wordt overgeslagen, zonder wachttijd.
+* **Zones**: per zone een naam, een aan-tijd in seconden en een relais. Een relais hoeft geen schakelaar-blok te zijn: kies in de zijbalk **Zones uit relaisbox…** en vink de relais aan die een zone zijn, of kies de entiteit bij de zone. Staat het relais wel als blok op het schema, dan kun je ook van de zone naar dat **relais** slepen. Een zone zonder relais of met 0 seconden wordt overgeslagen, zonder wachttijd.
 * **Instellingen in de zijbalk**: startuur, dagen, aantal cycli en wachttijd. Startuur, cycli en wachttijd kunnen ook van een ingang komen: een tijd (bv. Zonsopgang min 00:30) of een module *Getal*. Een aangesloten ingang gaat voor. Een getal dat onbekend is valt terug op de waarde uit de zijbalk; een onbekend startuur start niets.
 * **Blokkeren**: een uitgang met 0 of 1, bv. bij regen. Op 1 start er niets en stopt een lopende beurt.
 * **Actief**: een nieuwe sprinkler staat uit en raakt zijn relais niet aan. *Nu starten* werkt alleen als hij actief is. Wat je wijzigt tijdens een beurt, geldt vanaf de volgende beurt; uitzetten stopt meteen.

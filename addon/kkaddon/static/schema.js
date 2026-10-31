@@ -244,16 +244,15 @@ function scSprinklerPanel(b, props) {
     return `<select data-spinput="${esc(p.name)}"><option value="">${p.name === 'block' ? 'niet aangesloten' : 'waarde hierboven gebruiken'}</option>${srcs.map((s) => `<option value="${esc(s.key)}" ${s.key === p.ref ? 'selected' : ''}>${esc(s.name)} (nu ${scOut(s)})</option>`).join('')}</select>`;
   };
   const port = (n) => b.ports.find((p) => p.name === n);
-  const gangs = scBlocks().filter((s) => s.kind === 'switch').map((s) => {
-    const list = s.gangs.filter((g) => g.entity && g.relay);
-    return list.length ? `<optgroup label="${esc(s.name)}">${list.map((g) => `<option value="${esc(g.entity)}">${esc(g.label)}</option>`).join('')}</optgroup>` : '';
-  }).join('');
+  if (!SC.haEnts) { // eenmalig: de relais uit HA om uit te kiezen, ook zonder schakelaar-blok
+    SC.haEnts = [];
+    api('GET', 'ha/entities').then((r) => { SC.haEnts = r.entities; SC.force = true; render(); }, () => {});
+  }
   const zones = b.zones.map((z, i) => `<div class="tmd"><div class="row sp"><b>Zone ${i + 1}</b>${b.status.zone === i ? '<span class="badge ok">aan</span>' : ''}
       ${b.zones.length > 1 ? `<button class="btn small danger" type="button" data-sc="spdelzone" data-k="${esc(b.key)}" data-i="${i}" title="Zone weghalen">✕</button>` : ''}</div>
     <label>Naam</label><input type="text" maxlength="60" data-spzone="name" data-i="${i}" value="${esc(z.name)}">
     <label>Aan-tijd in seconden</label><input type="number" min="0" max="86400" step="1" data-spzone="seconds" data-i="${i}" value="${z.seconds}">
-    <label>Relais</label><select data-spzone="entity" data-i="${i}"><option value="">niet aangesloten</option>${gangs.replace(`value="${esc(z.entity || '')}"`, `value="${esc(z.entity || '')}" selected`)}</select>
-    ${z.entity && !scGangOf(z.entity) ? `<div class="sub"><code>${esc(z.entity)}</code> (geen blok)</div>` : ''}</div>`).join('');
+    <label>Relais</label><input type="text" list="spents" spellcheck="false" autocomplete="off" placeholder="switch.relaisbox_relay_1" data-spzone="entity" data-i="${i}" value="${esc(z.entity || '')}"></div>`).join('');
   const st = b.status;
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${st.running ? 'ok' : ''}">${esc(scSprText(b))}</span><span class="sub">${esc(S.clock.time)} · ${esc(S.clock.tz)}</span></div>
     ${props}
@@ -267,8 +266,44 @@ function scSprinklerPanel(b, props) {
     <label>Blokkeren (bv. bij regen)</label>${sel(port('block'))}<div class="sub">Op 1 start er niets en stopt een lopende beurt.</div>
     <label>Relais opnieuw aansturen elke (seconden)</label><input type="number" min="5" max="600" step="1" data-spfield="refresh" value="${b.refresh}">
     <div class="sub">Herstelt een gemist bevel, ook "uit". Valt de add-on, HA of de wifi weg, dan helpt alleen een limiet in het toestel zelf.</div>
-    <h2>Zones</h2>${zones}
+    <h2>Zones</h2>
+    <div class="row"><button class="btn small" type="button" data-sc="spbox" data-k="${esc(b.key)}">Zones uit relaisbox…</button></div>
+    <div class="sub">Een relais hoeft geen schakelaar-blok te zijn: kies een relaisbox of typ de entiteit bij de zone.</div>
+    <datalist id="spents">${(SC.haEnts || []).map((e) => `<option value="${esc(e.entity_id)}">${esc(e.name)}</option>`).join('')}</datalist>${zones}
     <div class="row" style="margin-top:6px">${b.zones.length < 16 ? `<button class="btn small" type="button" data-sc="spaddzone" data-k="${esc(b.key)}">+ Zone</button>` : ''}<button class="btn small danger" type="button" data-sc="delsprinkler" data-id="${esc(b.id)}">Sprinkler verwijderen</button></div>`;
+}
+
+function scBoxRelays(d) { // de relais van een toestel om aan te vinken; wat al een zone is en gewone gangen staan aan
+  const b = scBlock(SC.boxFor), used = new Set(b.zones.map((z) => z.entity));
+  const ents = importEntities(d);
+  const anyUsed = ents.some((e) => used.has(e.entity_id));
+  return ents.map((e, i) => `<label style="display:block;margin:2px 0;color:var(--ink)" title="${esc(e.entity_id)}"><input type="checkbox" data-boxent="${i}" ${(anyUsed ? used.has(e.entity_id) : e.gang) ? 'checked' : ''}> ${esc(e.short)}</label>`).join('');
+}
+
+function scBoxDialog(b) {
+  api('GET', 'ha/devices').then((r) => r, () => ({ registry: false, devices: [] })).then((r) => {
+    if (!r.registry || !r.devices.length) {
+      smallDialog('<h3>Zones uit relaisbox</h3><p class="sub">Home Assistant geeft geen apparatenlijst. Typ de entiteit dan bij elke zone.</p>', async () => {});
+      return;
+    }
+    SC.boxFor = b.key;
+    SC.boxDevs = [...r.devices].sort((x, y) => x.name.localeCompare(y.name));
+    const used = new Set(b.zones.map((z) => z.entity));
+    const cur = SC.boxDevs.findIndex((d) => d.entities.some((e) => used.has(e.entity_id)));
+    smallDialog(`<h3>Zones uit relaisbox</h3><p class="sub">Elk aangevinkt relais wordt een zone, in deze volgorde. Een relais dat al een zone is houdt zijn naam en aan-tijd; de andere zones vervallen. Er kunnen maximaal 16 zones.</p>
+      <label for="spdev">Relaisbox</label><select id="spdev"><option value="">Kies een apparaat…</option>${SC.boxDevs.map((d, i) => `<option value="${i}" ${i === cur ? 'selected' : ''}>${esc(d.name)}${d.area ? ` (${esc(d.area)})` : ''}</option>`).join('')}</select>
+      <div id="spboxlist" style="max-height:45vh;overflow:auto;margin-top:8px">${cur >= 0 ? scBoxRelays(SC.boxDevs[cur]) : ''}</div>`, async () => {
+      const i = $('#spdev').value;
+      if (i === '') throw new Error('Kies een relaisbox.');
+      const ents = importEntities(SC.boxDevs[+i]);
+      const picked = [...document.querySelectorAll('#spboxlist input[data-boxent]:checked')].map((x) => ents[+x.dataset.boxent]);
+      if (!picked.length) throw new Error('Vink minstens één relais aan.');
+      const now = scBlock(SC.boxFor);
+      const zones = picked.map((e) => now.zones.find((z) => z.entity === e.entity_id) || { name: e.short, entity: e.entity_id, seconds: 60 });
+      await api('PUT', `sprinklers/${now.id}`, { zones });
+      SC.force = true;
+    });
+  });
 }
 
 async function scSaveSprinkler(b, patch) {
@@ -682,6 +717,7 @@ const SC_ACTIONS = {
     SC.force = true;
     await refresh();
   },
+  spbox: (d) => scBoxDialog(scBlock(d.k)),
   spaddzone: (d) => {
     const b = scBlock(d.k);
     return scSaveSprinkler(b, { zones: [...b.zones, { name: `Zone ${b.zones.length + 1}`, entity: null, seconds: 60 }] });
@@ -970,6 +1006,7 @@ document.addEventListener('change', (ev) => {
       try { await api('POST', 'schema/disable', { lamp: k, timer }); } finally { SC.force = true; await refresh(); }
     })();
   }
+  if (t.id === 'spdev') $('#spboxlist').innerHTML = t.value === '' ? '' : scBoxRelays(SC.boxDevs[+t.value]);
   if (t.id === 'scmnum' && t.value !== '') {
     const b = scBlock(t.dataset.k), value = +t.value;
     t.blur();
@@ -983,7 +1020,7 @@ document.addEventListener('change', (ev) => {
     if (d.spinput) patch = { inputs: { [d.spinput]: t.value || null } };
     else if (d.spday !== undefined) patch = { days: b.days.filter((x) => x !== +d.spday).concat(t.checked ? [+d.spday] : []) };
     else if (d.spzone) {
-      const v = d.spzone === 'seconds' ? +t.value : d.spzone === 'entity' ? (t.value || null) : t.value;
+      const v = d.spzone === 'seconds' ? +t.value : d.spzone === 'entity' ? (t.value.trim() || null) : t.value;
       patch = { zones: b.zones.map((z, i) => (i === +d.i ? { ...z, [d.spzone]: v } : z)) };
     } else patch = { [d.spfield]: d.spfield === 'enabled' ? t.checked : d.spfield === 'start' ? t.value : +t.value };
     t.blur();

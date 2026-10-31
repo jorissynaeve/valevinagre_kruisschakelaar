@@ -155,6 +155,7 @@ body.wide main { max-width: none; width: 100%; padding-bottom: 8px; flex: 1; min
 .scmenuitem b { display: block; font-weight: 600; font-size: 13.5px; } .scmenuitem .sub { font-size: 11.5px; }
 #scpanel input[type=time], #scpanel input[type=number] { width: 100%; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); }
 
+#scpanel .tmd input[type=text] { width: 100%; }
 .tmd { border-top: 1px solid var(--line); padding: 5px 0; font-size: 13.5px; }
 .tmi { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
 .tmi input { flex: 1; min-width: 0; padding: 3px 5px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); }

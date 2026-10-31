@@ -457,6 +457,7 @@ Code: `sprinkler.py` (plan en aansturen, elke seconde), `model.py` (`sprinklers`
 - **Plan bij de start**: anders dan de modules heeft een beurt toestand: ze start op een moment en moet doorlopen als het startuur (bv. de zon) ondertussen verschuift. Daarom een vast plan op de monotone klok, alleen in het geheugen. Bewust niet bewaard: na een herstart gaat er liever een beurt verloren dan dat een klep onverwacht opengaat.
 - **Herhalen**: elke `refresh` s (standaard 30) krijgt elk relais opnieuw zijn stand. Dat herstelt een gemist bevel, niet een uitval van de add-on, HA of de wifi. Een bewaking in het toestel die op dit herhalen wacht werkt in ESPHome niet zomaar, want `on_turn_on` vuurt alleen bij een verandering: daarom een vaste maximale tijd in het toestel (DOCS.md).
 - **Eén eigenaar**: een relais op een actieve sprinkler mag niet ook in een actieve kring of op een andere actieve sprinkler. Een extern apparaat mag wel: dat is alleen de bron van de gang. Heeft die gang een trigger, dan ziet die het schakelen wel als een druk.
+- **Geen blok nodig**: een zone bewaart een HA-entiteit, los van het schema. Een relaisbox die alleen kleppen schakelt hoeft dus niet als schakelaar-blok op het schema te staan.
 - **Starten**: op de minuut van het startuur, één keer per minuut. Een gemiste minuut wordt niet ingehaald. Loopt er nog een beurt, dan start er geen tweede.
 
 ### Niet getest / open
