@@ -2,7 +2,6 @@
   --bg: #f6f7f9; --card: #fff; --ink: #1c2330; --mute: #667085; --line: #e3e6eb;
   --accent: #2563eb; --accent-ink: #fff; --on: #f5b301; --on-ink: #3b2a00;
   --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --chip: #eef1f5;
-  /* kleuren van de kringen op de plattegrond (geen geel: dat is "aan") */
   --t-lamp: #fdf0b5; --t-sw: #cfeeda; --t-box: #fcdcc2; --t-ext: #cdebf3; --t-node: #d9e2fb; --t-timer: #e7dcfb;
   --c0: #2563eb; --c1: #d55e00; --c2: #15803d; --c3: #c026d3; --c4: #0891b2; --c5: #7c3aed; --c6: #92400e; --c7: #475569;
 }
@@ -71,39 +70,6 @@ input[type=text], select { width: 100%; padding: 7px 9px; border-radius: 8px; bo
 .empty { color: var(--mute); padding: 18px 4px; }
 #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 16px; border-radius: 10px; z-index: 10; max-width: 90vw; }
 [hidden] { display: none !important; }
-
-/* plattegrond */
-.planwrap { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; margin-top: 12px; align-items: start; }
-@media (max-width: 860px) { .planwrap { grid-template-columns: 1fr; } }
-#plansvg { width: 100%; height: auto; display: block; background: var(--card); border: 1px solid var(--line); border-radius: 12px; user-select: none; -webkit-user-select: none; }
-#plansvg.edit { touch-action: none; }
-.pgridl { fill: none; stroke: var(--line); stroke-width: 1; }
-.roomr { fill: var(--bg); stroke: var(--mute); stroke-width: 2; }
-.room.sel .roomr { stroke: var(--accent); stroke-width: 3; }
-.roomt { fill: var(--mute); font-size: 22px; pointer-events: none; }
-.handle { fill: var(--accent); cursor: nwse-resize; }
-.ln { stroke-width: 4; stroke-linecap: round; opacity: .85; pointer-events: none; }
-.ln.dim { opacity: .12; }
-.ln.pulse { animation: lnp 1.2s ease-out; }
-@keyframes lnp { 0% { stroke-width: 12; opacity: 1; } 100% { stroke-width: 4; opacity: .85; } }
-.lbl { font-size: 19px; font-weight: 600; fill: var(--ink); paint-order: stroke; stroke: var(--card); stroke-width: 4px; stroke-linejoin: round; }
-.it { cursor: pointer; }
-#plansvg.edit .it { cursor: grab; }
-.it.dim { opacity: .35; }
-.it.off .swbody, .it.off .lamp { stroke-dasharray: 4 3; }
-.itl { font-size: 14px; fill: var(--ink); text-anchor: middle; pointer-events: none; }
-.swbody { fill: var(--card); stroke: var(--ink); stroke-width: 2; }
-.swb { fill: var(--chip); stroke: var(--mute); stroke-width: 1; transform-box: fill-box; transform-origin: center; }
-.swb.pulse { animation: bp 1.2s ease-out; }
-@keyframes bp { 0% { transform: scale(2); } 100% { transform: scale(1); } }
-.lamp { fill: var(--chip); stroke-width: 4; }
-.lamp.on { fill: var(--on); }
-.lamp.unknown { stroke-dasharray: 3 3; }
-.selring { fill: none; stroke: var(--accent); stroke-width: 3; opacity: 0; pointer-events: none; }
-.it.sel .selring { opacity: 1; }
-.leg { display: flex; gap: 8px; padding: 6px 2px; border-top: 1px solid var(--line); cursor: pointer; }
-.swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; margin-top: 4px; }
-#planpanel a { color: var(--accent); text-decoration: none; }
 
 /* schema: blokken en draden per ruimte */
 body.wide { height: 100vh; display: flex; flex-direction: column; }
@@ -179,13 +145,5 @@ body.wide main { max-width: none; width: 100%; padding-bottom: 8px; flex: 1; min
 .tmi { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
 .tmi input { flex: 1; min-width: 0; padding: 3px 5px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); }
 
-/* HA-kringen */
+/* tekstvak bij het importeren */
 textarea { width: 100%; font: 13px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; }
-.gm { display: flex; gap: 8px; align-items: baseline; padding: 1px 0; font-size: 13px; }
-.gm code { word-break: break-all; }
-.gdot { width: 10px; height: 10px; border-radius: 50%; flex: none; align-self: center; border: 1px solid var(--line); }
-.gml { color: inherit; text-decoration: none; }
-.gml:hover code { text-decoration: underline; }
-details > summary { margin: 4px 0; }
-.lamptag { font-size: 11.5px; padding: 0 6px; border-radius: 6px; border: 1px dashed var(--line); color: var(--mute); text-decoration: none; white-space: nowrap; }
-.lamptag.on { background: var(--on); color: var(--on-ink); border: 1px solid var(--on); }

@@ -97,29 +97,6 @@ function banner() {
     <span class="row">${t && !L ? '<button class="btn small" data-act="resume">Openen</button>' : ''}<button class="btn small" data-act="learnstop">Stoppen</button></span>`;
 }
 
-function viewLights() {
-  const cards = S.lights.map((l) => {
-    const st = l.on === true ? 'Aan' : l.on === false ? 'Uit' : 'Onbekend';
-    const cls = l.on === true ? 'on' : l.on === null ? 'unknown' : '';
-    const trig = l.triggers.map((t) => `<span class="tag">${esc(nodeName(t.node))} · knop ${t.btn + 1}${t.mode !== 'toggle' ? ` (${MODE_NL[t.mode]})` : ''}</span>`).join('')
-      || '<span class="sub">Nog geen schakelaars gekoppeld</span>';
-    return `<div class="card">
-      <div class="row sp"><h3>${esc(l.name || `Relais ${l.relay + 1}`)}</h3>${l.enabled ? '' : '<span class="badge">verborgen in HA</span>'}</div>
-      <div class="sub"><span class="dot ${l.online ? 'on' : 'off'}"></span>${esc(nodeName(l.node))} · relais ${l.relay + 1}${l.online ? '' : ' · offline'}</div>
-      <button class="power ${cls} ${l.pending ? 'pending' : ''}" data-act="toggle" data-n="${l.node}" data-r="${l.relay}">${st}</button>
-      <div class="tags">${trig}</div>
-      <div class="row"><button class="btn small primary" data-act="learn" data-n="${l.node}" data-r="${l.relay}">Schakelaars leren</button>
-      <button class="btn small" data-act="edit" data-n="${l.node}" data-r="${l.relay}">Bewerken</button></div>
-    </div>`;
-  }).join('');
-  const free = S.free_relays.map((f) => `<tr><td>${esc(nodeName(f.node))} · relais ${f.relay + 1}</td><td>${f.on === null ? '' : f.on ? 'aan' : 'uit'}</td>
-      <td style="text-align:right"><button class="btn small" data-act="addlight" data-n="${f.node}" data-r="${f.relay}">Als licht toevoegen</button></td></tr>`).join('');
-  const hasGroups = (S.groups || []).length > 0;
-  return `${cards ? `<div class="grid" style="margin-top:12px">${cards}</div>` : hasGroups ? '' : '<p class="empty">Nog geen lichten. Voeg hieronder een relais toe als licht, of wacht tot er nodes verschijnen.</p>'}
-    ${groupLightCards()}
-    ${free ? `<h2>Relais zonder licht</h2><div class="scroll"><table><tbody>${free}</tbody></table></div>` : ''}`;
-}
-
 const CFG = {
   ok: ['ok', 'in orde'], applied: ['ok', 'verstuurd'], pushing: ['warn', 'bezig…'], drift: ['bad', 'afwijkend'],
   failed: ['bad', 'mislukt'], unmanaged: ['', 'niet beheerd'], unknown: ['', 'onbekend'], extern: ['', 'via HA'],
@@ -170,6 +147,11 @@ function viewSettings() {
     <div class="scroll"><table><thead><tr><th>Adres</th><th>Frames</th><th>Laatst</th></tr></thead><tbody>${peers}</tbody></table></div>
     <p class="sub">Peer-id van deze add-on: ${S.peer_id} (0x${S.peer_id.toString(16)}). ${S.mqtt.error ? `MQTT-fout: ${esc(S.mqtt.error)}` : ''}</p>
     <p class="sub">Home Assistant (externe apparaten): ${S.ha.connected ? 'verbonden' : S.ha.enabled ? `niet verbonden${S.ha.error ? ` (${esc(S.ha.error)})` : ''}` : 'niet ingesteld (nodig voor Tuya en andere HA-entiteiten)'}.</p>
+    <h2>Kringen</h2>
+    <p class="sub">Importeer je oude AppDaemon-kringen: ze komen uitgeschakeld binnen en staan daarna als lampen op het schema. Zet een lamp daar <b>Actief</b> en dezelfde kring <b>in AppDaemon uit</b>, anders werken ze elkaar tegen.</p>
+    <div class="row"><button class="btn" data-grp="import">AppDaemon-YAML importeren</button>
+    <button class="btn" data-grp="lampmatch">Lamp-relais kiezen op naam…</button>
+    <button class="btn danger" data-grp="alloff">Alle kringen uitzetten</button></div>
     <h2>Netwerksleutel</h2>
     <p class="sub">Alle nodes van dit huis delen één sleutel, die bij het compileren in de firmware komt (<code>firmware/secrets.h</code>, staat in .gitignore).</p>
     <div class="row"><button class="btn" data-act="showkey">Toon secrets.h</button></div><div id="keybox"></div>
@@ -180,7 +162,7 @@ function viewSettings() {
 }
 
 function render() {
-  if (!S || (tab === 'plan' && PL.drag) || (tab === 'schema' && (SC.drag || (SC.link && !SC.link.armed)))) return; // tijdens slepen niet opnieuw tekenen
+  if (!S || (tab === 'schema' && (SC.drag || (SC.link && !SC.link.armed)))) return; // tijdens slepen niet opnieuw tekenen
   chips();
   banner();
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
@@ -188,7 +170,7 @@ function render() {
   if (tab === 'schema') { // het kader blijft staan, anders verspring je bij elke druk terug naar de linkerbovenhoek
     if (!$('#scsvg')) { $('#main').innerHTML = viewSchema(); SC.lastPanel = ''; }
     schemaUpdate();
-  } else if (tab !== 'settings' || !$('#keybox')) $('#main').innerHTML = { lights: viewLights, plan: viewPlan, nodes: viewNodes, groups: viewGroups, log: viewLog, settings: viewSettings }[tab]();
+  } else if (tab !== 'settings' || !$('#keybox')) $('#main').innerHTML = { nodes: viewNodes, log: viewLog, settings: viewSettings }[tab]();
   if (L) refreshPicks();
 }
 
@@ -355,7 +337,6 @@ async function openImport() {
 // ---------------------------------------------------------------- acties
 
 const ACTIONS = {
-  toggle: (d) => api('POST', `light/${d.n}/${d.r}/cmd`, { op: 'toggle' }),
   learn: (d) => openLight(+d.n, +d.r, true),
   resume: () => openLight(S.learn.target[0], S.learn.target[1], true, true),
   learnstop: () => api('POST', 'learn/stop', {}).then(() => { if (L) { L = null; dlg().close(); } }),
@@ -465,9 +446,7 @@ async function refresh() {
     const next = await api('GET', 'state');
     if (mine < appliedSeq) return; // een nieuwer antwoord was al binnen: dit is verouderd
     appliedSeq = mine;
-    const keepPlan = (PL.busy || PL.drag) && S ? S.plan : null; // een eigen wijziging is onderweg: die wint
     S = next;
-    if (keepPlan) S.plan = keepPlan;
     render();
   } catch (e) {
     $('#chips').innerHTML = '<span class="chip bad">geen verbinding met de add-on</span>';
@@ -478,7 +457,6 @@ function connect() {
   const ws = new WebSocket(new URL('api/ws', location.href).href.replace(/^http/, 'ws'));
   ws.onmessage = (m) => {
     const e = JSON.parse(m.data).event;
-    planEvent(e);
     if (S && e && ['btn', 'light', 'node', 'cfg', 'learn', 'cmd', 'sync'].includes(e.t)) {
       S.log.push(e);
       if (S.log.length > 300) S.log.shift();

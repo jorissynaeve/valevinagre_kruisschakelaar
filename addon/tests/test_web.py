@@ -314,7 +314,7 @@ def test_static_files_are_not_cached_so_updates_show_up(tmp_path):
         env = Env(tmp_path)
         c = await env.client()
         try:
-            for path in ("/static/app.js", "/static/plan.js", "/static/style.css", "/"):
+            for path in ("/static/app.js", "/static/schema.js", "/static/style.css", "/"):
                 r = await c.get(path)
                 assert r.status == 200 and r.headers.get("Cache-Control") == "no-cache", path
         finally:
@@ -330,7 +330,7 @@ def test_index_pins_scripts_to_their_content(tmp_path):
         try:
             html = await (await c.get("/")).text()
             v = web.asset_version()
-            for f in ("style.css", "plan.js", "groups.js", "app.js"):
+            for f in ("style.css", "groups.js", "schema.js", "app.js"):
                 assert f'static/{f}?v={v}"' in html, f
             assert (await c.get(f"/static/app.js?v={v}")).status == 200
         finally:

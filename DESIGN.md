@@ -339,6 +339,8 @@ De huidige ESPHome-toestellen (T3, 4CH, Basic, t4b, R16) schakelen hun relais ze
 
 ## 19. Plattegrond (in de add-on)
 
+> Sinds 0.4.1 is het tabblad weg: het schema (§21) vervangt het. `plan` blijft in `network.json`, export en `PUT /api/plan` staan, zodat een getekende plattegrond niet verloren gaat. De code van de tekenaar staat in de git-geschiedenis (`static/plan.js`).
+
 Tabblad *Plattegrond*: een rudimentaire tekening per verdieping waarop je laat zien waar de schakelaars en lampen zitten en hoe elke kruisschakeling loopt. Het is **alleen weergave**: het raakt de schakelingen, de nodes en de config-hash niet.
 
 - **Tekenen** (knop *Bewerken*): verdiepingen toevoegen/hernoemen/verwijderen; kamers als rechthoeken slepen (naam, verplaatsen, grootte via het blokje rechtsonder); items neerzetten door ze in de lijst *Nog niet geplaatst* te kiezen en op de plattegrond te klikken, of *Alles in een raster zetten* en daarna slepen. Alles vangt aan op een raster van 10; een item blijft binnen de marge zodat zijn naam zichtbaar blijft. Werkt met muis en aanraking.
@@ -355,6 +357,8 @@ Tabblad *Plattegrond*: een rudimentaire tekening per verdieping waarop je laat z
 - De tekenaar heeft geen geautomatiseerde UI-test (de backend wel); hij is met de demo in een browser geprobeerd.
 
 ## 20. Entiteitskringen (de AppDaemon-kruisschakelaar overnemen)
+
+> Sinds 0.4.1 zijn de tabbladen *HA-kringen* en *Lichten* weg. Een kring is een lamp-blok op het schema (§21): aan/uit, *Actief*, uitgangen, ⇄ per relais en de naam staan in de zijbalk. Importeren, lamp-relais op naam en alles uitzetten staan onder *Instellingen*. Het gedrag hieronder is ongewijzigd.
 
 De oude opzet had per lamp een AppDaemon-app (`module: kruisschakelaar`) met een lijst entiteiten (`switch.*` en `light.*`) die elkaar volgen. Om kring per kring te kunnen verhuizen, kan de add-on dat gedrag zelf overnemen, naast de eigenlijke schakelaar-en-lamp-structuur. Code: `kkaddon/sync.py` (gedrag), `appdaemon_import.py` (YAML lezen), `model.py` (`groups`), tabblad *HA-kringen* in `static/groups.js`.
 
@@ -397,7 +401,6 @@ Tabblad *Schema*, nu de startpagina: per ruimte een tabblad met blokken en drade
 - Getest met unit-tests (`test_schema.py`) en in een echte browser (slepen, klik-klik, Delete, ruimtes, donker, smal), met een nagebootst huis. Nog niet met de echte HA-registers en het echte aantal kringen: hoe druk een pagina met veel draden wordt en of de indeling per ruimte klopt, moet daar blijken.
 - Een HA-lamp mengt niet met geflashte nodes en een netwerklicht niet met `d:`-blokken. Dat wordt nodig bij de migratie (F7).
 - Een blok kan niet op twee pagina's staan (Loxone kan dat wel); geen logische blokken zoals timers of bewegingsmelders; geen automatische lijnvoering rond blokken; geen undo.
-- De kringen staan nog niet op de plattegrond, en de tabbladen *Lichten* en *HA-kringen* bestaan naast het schema.
 
 ## 22. Timer en disable-ingang
 

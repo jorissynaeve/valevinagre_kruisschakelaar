@@ -24,7 +24,7 @@ zijn eigen HA-gebied of kamer, en anders in **Centraal**. Zet hem via *Ruimte* i
 staan ze samen, en de verwijzingen tonen er geen ruimtenaam. *Opnieuw indelen* verdeelt alles opnieuw en wist eigen plekken, nooit draden.
 
 * Een **lamp-blok** heeft links de **ingangen** (de touches die de lamp bedienen) en rechts de **uitgangen** (de relais die de lamp
-  echt schakelen). De bol zet de lamp aan of uit. *Actief* of *uit* is hetzelfde als op het tabblad *HA-kringen*.
+  echt schakelen). De bol zet de lamp aan of uit. *Actief* of *uit* zet je in de zijbalk.
 * Een **schakelaar-blok** is een toestel met per gang links een **touch** (ingang) en rechts een **relais** (uitgang).
 * Klik op een blok voor de eigenschappen in de zijbalk: een **eigen naam** naast de technische naam uit HA, en de **ruimte**.
 * **Draad trekken**: sleep van een poort naar een andere poort, of klik op de ene en daarna op de andere (handig op een tablet).
@@ -50,8 +50,8 @@ Zijn uitgang ligt vast. Mengen kan nog niet.
 
 ## Een licht instellen
 
-1. Tabblad *Lichten* → bij een relais zonder licht *Als licht toevoegen* en een naam kiezen.
-2. *Schakelaars leren* → druk op elke fysieke schakelaar die dit licht moet bedienen. Ze verschijnen live in
+1. Tabblad *Schema* → klik op de node en kies bij een gang *Als lamp toevoegen*, met een naam.
+2. Klik op de lamp en kies *Schakelaars leren* → druk op elke fysieke schakelaar die dit licht moet bedienen. Ze verschijnen live in
    de lijst. Tijdens het leren schakelt er niets. Kies per schakelaar *wisselen*, *aan* of *uit*.
 3. *Opslaan*. De add-on stuurt de configuratie naar de betrokken nodes en toont in het logboek wanneer die
    bevestigd is. De indicator (LED) van een touch volgt automatisch het licht dat die knop bedient.
@@ -71,26 +71,15 @@ De Tuya-touch schakelt altijd zelf zijn relais. De vertraging voor schakelaars v
 merkt er niets van. De add-on gebruikt de HA-API via de supervisor (`homeassistant_api` in `config.yaml`).
 Buiten Home Assistant (tests) zet je `ha_url` en `ha_token`.
 
-## HA-kringen (de oude AppDaemon-kruisschakelaars)
+## De oude AppDaemon-kruisschakelaars
 
-Tabblad *HA-kringen* → *AppDaemon-YAML importeren*: plak je `kruisschakelaar`-configuratie (een heel `apps.yaml` mag ook),
-kies *Controleren* en daarna *OK*. Elke kring is een lijst entiteiten die elkaar volgen. **Alle kringen komen uitgeschakeld
-binnen**: de add-on kijkt dan alleen mee en laat de stand zien. Zet een kring *Actief* en zet dezelfde kring **in AppDaemon uit**,
-anders schakelen ze allebei. Zo verhuis je kring per kring. *Alles uit* zet alle kringen hier uit.
+Tabblad *Instellingen* → *AppDaemon-YAML importeren*: plak je `kruisschakelaar`-configuratie (een heel `apps.yaml` mag ook),
+kies *Controleren* en daarna *OK*. Elke kring wordt een lamp op het schema. **Alle kringen komen uitgeschakeld binnen**: de add-on kijkt
+dan alleen mee en laat de stand zien. Zet een lamp *Actief* in de zijbalk en zet dezelfde kring **in AppDaemon uit**, anders schakelen ze
+allebei. Zo verhuis je kring per kring. *Alle kringen uitzetten* onder *Instellingen* zet ze hier in één keer uit.
 
-Elke kring staat ook op het tabblad *Lichten* met een aan/uit-knop. Daaronder klik je op één entiteit (bijvoorbeeld het relais dat de lamp aanstuurt) om alleen die te wisselen.
-
-**Entiteiten toevoegen of weghalen:** *Bewerken* op de kaart van de kring (naam wijzigen, entiteit toevoegen, ✕ om er een uit de kring te halen). *Nieuwe kring* maakt een kring zonder import; die staat eerst uit.
-
-**Welk relais schakelt de lamp?** Klik naast een entiteit op *lamp?* om haar als lamp-relais te markeren, of kies bij *HA-kringen* → *Lamp-relais kiezen op naam…* een stuk naam (bv. `dingtian`) voor alle kringen tegelijk. De knop toont dan de stand van dat relais en geeft het bevel daaraan eerst; de andere entiteiten blijven de kring volgen.
-
-## Plattegrond
-
-Tabblad *Plattegrond* → *Bewerken*: voeg een verdieping toe, sleep kamers op de tekening en zet je schakelaars en
-lampen erop (kies ze in de lijst en klik op de plek, of kies *Alles in een raster zetten* en sleep ze naar hun plek).
-In de gewone weergave klik je op een lamp of schakelaar: je ziet dan met een kleur welke schakelaars welke lamp
-bedienen en met welke knop (`K2` is knop 2). Een druk op een schakelaar licht live op. De plattegrond is alleen een
-tekening; hij verandert niets aan de schakelingen.
+In de zijbalk van een lamp wissel je met ⇄ één relais, en daar staat ook of de relais niet gelijk staan. *Lamp-relais kiezen op naam…*
+onder *Instellingen* maakt voor alle kringen tegelijk een stuk naam (bv. `dingtian`) tot uitgang.
 
 ## Bestaande ESPHome-schakelaars tijdelijk meenemen
 

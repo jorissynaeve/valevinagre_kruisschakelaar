@@ -421,7 +421,7 @@ def asset_version() -> str:
 async def index(request: web.Request) -> web.Response:
     v = asset_version()
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    for f in ("style.css", "plan.js", "groups.js", "schema.js", "app.js"):
+    for f in ("style.css", "groups.js", "schema.js", "app.js"):
         html = html.replace(f'static/{f}"', f'static/{f}?v={v}"')
     return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
 

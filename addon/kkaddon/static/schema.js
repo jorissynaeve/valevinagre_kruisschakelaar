@@ -17,6 +17,7 @@ const SC = {
 const SC_HEAD = 42, SC_ROW = 24, SC_FOOT = 10; // dezelfde maten als de automatische indeling in schema.py
 const SW_W = 250, LAMP_W = 340;
 const SC_GRID = 10;
+const clampN = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const SC_WIRES = false; // voorlopig geen lijnen: elke verbinding is een verwijzing, ook binnen een ruimte
 const SC_MARGIN = 200; // links van x=0: de verwijzingen en draden aan de touch-kant
 
@@ -216,6 +217,7 @@ function scPanel() {
 function scConnRow(b, c, i, dir) {
   const name = c.sw ? `${c.swName} · ${c.label}` : c.text;
   return `<div class="scc"><a href="#" data-sc="wiresel" data-w="${esc(b.key)}|${dir}|${i}">${esc(name)}</a>${c.mode && c.mode !== 'toggle' ? ` <span class="badge">${MODE_NL[c.mode]}</span>` : ''}
+    ${c.ref.entity ? `<button class="btn small" type="button" data-sc="member" data-id="${esc(b.id)}" data-e="${esc(c.ref.entity)}" title="Alleen dit relais wisselen (nu ${c.on === true ? 'aan' : c.on === false ? 'uit' : 'onbekend'})">⇄</button>` : ''}
     ${c.fixed ? '<span class="badge">vast</span>' : `<button class="btn small danger" type="button" data-sc="unwire" data-w="${esc(b.key)}|${dir}|${i}" title="Verbinding weghalen">✕</button>`}</div>`;
 }
 
@@ -239,7 +241,9 @@ function scLampPanel(b, pages) {
   const timers = scBlocks().filter((t) => t.kind === 'timer');
   const dis = b.source !== 'ha' ? '' : `<label for="scdis">Disable-ingang${b.blocked ? ' <span class="badge bad">nu geblokkeerd</span>' : ''}</label><select id="scdis" data-k="${esc(b.key)}"><option value="">geen</option>${timers.map((t) => `<option value="${esc(t.id)}" ${t.id === b.disable ? 'selected' : ''}>Timer ${esc(t.name)} (nu ${t.on ? 1 : 0})</option>`).join('')}</select>
     <div class="sub">Op 1 bedienen de touches deze lamp niet. Bedienen hier of via HA blijft kunnen.</div>`;
-  return `<h3>${esc(b.name)}</h3>${pages}${dis}${active}
+  const known = [...b.inputs, ...b.outputs].filter((c) => c.on === true || c.on === false);
+  const mixed = b.source === 'ha' && known.some((c) => c.on !== known[0].on) ? '<span class="badge warn">relais staan niet gelijk</span>' : '';
+  return `<h3>${esc(b.name)}</h3>${pages}${dis}${active}${mixed}
     <button class="power ${b.on === true ? 'on' : b.on === null ? 'unknown' : ''} ${b.pending ? 'pending' : ''}" data-sc="toggle" data-k="${esc(b.key)}">${onoff}</button>
     <h2>Ingangen</h2>${b.inputs.map((c, i) => scConnRow(b, c, i, 'in')).join('') || '<div class="sub">Nog geen touches.</div>'}${scAddSelect(b, 'in')}
     <h2>Uitgangen</h2>${b.outputs.map((c, i) => scConnRow(b, c, i, 'out')).join('') || '<div class="sub">Nog geen relais: de lamp weet niet welk relais hem schakelt.</div>'}${scAddSelect(b, 'out')}
@@ -561,6 +565,7 @@ const SC_ACTIONS = {
   },
   wiresel: (d) => { const [lamp, dir, i] = d.w.split('|'); SC.sel = { lamp, dir, i: +i }; render(); },
   unwire: (d) => scUnwire(d.w),
+  member: (d) => api('POST', `groups/${d.id}/cmd`, { op: 'toggle', entity: d.e }).catch((e) => { throw new Error(`${e.message}: ${d.e} is niet bereikbaar?`); }),
 };
 
 // ---------------------------------------------------------------- muis en aanraking
