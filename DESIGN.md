@@ -398,3 +398,19 @@ Tabblad *Schema*, nu de startpagina: per ruimte een tabblad met blokken en drade
 - Een HA-lamp mengt niet met geflashte nodes en een netwerklicht niet met `d:`-blokken. Dat wordt nodig bij de migratie (F7).
 - Een blok kan niet op twee pagina's staan (Loxone kan dat wel); geen logische blokken zoals timers of bewegingsmelders; geen automatische lijnvoering rond blokken; geen undo.
 - De kringen staan nog niet op de plattegrond, en de tabbladen *Lichten* en *HA-kringen* bestaan naast het schema.
+
+## 22. Timer en disable-ingang
+
+Eerste logica in het schema, in de geest van de Schakelklok van Loxone. Code: `model.py` (`timers`, `disable` op een kring, `timer_active`), `sync.py` (`blocked`, `_hold`), `engine.py` (tijd), blok `t:<id>` in `schema.py` en `schema.js`.
+
+- **Timer**: per dag tot 3 intervallen met uitgang 1, anders 0. Begin hoort erbij, einde niet. `to` 00:00 is middernacht aan het eind van de dag. Over middernacht lopen kan niet: dat zijn twee intervallen. Dit is veel eenvoudiger dan de Loxone-module (geen feestdagen, geen zon, geen analoge waarde).
+- **Disable**: `groups.<id>.disable` wijst naar een timer. Dit is bewust geen schema-gegeven, want het verandert het gedrag.
+- **Geen tussenbeurt nodig**: de stand wordt op het moment van een druk berekend, dus er is geen planner die een moment kan missen, ook niet na een herstart. De UI ziet de stand bij de verversing (uiterlijk 20 s).
+- **Een druk tijdens disable**: het toestel heeft zijn eigen relais al omgezet, dat is niet tegen te houden. `_hold` zet alleen dat relais terug op de stand van de lamp (de lamp-relais als die bekend zijn, anders de vorige stand). Zonder dat liep de LED van die touch uit de pas. Je ziet het relais dus kort klikken. De echo is een eigen bevel, dus geen nieuwe druk.
+- **Niet geblokkeerd**: een wijziging van een lamp-relais (bv. via HA) en bediening in de add-on. De opdracht was dat een touch niets doet. Ook de lamp blijft zoals hij stond: de timer zet nooit iets aan of uit.
+- **Tijdzone**: uit HA (`get_config`, `tzdata` in de image), want de container kan op UTC staan. Lukt dat niet, dan de tijd van de container; de zijbalk van een timer toont welke tijd geldt.
+
+### Niet getest / open
+- Op de echte installatie is er geen druk gedaan tijdens een interval: het gedrag is getest met unit-tests tegen de engine, niet met een echte touch.
+- Een lamp zonder lamp-relais: alle leden gelden als touch.
+- Lichten op het netwerk beslissen op de node en hebben geen disable. Andere bronnen dan een timer (bv. een HA-entiteit) kunnen nog niet op de disable.

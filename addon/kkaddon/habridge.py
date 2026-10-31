@@ -104,6 +104,10 @@ class HaBridge:
             await self._request({"type": "subscribe_events", "event_type": "state_changed"})
             self.engine.virt.set_link(True)
             await self._sync()
+            try:
+                self.engine.set_tz((await self._request({"type": "get_config"}, timeout=10)).get("result", {}).get("time_zone"))
+            except (HaError, asyncio.TimeoutError) as e:
+                log.warning("tijdzone niet opgehaald: %s", e)
         except (HaError, asyncio.TimeoutError) as e:
             self.last_error = str(e) or "initialiseren mislukt"
             log.warning("HA initialiseren mislukt: %s", self.last_error)

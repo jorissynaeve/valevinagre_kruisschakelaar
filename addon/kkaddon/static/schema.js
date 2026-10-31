@@ -11,6 +11,8 @@ const SC = {
   zoom: null, // null = de pagina past in de breedte
   q: '',
   lastPanel: '',
+  force: false, // de zijbalk vervangen, ook als er nog een veld de focus heeft
+  reveal: null, // blok dat bij de volgende tekening in beeld moet komen
 };
 const SC_HEAD = 42, SC_ROW = 24, SC_FOOT = 10; // dezelfde maten als de automatische indeling in schema.py
 const SW_W = 250, LAMP_W = 340;
@@ -21,7 +23,7 @@ const SC_MARGIN = 200; // links van x=0: de verwijzingen en draden aan de touch-
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
 const scW = (b) => (b.kind === 'lamp' ? LAMP_W : SW_W);
-const scRows = (b) => (b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + 1 : b.gangs.length);
+const scRows = (b) => (b.kind === 'timer' ? 1 : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 2 : 1) : b.gangs.length);
 const scH = (b) => SC_HEAD + scRows(b) * SC_ROW + SC_FOOT;
 const rowY = (b, i) => b.y + SC_HEAD + i * SC_ROW + SC_ROW / 2;
 const scPageName = (id) => (S.schema.pages.find((p) => p.id === id) || {}).name || '';
@@ -42,13 +44,13 @@ function scConns() { // alle draden: elke verbinding tussen een lamp en een gang
 const scSame = (x) => x.sw && x.sw.page && x.sw.page === x.lamp.page;
 
 function scType(b) { // bepaalt de kleur van het blok
-  if (b.kind === 'lamp') return 'lamp';
+  if (b.kind === 'lamp' || b.kind === 'timer') return b.kind;
   if (b.source === 'node') return 'node';
   if (b.source === 'virtual') return 'ext';
   const conns = scConns().filter((x) => x.sw && x.sw.key === b.key);
   return conns.length && conns.every((x) => x.dir === 'out') ? 'box' : 'sw'; // alleen geschakeld, nooit bediend: een relaisbox
 }
-const SC_TYPE_NL = { node: 'Node', ext: 'Extern apparaat', box: 'Relaisbox · HA', sw: 'Schakelaar · HA' };
+const SC_TYPE_NL = { timer: 'Timer', node: 'Node', ext: 'Extern apparaat', box: 'Relaisbox · HA', sw: 'Schakelaar · HA' };
 const wireSel = (x) => SC.sel && SC.sel.lamp === x.lamp.key && SC.sel.dir === x.dir && SC.sel.i === x.i;
 
 function wirePath(x0, y0, dir0, x1, y1, dir1) { // dir: naar welke kant de poort kijkt (-1 links, 1 rechts)
@@ -111,16 +113,41 @@ function scLamp(b) {
     return `<circle class="pt free ${left ? 'tou' : 'rel'}" cx="${left ? b.x : b.x + LAMP_W}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="${dir}" data-i="new"><title>${left ? 'Sleep hierheen vanaf een touch' : 'Sleep naar het relais dat de lamp schakelt'}</title></circle>
       <text class="ptl" x="${left ? b.x + 11 : b.x + LAMP_W - 11}" y="${y + 4}" ${left ? '' : 'text-anchor="end"'}>+ ${left ? 'ingang' : 'uitgang'}</text>`;
   };
-  const badge = b.source === 'node' ? 'netwerk' : b.enabled ? 'actief' : 'uit';
+  const badge = b.source === 'node' ? 'netwerk' : b.blocked ? 'geblokkeerd' : b.enabled ? 'actief' : 'uit';
+  const dt = b.disable && scBlock(`t:${b.disable}`);
+  const disRow = b.source !== 'ha' ? '' : `<circle class="pt dis ${dt ? '' : 'free'} ${b.blocked ? 'on' : ''}" cx="${b.x}" cy="${rowY(b, scRows(b) - 1)}" r="6" data-b="${esc(b.key)}" data-role="disable" data-i="0"><title>Disable: staat deze op 1, dan bedienen de touches de lamp niet</title></circle>
+    ${dt ? `<text class="bkt away" x="${b.x + 11}" y="${rowY(b, scRows(b) - 1) + 4}" data-sc="go" data-k="${esc(dt.key)}">↗ disable: ${esc(scCut(dt.name, 16))} (${dt.on ? 1 : 0})<title>Timer ${esc(dt.name)} geeft nu ${dt.on ? 1 : 0}</title></text>`
+    : `<text class="ptl" x="${b.x + 11}" y="${rowY(b, scRows(b) - 1) + 4}">+ disable</text>`}`;
   return `<g class="bk lampb t-lamp ${sel ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${LAMP_W}" height="${scH(b)}" rx="8"/>
     <rect class="bkhead lamph ${st}" x="${b.x}" y="${b.y}" width="${LAMP_W}" height="${SC_HEAD}" rx="8"/>
     <circle class="bulb ${st} ${b.pending ? 'pending' : ''}" cx="${b.x + 22}" cy="${b.y + 21}" r="12" data-sc="toggle" data-k="${esc(b.key)}"><title>Aan of uit zetten</title></circle>
     <text class="bkn" x="${b.x + 42}" y="${b.y + 18}">${esc(scCut(b.name, 30))}</text>
     <text class="bks" x="${b.x + 42}" y="${b.y + 34}">Lamp · ${b.on === true ? 'aan' : b.on === false ? 'uit' : 'onbekend'}</text>
-    <text class="bkbadge ${badge === 'actief' ? 'ok' : ''}" x="${b.x + LAMP_W - 12}" y="${b.y + 18}" text-anchor="end">${badge}</text>
+    <text class="bkbadge ${badge === 'actief' ? 'ok' : badge === 'geblokkeerd' ? 'bad' : ''}" x="${b.x + LAMP_W - 12}" y="${b.y + 18}" text-anchor="end">${badge}</text>
     ${b.inputs.map((c, i) => row(c, i, 'in')).join('')}${free('in', b.inputs.length)}
-    ${b.outputs.map((c, i) => row(c, i, 'out')).join('')}${free('out', b.outputs.length)}</g>`;
+    ${b.outputs.map((c, i) => row(c, i, 'out')).join('')}${free('out', b.outputs.length)}${disRow}</g>`;
+}
+
+function scTimer(b) {
+  const y = rowY(b, 0), lamps = scBlocks().filter((l) => l.kind === 'lamp' && l.disable === b.id);
+  return `<g class="bk tim t-timer ${SC.sel === b.key ? 'sel' : ''}" data-block="${esc(b.key)}">
+    <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
+    <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
+    <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 28))}</text>
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Timer · ${scTimerText(b)}</text>
+    <text class="bkt" x="${b.x + SW_W - 11}" y="${y + 4}" text-anchor="end">uitgang: ${b.on ? 1 : 0}</text>
+    <circle class="pt dis ${b.on ? 'on' : ''}" cx="${b.x + SW_W}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="tout" data-g="0"><title>Uitgang van de timer: sleep naar de disable van een lamp</title></circle>
+    ${lamps.map((l, n) => `<text class="stub" x="${b.x + SW_W + 11}" y="${y + 4 + n * 13}" data-sc="go" data-k="${esc(l.key)}">→ ${esc(scCut(l.name, 28))}<title>${esc(l.name)}</title></text>`).join('')}</g>`;
+}
+
+const SC_DAYS = [['mon', 'Maandag'], ['tue', 'Dinsdag'], ['wed', 'Woensdag'], ['thu', 'Donderdag'], ['fri', 'Vrijdag'], ['sat', 'Zaterdag'], ['sun', 'Zondag']];
+
+function scTimerText(b) { // korte samenvatting voor op het blok
+  const all = SC_DAYS.map(([d]) => JSON.stringify(b.days[d] || []));
+  if (all.every((x) => x === '[]')) return 'geen tijden';
+  if (all.every((x) => x === all[0])) return `dagelijks ${b.days.mon.map((i) => `${i.from}–${i.to}`).join(', ')}`;
+  return `${all.filter((x) => x !== '[]').length} dagen`;
 }
 
 function scInner(list) {
@@ -134,7 +161,7 @@ function scInner(list) {
   }
   const shown = new Set(list.map((b) => b.key));
   const wires = !SC_WIRES ? '' : conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
-  const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : scSwitch(b, tags))).join('');
+  const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : scSwitch(b, tags))).join('');
   return `<g class="wires">${wires}</g>${blocks}<path id="sctemp" class="wire temp"/>`; // draden onder de blokken: anders liggen ze over de poorten
 }
 
@@ -146,6 +173,8 @@ function scDrawTemp() { // alleen dit ene pad: de poort onder de cursor moet bli
 function scPortPos(p) {
   const b = scBlock(p.b);
   if (!b) return null;
+  if (b.kind === 'timer') return [b.x + SW_W, rowY(b, 0)];
+  if (p.role === 'disable') return [b.x, rowY(b, scRows(b) - 1)];
   if (b.kind === 'switch') return [p.role === 'relay' ? b.x + SW_W : b.x, rowY(b, +p.g)];
   const n = p.role === 'in' ? b.inputs.length : b.outputs.length;
   return [p.role === 'in' ? b.x : b.x + LAMP_W, rowY(b, p.i === 'new' ? n : +p.i)];
@@ -168,7 +197,7 @@ function scTray() {
     all.sort((a, b) => (!!a.page - !!b.page));
     return `<h2>${title}</h2>${all.map(item).join('') || '<div class="sub">Geen.</div>'}`;
   };
-  return part('Lampen', 'lamp') + part('Schakelaars', 'switch');
+  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer');
 }
 
 function scPanel() {
@@ -179,9 +208,9 @@ function scPanel() {
       <p class="sub">Wijzigingen aan verbindingen gelden meteen. Blokken verplaatsen verandert niets aan de schakelingen.</p>`;
   }
   const pages = `<label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
-  const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'lamp' ? b.name : b.alias)}" placeholder="${esc(b.tech)}">
+  const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'switch' ? b.alias : b.name)}" placeholder="${esc(b.tech)}">
     <div class="sub">Technische naam: <code>${esc(b.tech)}</code></div>${pages}`;
-  return b.kind === 'lamp' ? scLampPanel(b, props) : scSwitchPanel(b, props);
+  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : scSwitchPanel(b, props);
 }
 
 function scConnRow(b, c, i, dir) {
@@ -207,13 +236,43 @@ function scLampPanel(b, pages) {
   const tail = b.source === 'ha'
     ? `<button class="btn small danger" data-sc="dellamp" data-id="${esc(b.id)}">Verwijderen</button>`
     : `<button class="btn small primary" data-act="learn" data-n="${b.node}" data-r="${b.relay}">Schakelaars leren</button><button class="btn small" data-act="edit" data-n="${b.node}" data-r="${b.relay}">Bewerken</button>`;
-  return `<h3>${esc(b.name)}</h3>${pages}${active}
+  const timers = scBlocks().filter((t) => t.kind === 'timer');
+  const dis = b.source !== 'ha' ? '' : `<label for="scdis">Disable-ingang${b.blocked ? ' <span class="badge bad">nu geblokkeerd</span>' : ''}</label><select id="scdis" data-k="${esc(b.key)}"><option value="">geen</option>${timers.map((t) => `<option value="${esc(t.id)}" ${t.id === b.disable ? 'selected' : ''}>Timer ${esc(t.name)} (nu ${t.on ? 1 : 0})</option>`).join('')}</select>
+    <div class="sub">Op 1 bedienen de touches deze lamp niet. Bedienen hier of via HA blijft kunnen.</div>`;
+  return `<h3>${esc(b.name)}</h3>${pages}${dis}${active}
     <button class="power ${b.on === true ? 'on' : b.on === null ? 'unknown' : ''} ${b.pending ? 'pending' : ''}" data-sc="toggle" data-k="${esc(b.key)}">${onoff}</button>
     <h2>Ingangen</h2>${b.inputs.map((c, i) => scConnRow(b, c, i, 'in')).join('') || '<div class="sub">Nog geen touches.</div>'}${scAddSelect(b, 'in')}
     <h2>Uitgangen</h2>${b.outputs.map((c, i) => scConnRow(b, c, i, 'out')).join('') || '<div class="sub">Nog geen relais: de lamp weet niet welk relais hem schakelt.</div>'}${scAddSelect(b, 'out')}
     <div class="row" style="margin-top:6px">${tail}</div>
     ${b.source === 'ha' ? '<p class="sub">Een relais op een uitgang reageert nog op zijn eigen touch, en een touch-relais volgt de lamp mee (daar hangt zijn LED aan).</p>' : ''}`;
 }
+
+function scTimerPanel(b, props) {
+  const lamps = scBlocks().filter((l) => l.kind === 'lamp' && l.disable === b.id);
+  const rows = SC_DAYS.map(([d, nl]) => {
+    const list = b.days[d] || [];
+    return `<div class="tmd"><div class="row sp"><b>${nl}</b><span class="row">
+        ${list.length < 3 ? `<button class="btn small" type="button" data-sc="tadd" data-k="${esc(b.key)}" data-day="${d}" title="Interval toevoegen">+</button>` : ''}
+        ${list.length ? `<button class="btn small" type="button" data-sc="tcopy" data-k="${esc(b.key)}" data-day="${d}" title="Deze tijden naar alle dagen kopiëren">naar alle dagen</button>` : ''}</span></div>
+      ${list.map((i, n) => `<div class="tmi"><input type="time" data-tm data-day="${d}" data-n="${n}" data-f="from" value="${esc(i.from)}"> tot <input type="time" data-tm data-day="${d}" data-n="${n}" data-f="to" value="${esc(i.to)}">
+        <button class="btn small danger" type="button" data-sc="tdel" data-k="${esc(b.key)}" data-day="${d}" data-n="${n}" title="Interval weghalen">✕</button></div>`).join('')}</div>`;
+  }).join('');
+  return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.on ? 'ok' : ''}">uitgang nu ${b.on ? 1 : 0}</span><span class="sub">${esc(S.clock.time)} · ${esc(S.clock.tz)}</span></div>${props}
+    <h2>Blokkeert</h2>${lamps.map((l) => `<div class="sub"><a href="#" data-sc="go" data-k="${esc(l.key)}">${esc(l.name)}</a></div>`).join('') || '<div class="sub">Nog geen lamp.</div>'}
+    <h2>Intervallen met uitgang 1</h2><div class="sub">Tot 3 per dag. Tot 00:00 betekent tot middernacht. Over middernacht: maak twee intervallen op twee dagen.</div>${rows}
+    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="deltimer" data-id="${esc(b.id)}">Timer verwijderen</button></div>`;
+}
+
+async function scSaveTimer(b, days, name = b.name) {
+  try {
+    await api('PUT', `timers/${b.id}`, { name, days });
+  } finally {
+    SC.force = true;
+    await refresh();
+  }
+}
+
+const scDaysCopy = (b) => JSON.parse(JSON.stringify(b.days));
 
 function scConnSelect(s, g) { // een verwijzing maken vanaf de schakelaar: de lamp mag in elke ruimte staan
   const lamps = scBlocks().filter((l) => l.kind === 'lamp' && (l.source !== 'ha' || g.entity));
@@ -265,7 +324,7 @@ function viewSchema() {
       <button class="btn small" data-sc="renamepage">Ruimte hernoemen</button><button class="btn small danger" data-sc="delpage">Ruimte verwijderen</button>
       <button class="btn small" data-sc="convert" title="Nieuwe kringen en toestellen op hun plek zetten. Wat al staat blijft staan.">Omzetten</button>
       <button class="btn small" data-sc="relayout" title="Alles opnieuw verdelen over de ruimtes">Opnieuw indelen</button>
-      <button class="btn small" data-sc="newswitch">+ Schakelaar</button><button class="btn small primary" data-sc="newlamp">+ Lamp</button></span></div>
+      <button class="btn small" data-sc="newtimer">+ Timer</button><button class="btn small" data-sc="newswitch">+ Schakelaar</button><button class="btn small primary" data-sc="newlamp">+ Lamp</button></span></div>
     <div class="scwrap"><aside class="card sctray"><input type="search" id="scq" placeholder="Zoek een blok" autocomplete="off" value="${esc(SC.q)}"><div id="sctraylist"></div></aside>
       <div id="sccanvas"><div id="scempty"></div><svg id="scsvg" role="img" aria-label="Schema van de ruimte"></svg></div>
       <aside class="card" id="scpanel"></aside></div>`;
@@ -285,6 +344,11 @@ function scDraw() {
   svg.setAttribute('height', h * z);
   svg.innerHTML = scInner(list);
   scDrawTemp();
+  if (SC.reveal) {
+    const el = svg.querySelector(`[data-block="${CSS.escape(SC.reveal)}"]`);
+    SC.reveal = null;
+    if (el) el.scrollIntoView({ block: 'center', inline: 'center' });
+  }
 }
 
 // een schakelaar heeft rechts plaats nodig voor zijn verwijzingen
@@ -305,7 +369,8 @@ function schemaUpdate() {
   scDraw();
   const panel = $('#scpanel'), html = scPanel(), active = document.activeElement;
   // een lijst die net open staat of een veld waarin je typt niet onder je handen vervangen
-  if (html !== SC.lastPanel && !(active && panel.contains(active) && /SELECT|INPUT/.test(active.tagName))) {
+  if (SC.force || (html !== SC.lastPanel && !(active && panel.contains(active) && /SELECT|INPUT/.test(active.tagName)))) {
+    SC.force = false;
     panel.innerHTML = html;
     SC.lastPanel = html;
   }
@@ -329,8 +394,17 @@ function scRef(s, g) {
   return g.entity ? { entity: g.entity } : { node: s.node, btn: g.i };
 }
 
-async function scWireUp(a, b) { // a en b zijn poorten; één hoort bij een lamp, de ander bij een schakelaar
+async function scWireUp(a, b) { // a en b zijn poorten; één hoort bij een lamp, de ander bij een schakelaar of timer
   const pa = scBlock(a.b), pb = scBlock(b.b);
+  if (pa.kind === 'timer' || pb.kind === 'timer') {
+    const [lp, tb] = pa.kind === 'timer' ? [b, pa] : [a, pb], lamp = scBlock(lp.b);
+    if (lamp.kind !== 'lamp' || (lp.role && lp.role !== 'disable')) throw new Error('Een timer sluit je aan op de disable-ingang van een lamp.');
+    await api('POST', 'schema/disable', { lamp: lamp.key, timer: tb.id });
+    SC.sel = lamp.key;
+    await refresh();
+    return;
+  }
+  if (a.role === 'disable' || b.role === 'disable') throw new Error('De disable-ingang krijgt een timer.');
   if (pa.kind === pb.kind) throw new Error(pa.kind === 'lamp' ? 'Een draad loopt tussen een schakelaar en een lamp, niet tussen twee lampen.' : 'Een draad loopt tussen een schakelaar en een lamp, niet tussen twee schakelaars.');
   const [lp, sp] = pa.kind === 'lamp' ? [a, b] : [b, a];
   const lamp = scBlock(lp.b), sw = scBlock(sp.b), gang = sw.gangs[+sp.g];
@@ -369,7 +443,7 @@ function scSwitchDialog(b) {
       await api('PUT', `schema/switch/${b.id}`, body);
     } else {
       const r = await api('POST', 'schema/switch', { ...body, page: SC.page, ...scFreeSpot('switch') });
-      SC.sel = r.key;
+      SC.sel = SC.reveal = r.key;
     }
   });
   if (b) { open([]); return; }
@@ -381,10 +455,10 @@ function scSwitchDialog(b) {
 
 const SC_ACTIONS = {
   page: (d) => { SC.page = d.id; SC.sel = null; SC.link = null; render(); },
-  go: (d) => { const b = scBlock(d.k); if (b && b.page) SC.page = b.page; SC.sel = d.k; render(); },
+  go: (d) => { const b = scBlock(d.k); if (b && b.page) SC.page = b.page; SC.sel = SC.reveal = d.k; render(); },
   trayitem: async (d) => {
     const b = scBlock(d.k);
-    if (b.page) { SC.page = b.page; SC.sel = d.k; render(); return; }
+    if (b.page) { SC.page = b.page; SC.sel = SC.reveal = d.k; render(); return; }
     if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
     SC.sel = d.k;
     const p = scFreeSpot(b.kind);
@@ -428,11 +502,39 @@ const SC_ACTIONS = {
     await refresh();
     toast(`${r.placed} blokken verdeeld over ${r.pages} ruimtes.`, 6000);
   },
+  newtimer: () => {
+    if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
+    smallDialog('<h3>Nieuwe timer</h3><p class="sub">Geeft 1 binnen de intervallen die je per dag kiest, anders 0. Sluit hem aan op de disable-ingang van een lamp.</p><label for="tmname">Naam</label><input type="text" id="tmname" maxlength="60" placeholder="bv. Nacht">', async () => {
+      const r = await api('POST', 'timers', { name: $('#tmname').value.trim(), days: {}, page: SC.page, ...scFreeSpot('timer') });
+      SC.sel = SC.reveal = r.key;
+    });
+  },
+  tadd: (d) => {
+    const b = scBlock(d.k), days = scDaysCopy(b);
+    (days[d.day] ||= []).push({ from: '03:00', to: '07:00' });
+    return scSaveTimer(b, days);
+  },
+  tdel: (d) => {
+    const b = scBlock(d.k), days = scDaysCopy(b);
+    days[d.day].splice(+d.n, 1);
+    return scSaveTimer(b, days);
+  },
+  tcopy: (d) => {
+    const b = scBlock(d.k), days = {};
+    SC_DAYS.forEach(([x]) => { days[x] = b.days[d.day]; });
+    return scSaveTimer(b, days);
+  },
+  deltimer: async (d) => {
+    if (!confirm('Deze timer verwijderen? Lampen die hij blokkeert zijn daarna gewoon weer te bedienen.')) return;
+    await api('DELETE', `timers/${d.id}`);
+    SC.sel = null;
+    await refresh();
+  },
   newlamp: () => {
     if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
     smallDialog('<h3>Nieuwe lamp</h3><p class="sub">Een lege lamp via Home Assistant, eerst uitgeschakeld. Trek daarna draden naar de touches en het relais.</p><label for="lpname">Naam</label><input type="text" id="lpname" maxlength="60" placeholder="bv. Spots keuken">', async () => {
       const r = await api('POST', 'schema/lamp', { name: $('#lpname').value.trim(), page: SC.page, ...scFreeSpot('lamp') });
-      SC.sel = r.key;
+      SC.sel = SC.reveal = r.key;
     });
   },
   newswitch: () => {
@@ -591,15 +693,29 @@ document.addEventListener('change', (ev) => {
     act(async () => {
       try {
         if (b.kind === 'switch') await api('POST', 'schema/name', { key: b.key, name });
+        else if (b.kind === 'timer') await api('PUT', `timers/${b.id}`, { name, days: b.days });
         else if (!name) throw new Error('Een lamp heeft een naam nodig');
         else if (b.source === 'ha') await api('PUT', `groups/${b.id}`, { name });
         else await api('PUT', `light/${b.node}/${b.relay}`, { name });
       } finally {
         t.blur();
-        SC.lastPanel = ''; // ook bij een weigering: het veld terug naar wat er echt staat
+        SC.force = true; // ook bij een weigering: het veld terug naar wat er echt staat
         await refresh();
       }
     })();
+  }
+  if (t.id === 'scdis') {
+    const k = t.dataset.k, timer = t.value || null;
+    t.blur();
+    act(async () => {
+      try { await api('POST', 'schema/disable', { lamp: k, timer }); } finally { SC.force = true; await refresh(); }
+    })();
+  }
+  if (t.dataset && 'tm' in t.dataset) {
+    const b = scBlock(SC.sel), days = scDaysCopy(b);
+    days[t.dataset.day][+t.dataset.n][t.dataset.f] = t.value;
+    t.blur();
+    act(() => scSaveTimer(b, days))();
   }
   if (t.id === 'scroom') {
     const b = scBlock(t.dataset.k);
@@ -607,6 +723,7 @@ document.addEventListener('change', (ev) => {
     t.blur();
     act(async () => {
       const p = scFreeSpot(b.kind, dest); // niet bovenop wat er al staat
+      SC.reveal = b.key;
       await scPlace(b.key, dest, p.x, p.y);
       if (dest) SC.page = dest;
       render();

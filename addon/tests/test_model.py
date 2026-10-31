@@ -157,3 +157,28 @@ def test_import_of_a_file_with_conflicting_groups_is_refused_but_startup_is_not(
         m.load_dict(d)
     m.load_dict(d, save=False)  # zo laadt het model bij het opstarten: nooit weigeren
     assert set(m.groups) == {"a", "b"}
+
+
+def test_timers_are_validated_and_stored(tmp_path):
+    from kkaddon.model import timer_active
+    m = Model(tmp_path / "n.json")
+    tid = m.save_timer(None, "Nacht", {"mon": [{"from": "22:00", "to": "00:00"}, {"from": "03:00", "to": "07:00"}]})
+    assert m.timers[tid]["days"]["mon"][0]["from"] == "03:00", "op volgorde"
+    assert timer_active(m.timers[tid], 0, 23 * 60 + 59) and timer_active(m.timers[tid], 0, 3 * 60) and not timer_active(m.timers[tid], 0, 7 * 60)
+    assert not timer_active(m.timers[tid], 1, 4 * 60), "andere dag"
+    assert Model(tmp_path / "n.json").timers == m.timers
+    iv = lambda a, b: {"from": a, "to": b}
+    for bad in ({"xx": []}, {"mon": [iv("07:00", "03:00")]}, {"mon": [iv("03:00", "03:00")]}, {"mon": [iv("3:00", "07:00")]}, {"mon": [iv("25:00", "26:00")]},
+                {"mon": [iv("01:00", "02:00")] * 4}, {"mon": "x"}):
+        with pytest.raises(ModelError):
+            m.save_timer(tid, "Nacht", bad)
+    with pytest.raises(ModelError):
+        m.save_timer(None, " ", {})
+    m.set_groups([{"id": "g", "name": "G", "entities": ["switch.a", "switch.b"]}])
+    with pytest.raises(ModelError, match="onbekende timer"):
+        m.set_group("g", disable="nope")
+    m.set_group("g", disable=tid)
+    m.set_groups([{"id": "g", "name": "G", "entities": ["switch.a", "switch.c"]}])
+    assert m.groups["g"]["disable"] == tid, "opnieuw importeren laat de timer staan"
+    m.set_group("g", disable=None)
+    assert "disable" not in m.groups["g"]

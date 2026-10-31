@@ -9,21 +9,26 @@ from __future__ import annotations
 
 import heapq
 import json
+import logging
 import os
 import random
 import tempfile
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import proto
-from .model import Model, ModelError
+from .model import Model, ModelError, timer_active
 from .proto import CF_BRIDGE, DEFAULT_TTL, LINK_LOCAL, T, Frame, Mode
 from .replay import ReplayTable
 from .sync import EntityGroups
 from .virtual import Virtuals
+
+log = logging.getLogger("kk.engine")
 
 PEER_ID_MIN = 0xF000  # ids vanaf hier zijn voor infrastructuur (add-on), nodes krijgen 1..0xEFFF
 
@@ -201,6 +206,26 @@ class Engine:
     def ha_snapshot(self, states: dict[str, str]) -> None:
         self.virt.ha_sync({k: v for k, v in states.items() if k in self.virt.entities()})
         self.groups.ha_sync(states)
+
+    # ------------------------------------------------------------ tijd van het huis (timers)
+
+    def set_tz(self, name: str | None) -> None:
+        """De tijdzone van Home Assistant. De container kan op UTC staan; dan zou 3u 's nachts op het verkeerde uur vallen."""
+        try:
+            self.tz = ZoneInfo(name) if name else None
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            log.warning("onbekende tijdzone %r: de timers gebruiken de tijd van de container", name)
+            self.tz = None
+
+    def local_now(self) -> datetime:
+        return datetime.fromtimestamp(self._wall(), getattr(self, "tz", None))
+
+    def timer_on(self, tid: str) -> bool:
+        t = self.model.timers.get(tid)
+        if t is None:
+            return False
+        now = self.local_now()
+        return timer_active(t, now.weekday(), now.hour * 60 + now.minute)
 
     def _model_changed(self) -> None:
         self.virt.rebuild()
@@ -704,6 +729,10 @@ class Engine:
             return None
         return info.relays[relay].on
 
+    def _clock_view(self) -> dict:
+        now = self.local_now()
+        return {"time": now.strftime("%H:%M"), "day": now.weekday(), "tz": str(getattr(self, "tz", None) or "tijd van de add-on")}
+
     def snapshot(self) -> dict:
         lights = []
         for key, l in sorted(self.model.lights.items()):
@@ -735,5 +764,7 @@ class Engine:
             "free_relays": free,
             "learn": learn,
             "groups": self.groups.view(),
+            "timers": [{"id": k, **t, "on": self.timer_on(k)} for k, t in sorted(self.model.timers.items(), key=lambda kv: kv[1]["name"].lower())],
+            "clock": self._clock_view(),
             "stats": dict(self.stats),
         }

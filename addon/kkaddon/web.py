@@ -263,6 +263,32 @@ async def schema_place(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def schema_disable(request: web.Request) -> web.Response:
+    b = await _body(request)
+    schema.set_disable(request.app[CTX].model, str(b.get("lamp")), b.get("timer"))
+    return web.json_response({"ok": True})
+
+
+async def timer_post(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    tid = ctx.model.save_timer(None, b.get("name"), b.get("days"))
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"t:{tid}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "key": f"t:{tid}"})
+
+
+async def timer_put(request: web.Request) -> web.Response:
+    b = await _body(request)
+    request.app[CTX].model.save_timer(request.match_info["tid"], b.get("name"), b.get("days"))
+    return web.json_response({"ok": True})
+
+
+async def timer_delete(request: web.Request) -> web.Response:
+    ok = request.app[CTX].model.remove_timer(request.match_info["tid"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
 async def schema_name(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     b = await _body(request)
@@ -424,6 +450,10 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/schema/convert", schema_convert)
     r.add_post("/api/schema/place", schema_place)
     r.add_post("/api/schema/name", schema_name)
+    r.add_post("/api/schema/disable", schema_disable)
+    r.add_post("/api/timers", timer_post)
+    r.add_put("/api/timers/{tid}", timer_put)
+    r.add_delete("/api/timers/{tid}", timer_delete)
     r.add_put("/api/schema/pages", schema_pages)
     r.add_post("/api/schema/wire", schema_wire)
     r.add_post("/api/schema/lamp", schema_lamp)

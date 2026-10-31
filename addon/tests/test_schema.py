@@ -266,3 +266,42 @@ def test_a_switch_can_have_its_own_name_next_to_the_technical_one(tmp_path):
     with pytest.raises(ModelError):
         schema.set_name(r.model, r.engine.snapshot(), "d:dev1", "x" * 61)
     assert blocks(r)["g:spots"]["tech"] == "spots"
+
+
+def test_a_timer_is_a_block_and_connects_to_the_disable_input_of_a_ha_lamp(tmp_path):
+    r = make(tmp_path)
+    schema.convert(r.model, r.engine.snapshot, DEVICES)
+    tid = r.model.save_timer(None, "Nacht", {})
+    schema.set_disable(r.model, "g:spots", tid)
+    b = blocks(r)
+    assert b[f"t:{tid}"]["kind"] == "timer" and b[f"t:{tid}"]["page"] is None and b["g:spots"]["disable"] == tid
+    res = schema.convert(r.model, r.engine.snapshot, DEVICES)
+    assert res["placed"] == 1 and blocks(r)[f"t:{tid}"]["page"] == blocks(r)["g:spots"]["page"], "bij de lamp die hij blokkeert"
+    with pytest.raises(ModelError, match="netwerk"):
+        schema.set_disable(r.model, "l2.0", tid)
+
+
+def test_timer_api(tmp_path):
+    async def go():
+        rig = make(tmp_path)
+        s = Settings(data_dir=tmp_path, key=KEY, key_generated=False, dev_mode=True)
+        c = TestClient(TestServer(web.make_app(web.Ctx(s, rig.engine))))
+        await c.start_server()
+        try:
+            await c.put("/api/schema/pages", json={"pages": [{"id": "a", "name": "A"}]})
+            k = (await (await c.post("/api/timers", json={"name": "Nacht", "days": {}, "page": "a", "x": 10, "y": 10})).json())["key"]
+            assert k == "t:nacht" and rig.model.schema["blocks"][k]["page"] == "a"
+            ok = await c.put("/api/timers/nacht", json={"name": "Nacht", "days": {"mon": [{"from": "03:00", "to": "07:00"}]}})
+            assert ok.status == 200
+            bad = await c.put("/api/timers/nacht", json={"name": "Nacht", "days": {"mon": [{"from": "07:00", "to": "03:00"}]}})
+            assert bad.status == 400 and "middernacht" in (await bad.json())["error"]
+            assert (await c.post("/api/schema/disable", json={"lamp": "g:spots", "timer": "nacht"})).status == 200
+            st = await (await c.get("/api/state")).json()
+            assert st["clock"]["time"] and next(b for b in st["schema"]["blocks"] if b["key"] == "g:spots")["disable"] == "nacht"
+            assert (await (await c.get("/api/export")).json())["timers"]["nacht"]["days"]["mon"]
+            assert (await c.delete("/api/timers/nacht")).status == 200 and (await c.delete("/api/timers/nacht")).status == 404
+            assert "disable" not in rig.model.groups["spots"]
+        finally:
+            await c.close()
+
+    asyncio.run(go())

@@ -67,7 +67,8 @@ function logText(e) {
       ? `${lightName(e.node, e.relay)} ${e.target ? 'aan' : 'uit'} bevestigd (${e.ms} ms)`
       : `${lightName(e.node, e.relay)} ${e.target ? 'aan' : 'uit'}: geen bevestiging, opdracht opgegeven`;
     case 'learn': return { started: 'Leer-modus gestart', stopped: 'Leer-modus gestopt', saved: 'Schakelaars opgeslagen', detected: `Leer-modus: ${nodeName(e.node)} knop ${e.btn + 1} gezien` }[e.what] || e.what;
-    case 'sync': if (e.what === 'command') return `Kring ${groupName(e.group)}: ${e.entity ? e.entity : 'alle leden'} ${e.on ? 'aan' : 'uit'} gezet (bediening)`;
+    case 'sync': if (e.what === 'blocked') return `Kring ${groupName(e.group)}: druk op ${e.entity} genegeerd (disable), touch terug naar ${e.on ? 'aan' : 'uit'}`;
+      if (e.what === 'command') return `Kring ${groupName(e.group)}: ${e.entity ? e.entity : 'alle leden'} ${e.on ? 'aan' : 'uit'} gezet (bediening)`;
       return e.what === 'follow'
       ? `Kring ${groupName(e.group)}: ${e.entity} ${e.on ? 'aan' : 'uit'} → ${e.to.length} ${e.to.length === 1 ? 'volgt' : 'volgen'}${e.skipped.length ? `, ${e.skipped.length} overgeslagen (niet beschikbaar)` : ''}`
       : `Kring ${groupName(e.group)}: ${e.entity} ${e.on ? 'aan' : 'uit'} mislukt (${e.why})`;

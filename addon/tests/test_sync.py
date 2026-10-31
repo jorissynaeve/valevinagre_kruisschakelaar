@@ -245,3 +245,97 @@ def test_lamp_relays_survive_reimport_and_follow_the_entity_list():
         with pytest.raises(ModelError):
             m.set_group("g", lamp=bad)
     m.set_group("g", lamp=[])
+
+
+# ---------------------------------------------------------------- disable-ingang met een timer
+
+NIGHT = {d: [{"from": "03:00", "to": "07:00"}] for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}
+
+
+def at(rig, hour, minute=0):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    rig.wall = datetime(2026, 11, 2, hour, minute, tzinfo=ZoneInfo("Europe/Brussels")).timestamp()  # een maandag
+
+
+def night_lamp(tmp_path):
+    rig, e = start(tmp_path)
+    e.set_tz("Europe/Brussels")
+    tid = e.model.save_timer(None, "Nacht", NIGHT)
+    e.model.set_group("keuken", lamp=[C], disable=tid)
+    rig.ha_calls.clear()
+    return rig, e, tid
+
+
+def test_a_touch_does_nothing_to_the_lamp_while_disabled_and_goes_back_itself(tmp_path):
+    rig, e, _ = night_lamp(tmp_path)
+    at(rig, 4)
+    assert e.snapshot()["groups"][0]["blocked"] is True
+    e.ha_state(A, "on")  # de touch zette zijn eigen relais om
+    assert rig.ha_calls == [(A, False)], "alleen de touch terug, de lamp en de andere touch niet"
+    assert rig.events_of("sync", what="blocked")[-1]["entity"] == A
+    e.ha_state(A, "off")  # de echo van ons bevel is geen nieuwe druk
+    assert len(rig.ha_calls) == 1
+
+
+def test_a_touch_works_again_outside_the_interval_and_the_edges_are_exact(tmp_path):
+    rig, e, _ = night_lamp(tmp_path)
+    at(rig, 7)
+    assert e.snapshot()["groups"][0]["blocked"] is False, "het einde hoort er niet meer bij"
+    e.ha_state(A, "on")
+    assert sorted(rig.ha_calls) == [(B, True), (C, True)]
+    at(rig, 2, 59)
+    assert e.snapshot()["groups"][0]["blocked"] is False
+    at(rig, 3)
+    assert e.snapshot()["groups"][0]["blocked"] is True, "het begin hoort erbij"
+    at(rig, 6, 59)
+    assert e.snapshot()["groups"][0]["blocked"] is True
+
+
+def test_the_lamp_stays_on_when_disabled_and_a_touch_returns_to_its_state(tmp_path):
+    rig, e, _ = night_lamp(tmp_path)
+    e.ha_state(C, "on")  # bv. via HA: het lamp-relais volgt nog gewoon
+    e.ha_state(A, "on"); e.ha_state(B, "on")
+    rig.ha_calls.clear()
+    at(rig, 4)
+    e.ha_state(A, "off")
+    assert rig.ha_calls == [(A, True)], "de lamp blijft aan; de touch gaat terug naar aan"
+
+
+def test_commands_from_the_ui_and_the_lamp_relay_itself_still_work_while_disabled(tmp_path):
+    rig, e, _ = night_lamp(tmp_path)
+    at(rig, 4)
+    assert e.groups.command("keuken", True) is True
+    assert (C, True) in rig.ha_calls, "bedienen in de add-on is geen touch"
+    for x in (A, B, C):
+        e.ha_state(x, "on")
+    assert not rig.events_of("sync", what="blocked")
+    rig.ha_calls.clear()
+    e.ha_state(C, "off")  # iemand schakelt het lamp-relais via HA: de touches volgen, voor hun LED
+    assert set(rig.ha_calls) == {(A, False), (B, False)} and len(rig.ha_calls) == 2
+
+
+def test_a_group_that_is_off_never_acts_even_when_disabled(tmp_path):
+    rig, e, _ = night_lamp(tmp_path)
+    e.model.set_group("keuken", enabled=False)
+    at(rig, 4)
+    e.ha_state(A, "on")
+    assert rig.ha_calls == []
+
+
+def test_timezone_decides_the_interval(tmp_path):
+    rig, e, _ = night_lamp(tmp_path)
+    at(rig, 4)  # 4u in Brussel is 3u in Lissabon, nog binnen; 3u30 in Brussel is 2u30 in Lissabon, erbuiten
+    e.set_tz("Europe/Lisbon")
+    assert e.snapshot()["groups"][0]["blocked"] is True and e.snapshot()["clock"]["time"] == "03:00"
+    at(rig, 3, 30)
+    assert e.snapshot()["groups"][0]["blocked"] is False
+    e.set_tz("Bestaat/Niet")
+    assert e.snapshot()["clock"]["tz"] == "tijd van de add-on"
+
+
+def test_deleting_a_timer_frees_the_lamp(tmp_path):
+    rig, e, tid = night_lamp(tmp_path)
+    at(rig, 4)
+    assert e.model.remove_timer(tid) is True
+    assert "disable" not in e.model.groups["keuken"] and e.snapshot()["groups"][0]["blocked"] is False

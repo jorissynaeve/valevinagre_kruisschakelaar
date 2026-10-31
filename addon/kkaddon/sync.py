@@ -12,6 +12,8 @@ touch drukt, dan krijgen de andere dezelfde stand (absoluut, dus ook als er eent
     drukken achter elkaar geen heen-en-weer geven: we geven alleen een bevel als de laatst opgedragen (of bekende)
     stand afwijkt.
   * Een entiteit die niet beschikbaar is wordt overgeslagen; een bevel dat niet wordt opgevolgd wordt gemeld.
+  * Geeft de `disable`-timer van een kring 1, dan bedient een touch de lamp niet. Zijn eigen relais is dan al omgezet
+    (dat doet het toestel zelf), dus dat zetten we terug op de stand van de lamp. Bedienen via de UI of HA blijft kunnen.
 
 Alles loopt op de klok van de engine; HA zelf (de websocket) zit in habridge.py.
 """
@@ -103,7 +105,26 @@ class EntityGroups:
                 del m.pend[: i + 1]
                 return
         if self.enabled(gid):
-            self._follow(gid, m)
+            if self.blocked(gid) and not m.lamp:
+                self._hold(gid, m, prev)
+            else:
+                self._follow(gid, m)
+
+    def blocked(self, gid: str) -> bool:
+        g = self.e.model.groups.get(gid)
+        return bool(g and g.get("disable") and self.e.timer_on(g["disable"]))
+
+    def _hold(self, gid: str, src: Member, prev: bool) -> None:
+        """Een druk terwijl de lamp geblokkeerd is: alleen de touch terug naar de stand van de lamp."""
+        e = self.e
+        lamps = [x for x in self.members[gid] if x.lamp and x.known is not None]
+        back = any(x.known for x in lamps) if lamps else prev
+        if back != src.known:
+            if not (e.virt.link and e.ha_call and e.ha_call(src.entity, back)):
+                e._emit("sync", what="failed", group=gid, entity=src.entity, on=back, why="geen verbinding met HA")
+                return
+            src.pend.append((back, e._clock() + PENDING_FOR))
+        e._emit("sync", what="blocked", group=gid, entity=src.entity, on=back)
 
     def _follow(self, gid: str, src: Member) -> None:
         e = self.e
@@ -186,5 +207,6 @@ class EntityGroups:
                 "id": gid, "name": g["name"], "enabled": g["enabled"],
                 "members": [{"entity": m.entity, "on": m.known, "avail": m.avail, "lamp": m.lamp} for m in ms],
                 "lamp": [m.entity for m in ms if m.lamp],
+                "disable": g.get("disable"), "blocked": self.blocked(gid),
             })
         return out

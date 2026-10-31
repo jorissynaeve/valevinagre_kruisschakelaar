@@ -35,6 +35,16 @@ staan ze samen, en de verwijzingen tonen er geen ruimtenaam. *Opnieuw indelen* v
 * Een relais op een uitgang reageert nog op zijn eigen touch, en een touch-relais volgt de lamp mee (daar hangt zijn LED aan).
   Dat gedrag is hetzelfde als voorheen.
 
+### Timer en disable
+
+Een **timer** (paars, knop *+ Timer*) heeft per dag tot 3 intervallen waarin zijn uitgang 1 is, en anders 0. De tijd is die van Home
+Assistant. Een interval loopt niet over middernacht: maak er twee van, op twee dagen. *Tot 00:00* is tot middernacht.
+
+Sluit de timer aan op de **disable-ingang** van een lamp: sleep naar het paarse bolletje, of kies hem in de zijbalk van de lamp. Staat de
+uitgang op 1, dan bedient een touch de lamp niet. Het relais van de touch schakelt zelf en wordt meteen teruggezet op de stand van de lamp;
+in het logboek zie je dat de druk genegeerd is. De lamp zelf blijft zoals hij stond, ook als hij aan was. Bedienen in de add-on of via
+HA (het lamp-relais) blijft kunnen. Een lamp die niet *Actief* is, doet sowieso niets. Op lichten op het netwerk kan dit nog niet.
+
 Een lamp via Home Assistant werkt alleen met HA-entiteiten, en een licht op het netwerk alleen met nodes en externe apparaten.
 Zijn uitgang ligt vast. Mengen kan nog niet.
 

@@ -9,7 +9,9 @@ Bestandsformaat (network.json, ook voor export/import):
    "follow": [{"node": 1, "ind": 1, "light": null}],      # handmatige indicator-koppelingen (null = geen)
    "groups": {"keuken": {"name": "Keuken", "enabled": false,
                          "entities": ["switch.r4b01_sonoff_4ch_r4_01_relay_4", "light.t4b001_t4b001_relay_1"],
-                         "lamp": ["switch.r4b01_sonoff_4ch_r4_01_relay_4"]}},   # lamp: de relais die echt de lamp schakelen
+                         "lamp": ["switch.r4b01_sonoff_4ch_r4_01_relay_4"],     # lamp: de relais die echt de lamp schakelen
+                         "disable": "nacht"}},                                  # optioneel: timer die de touches blokkeert
+   "timers": {"nacht": {"name": "Nacht", "days": {"mon": [{"from": "03:00", "to": "07:00"}]}}},  # per dag tot 3 intervallen; "to" 00:00 = middernacht
    "plan":   {"floors": [{"id": "g", "name": "Begane grond", "w": 1000, "h": 640,
                           "rooms": [{"x": 20, "y": 20, "w": 300, "h": 200, "name": "Living"}],
                           "items": {"n5": [120, 80], "l2.1": [200, 90]}}]},   # plattegrond, alleen weergave
@@ -34,6 +36,8 @@ MAX_NAME = 60
 MAX_FLOORS, MAX_ROOMS, MAX_ITEMS, PLAN_MAX = 8, 80, 400, 4000
 MAX_GROUPS, MAX_GROUP_ENTITIES = 120, 40
 MAX_PAGES, MAX_BLOCKS, MAX_SWITCHES, MAX_SWITCH_GANGS, SCHEMA_MAX = 60, 1000, 300, 64, 20000
+MAX_TIMERS, MAX_INTERVALS = 60, 3
+DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 FORMAT_VERSION = 1
 
 
@@ -99,8 +103,14 @@ def _group(gid, v) -> dict:
     lamp = v.get("lamp") or []
     if not isinstance(lamp, list) or any(not isinstance(x, str) or x not in ents for x in lamp):
         raise ModelError(f"kring {gid}: lamp-relais moeten entiteiten van de kring zijn")
-    return {"name": _name(v.get("name"), "kring.name") or gid, "enabled": bool(v.get("enabled", False)), "entities": ents,
-            "lamp": [e for e in ents if e in lamp]}
+    out = {"name": _name(v.get("name"), "kring.name") or gid, "enabled": bool(v.get("enabled", False)), "entities": ents,
+           "lamp": [e for e in ents if e in lamp]}
+    dis = v.get("disable")
+    if dis is not None:
+        if not isinstance(dis, str) or not GROUP_ID_RE.match(dis):
+            raise ModelError(f"kring {gid}: ongeldige timer {dis!r}")
+        out["disable"] = dis
+    return out
 
 
 def _groups(raw) -> dict[str, dict]:
@@ -109,6 +119,55 @@ def _groups(raw) -> dict[str, dict]:
     if not isinstance(raw, dict) or len(raw) > MAX_GROUPS:
         raise ModelError(f"kringen: maximaal {MAX_GROUPS}")
     return {gid: _group(gid, v) for gid, v in raw.items()}
+
+
+TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _minutes(t: str) -> int:
+    return int(t[:2]) * 60 + int(t[3:])
+
+
+def _timer(tid, v) -> dict:
+    """Per dag tot 3 intervallen waarin de uitgang 1 is. Een interval loopt niet over middernacht: maak er twee van."""
+    if not isinstance(tid, str) or not GROUP_ID_RE.match(tid) or not isinstance(v, dict):
+        raise ModelError(f"timer: ongeldig id {tid!r}")
+    name = _name(v.get("name"), "timer.name")
+    if not name:
+        raise ModelError("geef de timer een naam")
+    raw = v.get("days") or {}
+    if not isinstance(raw, dict) or set(raw) - set(DAYS):
+        raise ModelError("timer: onbekende dag")
+    days = {}
+    for d in DAYS:
+        items = raw.get(d) or []
+        if not isinstance(items, list) or len(items) > MAX_INTERVALS:
+            raise ModelError(f"timer: maximaal {MAX_INTERVALS} intervallen per dag")
+        out = []
+        for it in items:
+            a, b = (it.get("from"), it.get("to")) if isinstance(it, dict) else (None, None)
+            if not (isinstance(a, str) and isinstance(b, str) and TIME_RE.match(a) and TIME_RE.match(b)):
+                raise ModelError("timer: tijd verwacht als UU:MM")
+            if b != "00:00" and _minutes(a) >= _minutes(b):
+                raise ModelError(f"timer: {a} tot {b} loopt over middernacht of is leeg; maak er twee intervallen van")
+            out.append({"from": a, "to": b})
+        if out:
+            days[d] = sorted(out, key=lambda x: x["from"])
+    return {"name": name, "days": days}
+
+
+def timer_active(t: dict, weekday: int, minutes: int) -> bool:
+    """Staat de uitgang op 1? Begin hoort erbij, einde niet; `to` 00:00 is middernacht aan het eind van de dag."""
+    return any(_minutes(i["from"]) <= minutes and (i["to"] == "00:00" or minutes < _minutes(i["to"]))
+               for i in t["days"].get(DAYS[weekday], []))
+
+
+def _timers(raw) -> dict[str, dict]:
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict) or len(raw) > MAX_TIMERS:
+        raise ModelError(f"timers: maximaal {MAX_TIMERS}")
+    return {k: _timer(k, v) for k, v in raw.items()}
 
 
 def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]]) -> None:
@@ -127,7 +186,7 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]]) -> None:
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
 
 
 def _switch_gangs(raw) -> list[dict]:
@@ -294,6 +353,7 @@ class Model:
         self.plan: dict = {"floors": []}  # plattegrond (alleen weergave)
         self.groups: dict[str, dict] = {}  # entiteitskringen (AppDaemon-stijl): id -> {name, enabled, entities}
         self.schema: dict = _schema(None)  # blokkenschema per ruimte (alleen weergave)
+        self.timers: dict[str, dict] = {}  # timer-modules: id -> {name, days}
         self.rev = 0
         self._listeners: list[Callable[[], None]] = []
         if self.path and self.path.exists():
@@ -338,6 +398,8 @@ class Model:
             d["plan"] = self.plan
         if self.groups:
             d["groups"] = self.groups
+        if self.timers:
+            d["timers"] = self.timers
         if self.schema["pages"] or self.schema["switches"] or self.schema["names"]:
             d["schema"] = self.schema
         return d
@@ -377,9 +439,10 @@ class Model:
         plan = _plan(d.get("plan"))
         groups = _groups(d.get("groups"))
         schema = _schema(d.get("schema"))
+        timers = _timers(d.get("timers"))
         if save:  # bij het opstarten nooit weigeren, bij een import wel
             _conflicts(groups, virtual)
-        self.nodes, self.lights, self.follow, self.virtual, self.plan, self.groups, self.schema = nodes, lights, follow, virtual, plan, groups, schema
+        self.nodes, self.lights, self.follow, self.virtual, self.plan, self.groups, self.schema, self.timers = nodes, lights, follow, virtual, plan, groups, schema, timers
         if save:
             self._changed()
 
@@ -397,7 +460,8 @@ class Model:
             if not isinstance(ents, list) or len(ents) < 2:
                 raise ModelError(f"kring {gid}: minstens 2 entiteiten verwacht")
             keep = [x for x in (old["lamp"] if old else []) if isinstance(ents, list) and x in ents]  # lamp-relais blijven bij opnieuw importeren
-            new[gid] = _group(gid, {"name": it.get("name"), "entities": ents, "enabled": old["enabled"] if old else False, "lamp": keep})
+            new[gid] = _group(gid, {"name": it.get("name"), "entities": ents, "enabled": old["enabled"] if old else False, "lamp": keep,
+                                    "disable": old.get("disable") if old else None})
         if len(new) > MAX_GROUPS:
             raise ModelError(f"kringen: maximaal {MAX_GROUPS}")
         _conflicts(new, self.virtual)
@@ -420,14 +484,19 @@ class Model:
         self._changed()
         return gid
 
-    def set_group(self, gid: str, name=None, entities=None, enabled=None, lamp=None) -> None:
+    def set_group(self, gid: str, name=None, entities=None, enabled=None, lamp=None, disable=...) -> None:
         old = self.groups.get(gid)
         if old is None:
             raise ModelError("onbekende kring")
         ents = old["entities"] if entities is None else entities
         if lamp is None:  # nieuwe entiteitenlijst: lamp-relais die er niet meer in staan vallen weg
             lamp = [x for x in old["lamp"] if isinstance(ents, list) and x in ents]
+        if disable is ...:
+            disable = old.get("disable")
+        elif disable is not None and disable not in self.timers:
+            raise ModelError("onbekende timer")
         new = _group(gid, {
+            "disable": disable,
             "name": old["name"] if name is None else name,
             "entities": ents,
             "enabled": old["enabled"] if enabled is None else enabled,
@@ -437,6 +506,29 @@ class Model:
         _conflicts(groups, self.virtual)
         self.groups = groups
         self._changed()
+
+    def save_timer(self, tid: str | None, name, days) -> str:
+        if tid is None:
+            if len(self.timers) >= MAX_TIMERS:
+                raise ModelError(f"timers: maximaal {MAX_TIMERS}")
+            base = re.sub(r"[^a-z0-9_]+", "_", str(name or "").lower()).strip("_")[:70] or "timer"
+            tid, n = base, 2
+            while tid in self.timers:
+                tid, n = f"{base}_{n}", n + 1
+        elif tid not in self.timers:
+            raise ModelError("onbekende timer")
+        self.timers = {**self.timers, tid: _timer(tid, {"name": name, "days": days})}
+        self._changed()
+        return tid
+
+    def remove_timer(self, tid: str) -> bool:
+        """Lampen die hem gebruikten zijn daarna gewoon weer te bedienen."""
+        if tid not in self.timers:
+            return False
+        self.timers = {k: v for k, v in self.timers.items() if k != tid}
+        self.groups = {k: {x: y for x, y in g.items() if not (x == "disable" and y == tid)} for k, g in self.groups.items()}
+        self._changed()
+        return True
 
     def remove_group(self, gid: str) -> bool:
         if gid not in self.groups:

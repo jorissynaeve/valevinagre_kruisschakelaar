@@ -106,7 +106,8 @@ def _lamp_blocks(model: Model, snap: dict, owners: dict) -> list[dict]:
             sw, gang = owners.get(m["entity"], (None, None))
             conns["out" if m["lamp"] else "in"].append({"ref": {"entity": m["entity"]}, "sw": sw, "gang": gang, "on": m["on"], "text": m["entity"]})
         out.append({"key": f"g:{g['id']}", "kind": "lamp", "source": "ha", "id": g["id"], "name": g["name"], "tech": g["id"], "enabled": g["enabled"], "on": on,
-                    "pending": False, "online": any(m["avail"] for m in g["members"]), "inputs": conns["in"], "outputs": conns["out"]})
+                    "pending": False, "online": any(m["avail"] for m in g["members"]), "inputs": conns["in"], "outputs": conns["out"],
+                    "disable": g.get("disable"), "blocked": g.get("blocked", False)})
     for l in snap["lights"]:
         inputs = [{"ref": {"node": t["node"], "btn": t["btn"]}, "mode": t["mode"], "sw": f"n{t['node']}", "gang": t["btn"], "on": None,
                    "text": f"{model.node_name(t['node'])} knop {t['btn'] + 1}"} for t in l["triggers"]]
@@ -119,11 +120,16 @@ def _lamp_blocks(model: Model, snap: dict, owners: dict) -> list[dict]:
     return out
 
 
+def _timer_blocks(snap: dict) -> list[dict]:
+    return [{"key": f"t:{t['id']}", "kind": "timer", "source": "timer", "id": t["id"], "name": t["name"], "tech": t["id"], "alias": "", "room": "",
+             "online": True, "on": t["on"], "days": t["days"]} for t in snap.get("timers", [])]
+
+
 def view(model: Model, snap: dict) -> dict:
     """Alles wat de pagina nodig heeft om het schema te tekenen."""
     states = {m["entity"]: m["on"] for g in snap["groups"] for m in g["members"]}
     owners = _gang_owners(model)
-    blocks = _switch_blocks(model, snap, owners, states) + _lamp_blocks(model, snap, owners)
+    blocks = _switch_blocks(model, snap, owners, states) + _lamp_blocks(model, snap, owners) + _timer_blocks(snap)
     names = {b["key"]: b for b in blocks if b["kind"] == "switch"}
     for b in blocks:
         for c in b.get("inputs", []) + b.get("outputs", []):
@@ -224,6 +230,15 @@ def place(model: Model, snap: dict, key: str, page, x=0, y=0) -> None:
     model.set_schema(s)
 
 
+def set_disable(model: Model, lamp: str, timer) -> None:
+    """De disable-ingang van een lamp. Een licht op het netwerk beslist op de node zelf en kan dit nog niet."""
+    if not lamp.startswith("g:"):
+        raise ModelError("Disable kan voorlopig alleen op een lamp via Home Assistant: een licht op het netwerk beslist op de node zelf.")
+    if lamp[2:] not in model.groups:
+        raise ModelError("onbekende lamp")
+    model.set_group(lamp[2:], disable=timer)
+
+
 def set_name(model: Model, snap: dict, key: str, name) -> None:
     """Eigen naam van een schakelaar-blok; leeg = weer de technische naam."""
     b = next((x for x in view(model, snap)["blocks"] if x["key"] == key), None)
@@ -307,7 +322,9 @@ def _new_switches(model: Model, devices: list[dict]) -> tuple[dict, dict]:
 
 
 def _height(b: dict) -> int:
-    rows = len(b["gangs"]) if b["kind"] == "switch" else max(len(b["inputs"]), len(b["outputs"])) + 1
+    if b["kind"] == "timer":
+        return HEAD + ROW + FOOT
+    rows = len(b["gangs"]) if b["kind"] == "switch" else max(len(b["inputs"]), len(b["outputs"])) + (2 if b["source"] == "ha" else 1)
     return HEAD + rows * ROW + FOOT
 
 
@@ -341,6 +358,9 @@ def _rooms(blocks: list[dict], rooms: dict[str, str], areas: set[str]) -> dict[s
         hit = next((a for a in named if re.search(rf"\b{re.escape(a.casefold())}\b", b["name"].casefold())), "")
         own = "" if re.search(r" relais \d+$", b["name"]) else b["name"]
         out[b["key"]] = fam.get(b["key"]) or hit or most(b["inputs"]) or own
+    for b in blocks:  # een timer staat bij de eerste lamp die hij blokkeert
+        if b["kind"] == "timer":
+            out[b["key"]] = next((out[l["key"]] for l in lamps if l.get("disable") == b["id"]), "")
     return out
 
 
@@ -369,7 +389,7 @@ def convert(model: Model, engine_snapshot, devices: list[dict] | None = None, ar
     lamps = [b for b in blocks if b["kind"] == "lamp" and (b["source"] == "ha" or b["inputs"] or not is_virtual(b["node"]))]
     wired_in = {c["sw"] for b in lamps for c in b["inputs"]}
     wired_out = {c["sw"] for b in lamps for c in b["outputs"]}
-    wanted_keys = {b["key"] for b in lamps} | wired_in | wired_out
+    wanted_keys = {b["key"] for b in lamps} | wired_in | wired_out | {b["key"] for b in blocks if b["kind"] == "timer"}
     def wanted(b):
         return b["key"] in wanted_keys
 
@@ -402,7 +422,7 @@ def convert(model: Model, engine_snapshot, devices: list[dict] | None = None, ar
         return min(hits) if hits else len(lamp_order)
     for b in sorted(todo, key=lambda b: (b["kind"] != "lamp", first_lamp(b), b["name"].lower())):
         page = page_of(room_of.get(b["key"], ""))
-        col = COL_LAMP if b["kind"] == "lamp" else COL_IN if b["key"] in wired_in else COL_OUT
+        col = COL_LAMP if b["kind"] == "lamp" else COL_IN if b["key"] in wired_in or b["kind"] == "timer" else COL_OUT
         y = bottom.get((page, col), 30)
         s["blocks"][b["key"]] = {"page": page, "x": col, "y": y}
         bottom[(page, col)] = y + heights[b["key"]] + GAP
