@@ -9,7 +9,7 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from . import __version__, appdaemon_import
+from . import __version__, appdaemon_import, schema
 from .engine import Engine
 from .model import Model, ModelError
 from .settings import Settings, key_header
@@ -94,6 +94,7 @@ def build_state(ctx: Ctx) -> dict:
     snap["ha"] = {"enabled": bool(ctx.ha and ctx.ha.enabled), "connected": bool(ctx.ha and ctx.ha.connected), "error": ctx.ha.last_error if ctx.ha else ""}
     snap["plan"] = ctx.model.plan
     snap["names"] = {str(k): v.get("name", "") for k, v in ctx.model.nodes.items()}
+    snap["schema"] = schema.view(ctx.model, snap)
     return snap
 
 
@@ -245,6 +246,63 @@ async def plan_put(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def schema_convert(request: web.Request) -> web.Response:
+    """Het huidige omzetten naar blokken en pagina's. Zonder HA-register wordt op entiteit-id gegroepeerd en zijn er geen ruimtes."""
+    ctx: Ctx = request.app[CTX]
+    r = await ctx.ha.devices() if ctx.ha else {"registry": False, "devices": []}
+    res = schema.convert(ctx.model, ctx.engine.snapshot, r["devices"])
+    return web.json_response({"ok": True, "registry": r["registry"], **res})
+
+
+async def schema_place(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    schema.place(ctx.model, ctx.engine.snapshot(), str(b.get("key")), b.get("page"), b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True})
+
+
+async def schema_pages(request: web.Request) -> web.Response:
+    schema.set_pages(request.app[CTX].model, (await _body(request)).get("pages"))
+    return web.json_response({"ok": True})
+
+
+async def schema_wire(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    schema.wire(ctx.model, ctx.engine, str(b.get("lamp")), b.get("dir"), b.get("ref"), bool(b.get("remove")))
+    return web.json_response({"ok": True})
+
+
+async def schema_lamp(request: web.Request) -> web.Response:
+    """Een nieuw, leeg lamp-blok, meteen op zijn plek."""
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    gid = ctx.model.add_group(b.get("name"))
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"g:{gid}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "key": f"g:{gid}"})
+
+
+async def schema_switch_post(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    sid = schema.save_switch(ctx.model, None, b.get("name"), b.get("gangs"))
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"d:{sid}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "key": f"d:{sid}"})
+
+
+async def schema_switch_put(request: web.Request) -> web.Response:
+    b = await _body(request)
+    schema.save_switch(request.app[CTX].model, request.match_info["sid"], b.get("name"), b.get("gangs"))
+    return web.json_response({"ok": True})
+
+
+async def schema_switch_delete(request: web.Request) -> web.Response:
+    ok = schema.remove_switch(request.app[CTX].model, request.match_info["sid"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
 async def ha_devices(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     r = await ctx.ha.devices() if ctx.ha else {"registry": False, "devices": []}
@@ -328,7 +386,7 @@ def asset_version() -> str:
 async def index(request: web.Request) -> web.Response:
     v = asset_version()
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    for f in ("style.css", "plan.js", "groups.js", "app.js"):
+    for f in ("style.css", "plan.js", "groups.js", "schema.js", "app.js"):
         html = html.replace(f'static/{f}"', f'static/{f}?v={v}"')
     return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
@@ -354,6 +412,14 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_get("/api/ha/entities", ha_entities)
     r.add_get("/api/ha/devices", ha_devices)
     r.add_put("/api/plan", plan_put)
+    r.add_post("/api/schema/convert", schema_convert)
+    r.add_post("/api/schema/place", schema_place)
+    r.add_put("/api/schema/pages", schema_pages)
+    r.add_post("/api/schema/wire", schema_wire)
+    r.add_post("/api/schema/lamp", schema_lamp)
+    r.add_post("/api/schema/switch", schema_switch_post)
+    r.add_put("/api/schema/switch/{sid}", schema_switch_put)
+    r.add_delete("/api/schema/switch/{sid}", schema_switch_delete)
     r.add_post("/api/groups/parse", groups_parse)
     r.add_post("/api/groups/all-off", groups_all_off)
     r.add_post("/api/groups", groups_post)

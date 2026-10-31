@@ -166,6 +166,7 @@ Gebouwd, zie §16. Code in `addon/` (Python 3.12, asyncio, aiohttp, PyNaCl, aiom
 | F3c ✅ | Plattegrond in de add-on: kamers tekenen, schakelaars en lampen plaatsen, kringen schematisch tonen (zie §19) |
 | F7b ✅ | Entiteitskringen: de oude AppDaemon-kruisschakelaars importeren en per kring aan/uit zetten (zie §20) |
 | F7a ✅ | Bestaande ESPHome-schakelaars tijdelijk als extern apparaat in de add-on (zie §18) |
+| F3d ✅ | Blokkenschema per ruimte, zoals Loxone Config (zie §21) |
 | F7 | Migratie per kring: toestellen om te flashen, met ESPHome-YAML als terugvalmogelijkheid |
 
 ## 12. Risico's en punten om vroeg te testen
@@ -372,3 +373,27 @@ De oude opzet had per lamp een AppDaemon-app (`module: kruisschakelaar`) met een
 ### Niet getest / open
 - Alleen tegen een nagebootste HA en met unit-tests; de oude AppDaemon-app is niet naast de add-on gedraaid. Of AppDaemon bijzonderheden had die hier ontbreken (bv. vertragingen, uitzonderingen per entiteit) is niet bekeken: alleen de entiteitenlijsten komen mee.
 - De kringen staan niet op de plattegrond en gebruiken de nodes en het ESP-NOW-netwerk niet. Ze zijn bedoeld als tussenstap.
+
+## 21. Schema (blokken per ruimte, zoals Loxone Config)
+
+Tabblad *Schema*, nu de startpagina: per ruimte een tabblad met blokken en draden. Code: `kkaddon/schema.py` (blokken, draden, omzetten), `static/schema.js` (tekenen en slepen), `schema` in `network.json`.
+
+| Blok | Sleutel | Links | Rechts |
+|---|---|---|---|
+| Lamp via HA (een kring) | `g:<id>` | ingangen: leden die geen lamp-relais zijn | uitgangen: de lamp-relais |
+| Lamp op het netwerk (een licht) | `l<node>.<relais>` | ingangen: de triggers | één vaste uitgang: het eigen relais |
+| Schakelaar: node of extern apparaat | `n<id>` | relais per gang | touch per gang |
+| Schakelaar: HA-apparaat | `d:<id>` | relais per gang | touch per gang |
+
+- **Eén waarheid**: een draad is geen eigen gegeven maar een lid van een kring of een trigger van een licht. `schema.wire` is de enige plek waar het schema de schakelingen wijzigt, via de bestaande `set_group` en `set_triggers`, dus met dezelfde controles (een actieve entiteit heeft één eigenaar, maximaal 12 triggers). In `schema` staan alleen ruimtes, plekken en de `d:`-blokken. Dat bewaren verhoogt `rev` niet en geeft geen herconfiguratie, net als bij de plattegrond.
+- **Ingang of uitgang**: bij een HA-toestel zijn touch en relais één entiteit, want we zien een druk alleen als een stand-wijziging. Een lid is daarom ingang óf uitgang. Dat is hetzelfde onderscheid als `lamp` in §20. **Het gedrag is ongewijzigd**: alle leden volgen elkaar nog. Een touch-relais moet de lamp volgen omdat zijn LED eraan hangt, en een lamp-relais blijft op zijn eigen touch reageren.
+- **Omzetten** (`POST /api/schema/convert`): maakt `d:`-blokken uit het HA-apparatenregister, of zonder register op de naam van de entiteit (`…_relay_3`). Maakt de ruimtes uit de HA-gebieden en de kamers van nodes. Een lamp hoort bij de ruimte in zijn naam, anders waar de meeste touches zitten, anders bij zijn relais. Een schakelaar zonder gebied gaat naar de ruimte van zijn lampen. Zonder gegevens: *Zonder ruimte*. Kan herhaald worden: wat staat blijft staan. Een toestel zonder draden en een extern licht zonder bediening blijven in de lijst links.
+- **Andere ruimte**: een blok staat op één pagina. Een draad naar een andere pagina is een `↗`-regel op de lamp en een klikbare verwijzing op de schakelaar. Zo'n aansluiting maak je via het zijpaneel, niet door te slepen.
+- **Verhuizen naar een extern apparaat**: een gang van een extern apparaat gaat voor op een `d:`-blok. Importeer je een toestel, dan verhuizen de draden vanzelf en verdwijnt het lege `d:`-blok.
+- **Een lamp mag leeg zijn**: een kring heeft geen minimum van 2 entiteiten meer, want een lamp-blok krijgt zijn relais één voor één. Import en *Nieuwe kring* vragen wel nog 2.
+
+### Niet getest / open
+- Getest met unit-tests (`test_schema.py`) en in een echte browser (slepen, klik-klik, Delete, ruimtes, donker, smal), met een nagebootst huis. Nog niet met de echte HA-registers en het echte aantal kringen: hoe druk een pagina met veel draden wordt en of de indeling per ruimte klopt, moet daar blijken.
+- Een HA-lamp mengt niet met geflashte nodes en een netwerklicht niet met `d:`-blokken. Dat wordt nodig bij de migratie (F7).
+- Een blok kan niet op twee pagina's staan (Loxone kan dat wel); geen logische blokken zoals timers of bewegingsmelders; geen automatische lijnvoering rond blokken; geen undo.
+- De kringen staan nog niet op de plattegrond, en de tabbladen *Lichten* en *HA-kringen* bestaan naast het schema.

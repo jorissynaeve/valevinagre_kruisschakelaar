@@ -114,7 +114,7 @@ async function openGroupEdit(id) {
   try { ents = (await api('GET', 'ha/entities')).entities; } catch { /* zonder suggesties kan het ook */ }
   const rows = g ? g.members.map((m) => m.entity) : ['', ''];
   smallDialog(`<h3>${g ? 'Kring bewerken' : 'Nieuwe kring'}</h3>
-    <p class="sub">Alle entiteiten van een kring volgen elkaar. Een kring heeft minstens 2 entiteiten.${g && g.enabled ? ' Deze kring is actief: wijzigingen gelden meteen.' : ''}</p>
+    <p class="sub">Alle entiteiten van een kring volgen elkaar.${g ? '' : ' Een nieuwe kring heeft minstens 2 entiteiten.'}${g && g.enabled ? ' Deze kring is actief: wijzigingen gelden meteen.' : ''}</p>
     ${S.ha.connected ? '' : '<p class="sub" style="color:var(--bad)">Home Assistant is niet verbonden: typ de entiteit-id zelf, zonder suggesties.</p>'}
     <label for="gname">Naam</label><input type="text" id="gname" maxlength="60" value="${esc(g ? g.name : '')}" placeholder="bv. Keuken">
     <datalist id="gentlist">${ents.map((e) => `<option value="${esc(e.entity_id)}">${esc(e.name)}</option>`).join('')}</datalist>

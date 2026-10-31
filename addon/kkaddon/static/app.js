@@ -7,7 +7,7 @@ const MODE_NL = { toggle: 'wisselen', on: 'aan', off: 'uit' };
 const CMD_BTN = 255; // LIGHT_STATE-oorzaak "commando" (CMD_LIGHT), dus Home Assistant of deze UI
 
 let S = null; // laatste momentopname van de add-on
-let tab = 'lights';
+let tab = 'schema';
 let L = null; // open licht-dialoog: {node, relay, picks, learning, saved}
 let tokenRefresh = 0;
 
@@ -179,11 +179,15 @@ function viewSettings() {
 }
 
 function render() {
-  if (!S || (tab === 'plan' && PL.drag)) return; // tijdens slepen op de plattegrond niet opnieuw tekenen
+  if (!S || (tab === 'plan' && PL.drag) || (tab === 'schema' && (SC.drag || (SC.link && !SC.link.armed)))) return; // tijdens slepen niet opnieuw tekenen
   chips();
   banner();
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
-  if (tab !== 'settings' || !$('#keybox')) $('#main').innerHTML = { lights: viewLights, plan: viewPlan, nodes: viewNodes, groups: viewGroups, log: viewLog, settings: viewSettings }[tab]();
+  document.body.classList.toggle('wide', tab === 'schema');
+  if (tab === 'schema') { // het kader blijft staan, anders verspring je bij elke druk terug naar de linkerbovenhoek
+    if (!$('#scsvg')) { $('#main').innerHTML = viewSchema(); SC.lastPanel = ''; }
+    schemaUpdate();
+  } else if (tab !== 'settings' || !$('#keybox')) $('#main').innerHTML = { lights: viewLights, plan: viewPlan, nodes: viewNodes, groups: viewGroups, log: viewLog, settings: viewSettings }[tab]();
   if (L) refreshPicks();
 }
 

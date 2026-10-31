@@ -13,6 +13,25 @@ knop", leert welke schakelaar welk licht bedient en houdt de configuratie van de
 4. De add-on praat via UDP (poort 47474) met de bridge(s). Dat gaat standaard via broadcast. Staat een bridge
    achter een repeater die broadcast filtert (bv. het poolhuis), zet hem dan bij **Vaste bridges** in de opties.
 
+## Schema (zoals Loxone Config)
+
+Tabblad *Schema*: per ruimte een tabblad met blokken en draden. Kies de eerste keer **Huidige configuratie omzetten**. De add-on
+maakt dan de ruimtes uit de gebieden van Home Assistant en zet je kringen, lichten en toestellen op hun plek, met de draden zoals
+ze nu lopen. Aan de schakelingen verandert daarbij niets. Later kun je opnieuw *Omzetten*: wat al staat blijft staan.
+
+* Een **lamp-blok** heeft links de **ingangen** (de touches die de lamp bedienen) en rechts de **uitgangen** (de relais die de lamp
+  echt schakelen). De bol zet de lamp aan of uit. *Actief* of *uit* is hetzelfde als op het tabblad *HA-kringen*.
+* Een **schakelaar-blok** is een toestel met per gang rechts een **touch** en links een **relais**.
+* **Draad trekken**: sleep van een poort naar een andere poort, of klik op de ene en daarna op de andere (handig op een tablet).
+  Een draad weghalen: klik erop en druk op Delete, of kies ✕ rechts. Een draad in een actieve lamp geldt **meteen**.
+* Een aansluiting in een **andere ruimte** staat als `↗` op de lamp en als blauwe verwijzing op de schakelaar (klik om erheen te gaan).
+  Maak hem rechts via *ingang toevoegen* of *uitgang toevoegen*.
+* Een relais op een uitgang reageert nog op zijn eigen touch, en een touch-relais volgt de lamp mee (daar hangt zijn LED aan).
+  Dat gedrag is hetzelfde als voorheen.
+
+Een lamp via Home Assistant werkt alleen met HA-entiteiten, en een licht op het netwerk alleen met nodes en externe apparaten.
+Zijn uitgang ligt vast. Mengen kan nog niet.
+
 ## Een licht instellen
 
 1. Tabblad *Lichten* → bij een relais zonder licht *Als licht toevoegen* en een naam kiezen.

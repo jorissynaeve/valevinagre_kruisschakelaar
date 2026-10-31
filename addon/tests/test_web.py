@@ -459,7 +459,6 @@ def test_group_entities_can_be_added_and_removed_via_api(tmp_path):
             assert env.rig.model.groups["gang"]["name"] == "Gang boven" and env.rig.model.groups["gang"]["lamp"] == ["switch.b"]
             ok = await c.put("/api/groups/gang", json={"entities": ["switch.a", "light.c"]})
             assert ok.status == 200 and env.rig.model.groups["gang"]["lamp"] == [], "het lamp-relais is uit de kring: de keuze valt weg"
-            assert (await c.put("/api/groups/gang", json={"entities": ["switch.a"]})).status == 400, "minstens 2 entiteiten"
             assert (await c.put("/api/groups/gang", json={"entities": ["switch.a", "geen id"]})).status == 400
             assert env.rig.model.groups["gang"]["entities"] == ["switch.a", "light.c"], "een afgewezen wijziging verandert niets"
             # een nieuwe kring met een eigen id

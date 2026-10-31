@@ -12,7 +12,10 @@ Bestandsformaat (network.json, ook voor export/import):
                          "lamp": ["switch.r4b01_sonoff_4ch_r4_01_relay_4"]}},   # lamp: de relais die echt de lamp schakelen
    "plan":   {"floors": [{"id": "g", "name": "Begane grond", "w": 1000, "h": 640,
                           "rooms": [{"x": 20, "y": 20, "w": 300, "h": 200, "name": "Living"}],
-                          "items": {"n5": [120, 80], "l2.1": [200, 90]}}]}}   # plattegrond, alleen weergave
+                          "items": {"n5": [120, 80], "l2.1": [200, 90]}}]},   # plattegrond, alleen weergave
+   "schema": {"pages": [{"id": "keuken", "name": "Keuken"}],                    # schema: één pagina per ruimte, alleen weergave
+              "blocks": {"g:keuken": {"page": "keuken", "x": 420, "y": 40}},    # g:<kring>, l<node>.<relais>, n<node>, d:<schakelaar>
+              "switches": {"abc": {"name": "Touch keuken", "gangs": [{"entity": "switch.a", "name": "relay_1"}]}}}}
 """
 from __future__ import annotations
 
@@ -29,6 +32,7 @@ from .proto import MAX_GANGS, MAX_IND, MAX_RELAYS, MAX_TRIG, MODE_BY_NAME, VIRTU
 MAX_NAME = 60
 MAX_FLOORS, MAX_ROOMS, MAX_ITEMS, PLAN_MAX = 8, 80, 400, 4000
 MAX_GROUPS, MAX_GROUP_ENTITIES = 120, 40
+MAX_PAGES, MAX_BLOCKS, MAX_SWITCHES, MAX_SWITCH_GANGS, SCHEMA_MAX = 60, 1000, 300, 64, 20000
 FORMAT_VERSION = 1
 
 
@@ -82,8 +86,8 @@ def _group(gid, v) -> dict:
     if not isinstance(v, dict):
         raise ModelError(f"kring {gid}: object verwacht")
     raw = v.get("entities")
-    if not isinstance(raw, list) or not 2 <= len(raw) <= MAX_GROUP_ENTITIES:
-        raise ModelError(f"kring {gid}: 2 tot {MAX_GROUP_ENTITIES} entiteiten verwacht")
+    if not isinstance(raw, list) or len(raw) > MAX_GROUP_ENTITIES:  # een lamp-blok begint leeg en krijgt zijn relais één voor één
+        raise ModelError(f"kring {gid}: maximaal {MAX_GROUP_ENTITIES} entiteiten")
     ents = []
     for e in raw:
         if not isinstance(e, str) or not ENTITY_RE.match(e):
@@ -120,6 +124,58 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]]) -> None:
                 raise ModelError(f"{e} wordt al bestuurd door {owner[e]} en staat ook in kring {g['name']} (aan): zet er een van beide uit of haal de entiteit eruit")
             owner[e] = f"kring {g['name']}"
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
+PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
+SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+
+
+def _switch_gangs(raw) -> list[dict]:
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_SWITCH_GANGS:
+        raise ModelError(f"een schakelaar heeft 1 tot {MAX_SWITCH_GANGS} gangen")
+    out, seen = [], set()
+    for g in raw:
+        ent = g.get("entity") if isinstance(g, dict) else None
+        if not isinstance(ent, str) or not ENTITY_RE.match(ent):
+            raise ModelError(f"schakelaar: ongeldige entiteit {ent!r}")
+        if ent in seen:
+            raise ModelError(f"schakelaar: {ent} komt twee keer voor")
+        seen.add(ent)
+        out.append({"entity": ent, "name": _name(g.get("name"), "gang.name")})
+    return out
+
+
+def _schema(raw) -> dict:
+    """Het schema: pagina's per ruimte, de plek van elk blok, en de schakelaar-blokken die geen node zijn.
+    De draden staan hier niet in: die volgen uit de kringen en de triggers."""
+    if raw in (None, {}):
+        return {"pages": [], "blocks": {}, "switches": {}}
+    if not isinstance(raw, dict):
+        raise ModelError("schema: object verwacht")
+    pages_in, blocks_in, sw_in = raw.get("pages") or [], raw.get("blocks") or {}, raw.get("switches") or {}
+    if not isinstance(pages_in, list) or len(pages_in) > MAX_PAGES:
+        raise ModelError(f"schema: maximaal {MAX_PAGES} ruimtes")
+    if not isinstance(blocks_in, dict) or len(blocks_in) > MAX_BLOCKS or not isinstance(sw_in, dict) or len(sw_in) > MAX_SWITCHES:
+        raise ModelError("schema: te veel blokken")
+    pages, ids = [], set()
+    for p in pages_in:
+        pid = p.get("id") if isinstance(p, dict) else None
+        if not isinstance(pid, str) or not PAGE_ID_RE.match(pid) or pid in ids:
+            raise ModelError("schema: ruimte heeft een ontbrekend, ongeldig of dubbel id")
+        ids.add(pid)
+        pages.append({"id": pid, "name": _name(p.get("name"), "ruimte.name") or pid})
+    blocks = {}
+    for k, b in blocks_in.items():
+        if not BLOCK_RE.match(str(k)) or not isinstance(b, dict):
+            raise ModelError(f"schema: onbekend blok {k!r}")
+        if b.get("page") not in ids:
+            raise ModelError(f"schema: blok {k} staat op een onbekende ruimte")
+        blocks[k] = {"page": b["page"], "x": _int(b.get("x"), 0, SCHEMA_MAX, "blok.x"), "y": _int(b.get("y"), 0, SCHEMA_MAX, "blok.y")}
+    switches = {}
+    for sid, s in sw_in.items():
+        if not SWITCH_ID_RE.match(str(sid)) or not isinstance(s, dict):
+            raise ModelError(f"schema: ongeldige schakelaar {sid!r}")
+        switches[sid] = {"name": _name(s.get("name"), "schakelaar.name") or sid, "gangs": _switch_gangs(s.get("gangs"))}
+    return {"pages": pages, "blocks": dict(sorted(blocks.items())), "switches": switches}
 
 
 def _plan(raw) -> dict:
@@ -227,6 +283,7 @@ class Model:
         self.virtual: dict[int, list[dict]] = {}  # virtuele node -> gangen [{entity, name, lamp}]
         self.plan: dict = {"floors": []}  # plattegrond (alleen weergave)
         self.groups: dict[str, dict] = {}  # entiteitskringen (AppDaemon-stijl): id -> {name, enabled, entities}
+        self.schema: dict = _schema(None)  # blokkenschema per ruimte (alleen weergave)
         self.rev = 0
         self._listeners: list[Callable[[], None]] = []
         if self.path and self.path.exists():
@@ -271,6 +328,8 @@ class Model:
             d["plan"] = self.plan
         if self.groups:
             d["groups"] = self.groups
+        if self.schema["pages"] or self.schema["switches"]:
+            d["schema"] = self.schema
         return d
 
     def load_dict(self, d: dict, save: bool = True) -> None:
@@ -307,9 +366,10 @@ class Model:
             virtual[vid] = _gangs((v or {}).get("gangs"))
         plan = _plan(d.get("plan"))
         groups = _groups(d.get("groups"))
+        schema = _schema(d.get("schema"))
         if save:  # bij het opstarten nooit weigeren, bij een import wel
             _conflicts(groups, virtual)
-        self.nodes, self.lights, self.follow, self.virtual, self.plan, self.groups = nodes, lights, follow, virtual, plan, groups
+        self.nodes, self.lights, self.follow, self.virtual, self.plan, self.groups, self.schema = nodes, lights, follow, virtual, plan, groups, schema
         if save:
             self._changed()
 
@@ -324,6 +384,8 @@ class Model:
             gid = it.get("id")
             old = new.get(gid)
             ents = it.get("entities")
+            if not isinstance(ents, list) or len(ents) < 2:
+                raise ModelError(f"kring {gid}: minstens 2 entiteiten verwacht")
             keep = [x for x in (old["lamp"] if old else []) if isinstance(ents, list) and x in ents]  # lamp-relais blijven bij opnieuw importeren
             new[gid] = _group(gid, {"name": it.get("name"), "entities": ents, "enabled": old["enabled"] if old else False, "lamp": keep})
         if len(new) > MAX_GROUPS:
@@ -332,6 +394,21 @@ class Model:
         self.groups = new
         self._changed()
         return [it["id"] for it in items]
+
+    def add_group(self, name: str) -> str:
+        """Een lege kring voor een nieuw lamp-blok. Ze staat uit, zoals elke nieuwe kring."""
+        name = _name(name, "name")
+        if not name:
+            raise ModelError("geef de lamp een naam")
+        if len(self.groups) >= MAX_GROUPS:
+            raise ModelError(f"kringen: maximaal {MAX_GROUPS}")
+        base = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_")[:70] or "lamp"
+        gid, n = base, 2
+        while gid in self.groups:
+            gid, n = f"{base}_{n}", n + 1
+        self.groups = {**self.groups, gid: _group(gid, {"name": name, "entities": []})}
+        self._changed()
+        return gid
 
     def set_group(self, gid: str, name=None, entities=None, enabled=None, lamp=None) -> None:
         old = self.groups.get(gid)
@@ -368,6 +445,11 @@ class Model:
     def set_plan(self, raw) -> None:
         """Alleen bewaren: een plattegrond verandert niets aan de schakelingen, dus geen herconfiguratie en geen `rev`."""
         self.plan = _plan(raw)
+        self.save()
+
+    def set_schema(self, raw) -> None:
+        """Net als de plattegrond: alleen bewaren. Een blok verplaatsen raakt de schakelingen niet."""
+        self.schema = _schema(raw)
         self.save()
 
     # ------------------------------------------------------------ wijzigen
