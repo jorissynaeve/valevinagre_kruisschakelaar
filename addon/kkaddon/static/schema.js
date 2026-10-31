@@ -124,7 +124,7 @@ function scLamp(b) {
     return `<circle class="pt free ${left ? 'tou' : 'rel'}" cx="${left ? b.x : b.x + LAMP_W}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="${dir}" data-i="new"><title>${left ? 'Sleep hierheen vanaf een touch' : 'Sleep naar het relais dat de lamp schakelt'}</title></circle>
       <text class="ptl" x="${left ? b.x + 11 : b.x + LAMP_W - 11}" y="${y + 4}" ${left ? '' : 'text-anchor="end"'}>+ ${left ? 'ingang' : 'uitgang'}</text>`;
   };
-  const badge = b.source === 'node' ? 'netwerk' : b.held === true ? 'vast aan' : b.held === false ? 'vast uit' : b.blocked ? 'geblokkeerd' : b.enabled ? 'actief' : 'uit';
+  const badge = b.source === 'node' ? 'netwerk' : b.held === true ? 'vast aan' : b.held === false ? 'vast uit' : b.blocked ? 'geblokkeerd' : b.enabled ? 'actief' : 'niet actief';
   const dt = b.disable && scBlock(scDisKey(b.disable));
   const disRow = b.source !== 'ha' ? '' : `<circle class="pt dis ${dt ? '' : 'free'} ${b.blocked ? 'on' : ''}" cx="${b.x}" cy="${rowY(b, scRows(b) - 1)}" r="6" data-b="${esc(b.key)}" data-role="disable" data-i="0"><title>Disable: staat deze op 1, dan bedienen de touches de lamp niet</title></circle>
     ${dt ? `<text class="bkt away" x="${b.x + 11}" y="${rowY(b, scRows(b) - 1) + 4}" data-sc="go" data-k="${esc(dt.key)}">↗ disable: ${esc(scCut(dt.name, 16))} (${scOut(dt)})<title>${esc(dt.name)} geeft nu ${scOut(dt)}</title></text>`
@@ -475,19 +475,21 @@ function scLampPanel(b, pages) {
   scLoadEnts();
   const onoff = b.on === true ? 'Aan' : b.on === false ? 'Uit' : 'Onbekend';
   const active = b.source === 'ha'
-    ? `<label style="margin:0;color:var(--ink);cursor:pointer"><input type="checkbox" data-grp-toggle="${esc(b.id)}" ${b.enabled ? 'checked' : ''}> ${b.enabled ? 'Actief: volgen elkaar' : 'Uit: alleen bediening'}</label>` : '';
+    ? `<label style="margin:0;color:var(--ink);cursor:pointer"><input type="checkbox" data-grp-toggle="${esc(b.id)}" ${b.enabled ? 'checked' : ''}> Actief</label>
+      <div class="sub">${b.enabled ? 'De add-on stuurt deze lamp: touches en ingangen werken.' : 'De add-on stuurt deze lamp niet: touches en de ingangen hieronder doen niets. Alleen de knop hieronder werkt.'}</div>
+      ${!b.enabled && b.control ? '<div class="sub" style="color:var(--warn)">De aan/uit-ingang is aangesloten, maar doet niets zolang Actief uit staat.</div>' : ''}` : '';
   const tail = b.source === 'ha'
     ? `<button class="btn small danger" data-sc="dellamp" data-id="${esc(b.id)}">Verwijderen</button>`
     : `<button class="btn small primary" data-act="learn" data-n="${b.node}" data-r="${b.relay}">Schakelaars leren</button><button class="btn small" data-act="edit" data-n="${b.node}" data-r="${b.relay}">Bewerken</button>`;
   const sources = scBlocks().filter((t) => t.kind === 'timer' || (t.kind === 'module' && t.out === 'bool'));
   const srcOpts = (cur) => sources.map((t) => { const v = t.kind === 'timer' ? t.id : t.key; return `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${t.kind === 'timer' ? 'Timer ' : t.tech === t.name ? '' : `${esc(t.tech)} `}${esc(t.name)} (nu ${scOut(t)})</option>`; }).join('');
   const ctl = b.source !== 'ha' ? '' : `<label for="scctl">Aan/uit-ingang${b.held === null || b.held === undefined ? '' : ` <span class="badge ok">nu vast ${b.held ? 'aan' : 'uit'}</span>`}</label><select id="scctl" data-k="${esc(b.key)}"><option value="">geen</option>${srcOpts(b.control)}</select>
-    <div class="sub">Op 1 staat de lamp vast aan, op 0 vast uit: touches en HA kunnen hem dan niet veranderen. Alleen als de lamp actief is. Gaat voor op disable.</div>`;
+    <div class="sub">Op 1 staat de lamp vast aan, op 0 vast uit. Touches en HA kunnen hem dan niet veranderen. Gaat voor op de disable-ingang.</div>`;
   const dis = b.source !== 'ha' ? '' : `<label for="scdis">Disable-ingang${b.blocked ? ' <span class="badge bad">nu geblokkeerd</span>' : ''}</label><select id="scdis" data-k="${esc(b.key)}"><option value="">geen</option>${srcOpts(b.disable)}</select>
-    <div class="sub">Op 1 bedienen de touches deze lamp niet. Bedienen hier of via HA blijft kunnen.</div>`;
+    <div class="sub">Op 1 doen de touches niets voor deze lamp. De knop hieronder en het lamp-relais via HA werken dan nog wel.</div>`;
   const known = [...b.inputs, ...b.outputs].filter((c) => c.on === true || c.on === false);
   const mixed = b.source === 'ha' && known.some((c) => c.on !== known[0].on) ? '<span class="badge warn">relais staan niet gelijk</span>' : '';
-  return `<h3>${esc(b.name)}</h3>${pages}${ctl}${dis}${active}${mixed}
+  return `<h3>${esc(b.name)}</h3>${pages}${active}${ctl}${dis}${mixed}
     <button class="power ${b.on === true ? 'on' : b.on === null ? 'unknown' : ''} ${b.pending ? 'pending' : ''}" data-sc="toggle" data-k="${esc(b.key)}">${onoff}</button>
     <h2>Ingangen</h2>${b.inputs.map((c, i) => scConnRow(b, c, i, 'in')).join('') || '<div class="sub">Nog geen touches.</div>'}${scAddSelect(b, 'in')}${scAddEntity(b, 'in')}
     <h2>Uitgangen</h2>${b.outputs.map((c, i) => scConnRow(b, c, i, 'out')).join('') || '<div class="sub">Nog geen relais: de lamp weet niet welk relais hem schakelt.</div>'}${scAddSelect(b, 'out')}${scAddEntity(b, 'out')}
