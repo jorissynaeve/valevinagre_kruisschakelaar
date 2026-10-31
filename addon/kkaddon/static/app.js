@@ -74,6 +74,12 @@ function logText(e) {
       return e.what === 'follow'
       ? `Kring ${groupName(e.group)}: ${e.entity} ${e.on ? 'aan' : 'uit'} → ${e.to.length} ${e.to.length === 1 ? 'volgt' : 'volgen'}${e.skipped.length ? `, ${e.skipped.length} overgeslagen (niet beschikbaar)` : ''}`
       : `Kring ${groupName(e.group)}: ${e.entity} ${e.on ? 'aan' : 'uit'} mislukt (${e.why})`;
+    case 'sprinkler': return {
+      start: `Sprinkler ${e.name}: gestart ${e.how === 'hand' ? 'met de hand' : 'op de klok'} (${e.cycles} ${e.cycles === 1 ? 'cyclus' : 'cycli'})`,
+      done: `Sprinkler ${e.name}: klaar`, stopped: `Sprinkler ${e.name}: gestopt`, blocked: `Sprinkler ${e.name}: gestopt door de ingang blokkeren`,
+      empty: `Sprinkler ${e.name}: niet gestart, geen zone met een relais en een tijd`,
+      zone: `Sprinkler: ${e.entity} aan`, failed: `Sprinkler: ${e.entity} ${e.on ? 'aan' : 'uit'} mislukt`,
+    }[e.what] || e.what;
     default: return e.t;
   }
 }
@@ -459,7 +465,7 @@ function connect() {
   const ws = new WebSocket(new URL('api/ws', location.href).href.replace(/^http/, 'ws'));
   ws.onmessage = (m) => {
     const e = JSON.parse(m.data).event;
-    if (S && e && ['btn', 'light', 'node', 'cfg', 'learn', 'cmd', 'sync'].includes(e.t)) {
+    if (S && e && ['btn', 'light', 'node', 'cfg', 'learn', 'cmd', 'sync', 'sprinkler'].includes(e.t)) {
       S.log.push(e);
       if (S.log.length > 300) S.log.shift();
     }

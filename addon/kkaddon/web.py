@@ -20,7 +20,7 @@ STATIC = Path(__file__).parent / "static"
 CTX = web.AppKey("ctx", object)
 INGRESS_PROXY = {"172.30.32.2", "127.0.0.1", "::1"}
 # Events die de pagina moet kennen; de rest (bv. losse commando-statussen) is ruis.
-PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model"}
+PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler"}
 
 
 class Ctx:
@@ -317,6 +317,37 @@ async def module_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
+async def sprinkler_post(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    sid = ctx.model.add_sprinkler(b.get("name"), b.get("zones", 3))
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"s:{sid}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "key": f"s:{sid}"})
+
+
+async def sprinkler_put(request: web.Request) -> web.Response:
+    request.app[CTX].model.set_sprinkler(request.match_info["sid"], **await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def sprinkler_delete(request: web.Request) -> web.Response:
+    ok = request.app[CTX].model.remove_sprinkler(request.match_info["sid"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
+async def sprinkler_run(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    op = (await _body(request)).get("op")
+    if op == "start":
+        ctx.engine.sprinklers.start(request.match_info["sid"])
+    elif op == "stop":
+        ctx.engine.sprinklers.stop(request.match_info["sid"])
+    else:
+        raise ModelError("op moet start of stop zijn")
+    return web.json_response({"ok": True})
+
+
 async def schema_name(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     b = await _body(request)
@@ -486,6 +517,10 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/modules", module_post)
     r.add_put("/api/modules/{mid}", module_put)
     r.add_delete("/api/modules/{mid}", module_delete)
+    r.add_post("/api/sprinklers", sprinkler_post)
+    r.add_put("/api/sprinklers/{sid}", sprinkler_put)
+    r.add_delete("/api/sprinklers/{sid}", sprinkler_delete)
+    r.add_post("/api/sprinklers/{sid}/run", sprinkler_run)
     r.add_put("/api/schema/pages", schema_pages)
     r.add_post("/api/schema/wire", schema_wire)
     r.add_post("/api/schema/lamp", schema_lamp)

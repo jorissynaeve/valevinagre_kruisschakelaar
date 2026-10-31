@@ -76,6 +76,30 @@ blijft hij aan, op 0 gaat hij uit en blijft hij uit. Drukt iemand op een touch o
 De lamp reageert binnen 5 seconden op de ingang, en dat werkt alleen als de lamp *Actief* is en HA verbonden is. Een ingang die onbekend geeft (`?`) houdt niets vast: de lamp werkt dan gewoon. De aan/uit-ingang gaat voor op disable.
 Op lichten op het netwerk kan dit nog niet.
 
+### Sprinkler
+
+*+ Module* → *Routines* → **Sprinkler**. Elke zone gaat na de vorige aan: zone 1 staat zijn aan-tijd aan en gaat uit, dan volgt de wachttijd, dan zone 2, enzovoort, en dat het aantal cycli lang.
+
+* **Zones**: per zone een naam, een aan-tijd in seconden en een relais. Sleep van de zone rechts op het blok naar het **relais** van een schakelaar, of kies het in de zijbalk. Een zone zonder relais of met 0 seconden wordt overgeslagen, zonder wachttijd.
+* **Instellingen in de zijbalk**: startuur, dagen, aantal cycli en wachttijd. Startuur, cycli en wachttijd kunnen ook van een ingang komen: een tijd (bv. Zonsopgang min 00:30) of een module *Getal*. Een aangesloten ingang gaat voor. Een getal dat onbekend is valt terug op de waarde uit de zijbalk; een onbekend startuur start niets.
+* **Blokkeren**: een uitgang met 0 of 1, bv. bij regen. Op 1 start er niets en stopt een lopende beurt.
+* **Actief**: een nieuwe sprinkler staat uit en raakt zijn relais niet aan. *Nu starten* werkt alleen als hij actief is. Wat je wijzigt tijdens een beurt, geldt vanaf de volgende beurt; uitzetten stopt meteen.
+* **Na een herstart** is een lopende beurt weg: een gemiste beurt wordt niet ingehaald en de relais krijgen "uit".
+
+Een actieve sprinkler stuurt zijn relais elke 30 seconden opnieuw aan (instelbaar), ook als de stand "uit" is. Een gemist bevel herstelt zo vanzelf. **Zet je een relais met de hand aan, dan gaat het dus binnen die tijd weer uit.**
+
+**Bescherming tegen een open klep.** Valt de add-on, HA of de wifi weg terwijl een zone aan staat, dan komt er geen uit-bevel meer. Dat vang je alleen op in het toestel zelf, bv. in ESPHome (de tijd iets langer dan je langste zone):
+
+```yaml
+switch:
+  - platform: gpio
+    id: klep_1
+    pin: GPIO5
+    on_turn_on:
+      - delay: 30min
+      - switch.turn_off: klep_1
+```
+
 ## Een licht instellen
 
 1. Tabblad *Schema* → klik op de node en kies bij een gang *Als lamp toevoegen*, met een naam.

@@ -14,13 +14,14 @@ from functools import lru_cache
 from typing import Callable
 
 DAY = 24 * 60
-TIME, BOOL = "time", "bool"
+TIME, BOOL, NUMBER = "time", "bool", "number"
 
 # type -> Nederlandse naam, soort uitgang en ingangen (naam, soort, label)
 MODULE_TYPES: dict[str, dict] = {
     "sunrise": {"label": "Zonsopgang", "out": TIME, "inputs": ()},
     "sunset": {"label": "Zonsondergang", "out": TIME, "inputs": ()},
     "time": {"label": "Vaste tijd", "out": TIME, "inputs": ()},
+    "number": {"label": "Getal", "out": NUMBER, "inputs": ()},
     "add": {"label": "Optellen", "out": TIME, "inputs": (("a", TIME, "tijd"), ("b", TIME, "plus"))},
     "sub": {"label": "Aftrekken", "out": TIME, "inputs": (("a", TIME, "tijd"), ("b", TIME, "min"))},
     "between": {"label": "Tussen", "out": BOOL, "inputs": (("from", TIME, "van"), ("to", TIME, "tot"))},
@@ -29,6 +30,9 @@ MODULE_TYPES: dict[str, dict] = {
     "and": {"label": "En", "out": BOOL, "inputs": (("a", BOOL, "A"), ("b", BOOL, "B"))},
     "or": {"label": "Of", "out": BOOL, "inputs": (("a", BOOL, "A"), ("b", BOOL, "B"))},
 }
+
+# de ingangen van een sprinkler: (naam, soort, label)
+SPRINKLER_INPUTS = (("start", TIME, "startuur"), ("cycles", NUMBER, "cycli"), ("wait", NUMBER, "wachttijd"), ("block", BOOL, "blokkeren"))
 
 
 def minutes(t: str) -> int:
@@ -109,6 +113,8 @@ def evaluate(modules: dict[str, dict], timer: Callable[[str], bool | None], now:
             return sun[1] if sun else None
         if kind == "time":
             return minutes(m["value"])
+        if kind == "number":
+            return m["value"]
         if kind in ("and", "or"):
             return (_and if kind == "and" else _or)(read(ins.get("a")), read(ins.get("b")))
         args = [read(ins.get(name)) for name, _, _ in MODULE_TYPES[kind]["inputs"]]

@@ -24,7 +24,7 @@ const SC_MARGIN = 200; // links van x=0: de verwijzingen en draden aan de touch-
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
 const scW = (b) => (b.kind === 'lamp' ? LAMP_W : SW_W);
-const scRows = (b) => (b.kind === 'timer' ? 1 : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
+const scRows = (b) => (b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
 const scH = (b) => SC_HEAD + scRows(b) * SC_ROW + SC_FOOT;
 const rowY = (b, i) => b.y + SC_HEAD + i * SC_ROW + SC_ROW / 2;
 const scPageName = (id) => (S.schema.pages.find((p) => p.id === id) || {}).name || '';
@@ -46,7 +46,8 @@ const scSame = (x) => x.sw && x.sw.page && x.sw.page === x.lamp.page;
 
 function scType(b) { // bepaalt de kleur van het blok
   if (b.kind === 'lamp' || b.kind === 'timer') return b.kind;
-  if (b.kind === 'module') return b.out === 'time' ? 'time' : 'logic';
+  if (b.kind === 'module') return b.out === 'bool' ? 'logic' : 'time';
+  if (b.kind === 'sprinkler') return 'spr';
   if (b.source === 'node') return 'node';
   if (b.source === 'virtual') return 'ext';
   const conns = scConns().filter((x) => x.sw && x.sw.key === b.key);
@@ -158,16 +159,18 @@ const scClock = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(
 function scOut(b) { // wat een timer of module nu geeft, als tekst
   if (b.kind === 'timer') return b.on ? '1' : '0';
   if (b.value === null || b.value === undefined) return '?';
+  if (b.out === 'number') return String(b.value);
   return b.out === 'time' ? scClock(b.value) : b.value ? '1' : '0';
 }
 function scUsers(b) { // wie deze uitgang gebruikt
-  return scBlocks().filter((u) => (u.kind === 'lamp' && [u.disable, u.control].some((s) => s && scDisKey(s) === b.key)) || (u.kind === 'module' && u.ports.some((p) => p.ref === b.key)));
+  return scBlocks().filter((u) => (u.kind === 'lamp' && [u.disable, u.control].some((s) => s && scDisKey(s) === b.key)) || ((u.kind === 'module' || u.kind === 'sprinkler') && u.ports.some((p) => p.ref === b.key)));
 }
 
 const SC_HELP = {
   sunrise: 'De zonsopgang van vandaag, op de locatie van Home Assistant.',
   sunset: 'De zonsondergang van vandaag, op de locatie van Home Assistant.',
   time: 'Een vaste tijd of duur, bv. 02:30.',
+  number: 'Een vast getal, bv. voor het aantal cycli of de wachttijd van een sprinkler.',
   add: 'Telt twee tijden op, bv. zonsondergang plus 02:30. Na middernacht begint de telling opnieuw.',
   sub: 'Trekt de tweede tijd van de eerste af, bv. zonsopgang min 00:30. Voor middernacht telt het terug vanaf 24:00.',
   between: 'Geeft 1 als het nu tussen de twee tijden is. Het begin hoort erbij, het einde niet. Is "van" later dan "tot", dan loopt het over middernacht.',
@@ -195,6 +198,88 @@ function scModule(b) {
     ${users.map((u, n) => `<text class="stub" x="${b.x + SW_W + 11}" y="${y0 + 4 + n * 13}" data-sc="go" data-k="${esc(u.key)}">→ ${esc(scCut(u.name, 28))}<title>${esc(u.name)}</title></text>`).join('')}</g>`;
 }
 
+// ---------------------------------------------------------------- sprinkler
+
+function scGangOf(entity) { // welk relais van welk schakelaar-blok hoort bij deze entiteit
+  for (const s of scBlocks()) {
+    if (s.kind !== 'switch') continue;
+    const g = s.gangs.find((x) => x.entity === entity);
+    if (g) return { s, g };
+  }
+  return null;
+}
+
+function scSprText(b) {
+  const st = b.status;
+  if (st.running) return st.zone !== null ? `loopt: ${b.zones[st.zone].name}, cyclus ${st.cycle}/${st.cycles}` : `wacht op ${b.zones[st.next].name}, cyclus ${st.cycle}/${st.cycles}`;
+  return b.enabled ? 'actief' : 'uit';
+}
+
+function scSprinkler(b) {
+  const paramText = { start: b.start, cycles: b.cycles, wait: `${b.wait} min` };
+  const left = b.ports.map((p, i) => {
+    const y = rowY(b, i), src = p.ref && scBlock(p.ref);
+    return `<circle class="pt v-${p.type} ${src ? '' : 'free'}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="min" data-i="${i}"><title>Ingang ${esc(p.label)}</title></circle>
+      ${src ? `<text class="bkt away" x="${b.x + 11}" y="${y + 4}" data-sc="go" data-k="${esc(src.key)}">${esc(scCut(p.label, 6))}: ${esc(scCut(src.name, 9))} (${scOut(src)})<title>${esc(p.label)}: ${esc(src.name)} geeft nu ${scOut(src)}</title></text>`
+    : `<text class="ptl" x="${b.x + 11}" y="${y + 4}">${esc(p.label)}${paramText[p.name] !== undefined ? `: ${esc(paramText[p.name])}` : ''}</text>`}`;
+  }).join('');
+  const right = b.zones.map((z, i) => {
+    const y = rowY(b, i), on = b.status.zone === i, gang = z.entity && scGangOf(z.entity);
+    return `<text class="bkt ${on ? 'zon' : ''}" x="${b.x + SW_W - 11}" y="${y + 4}" text-anchor="end">${esc(scCut(z.name, 9))} ${z.seconds}s</text>
+      <circle class="pt rel ${on ? 'on' : ''} ${z.entity ? '' : 'free'}" cx="${b.x + SW_W}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="zout" data-i="${i}"><title>Zone ${i + 1}: sleep naar het relais van een schakelaar</title></circle>
+      ${z.entity ? `<text class="stub" x="${b.x + SW_W + 11}" y="${y + 4}" ${gang ? `data-sc="go" data-k="${esc(gang.s.key)}"` : ''}>→ ${esc(scCut(gang ? `${gang.s.name} ${gang.g.label}` : z.entity, 28))}<title>${esc(z.entity)}</title></text>` : ''}`;
+  }).join('');
+  return `<g class="bk spr t-spr ${SC.sel === b.key ? 'sel' : ''}" data-block="${esc(b.key)}">
+    <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
+    <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
+    <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 28))}</text>
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Sprinkler · ${esc(scCut(scSprText(b), 30))}</text>${left}${right}</g>`;
+}
+
+const SC_WEEK = ['ma', 'di', 'wo', 'do', 'vr', 'za', 'zo'];
+
+function scSprinklerPanel(b, props) {
+  const sel = (p) => {
+    const srcs = scBlocks().filter((s) => (s.kind === 'timer' && p.type === 'bool') || (s.kind === 'module' && s.out === p.type));
+    return `<select data-spinput="${esc(p.name)}"><option value="">${p.name === 'block' ? 'niet aangesloten' : 'waarde hierboven gebruiken'}</option>${srcs.map((s) => `<option value="${esc(s.key)}" ${s.key === p.ref ? 'selected' : ''}>${esc(s.name)} (nu ${scOut(s)})</option>`).join('')}</select>`;
+  };
+  const port = (n) => b.ports.find((p) => p.name === n);
+  const gangs = scBlocks().filter((s) => s.kind === 'switch').map((s) => {
+    const list = s.gangs.filter((g) => g.entity && g.relay);
+    return list.length ? `<optgroup label="${esc(s.name)}">${list.map((g) => `<option value="${esc(g.entity)}">${esc(g.label)}</option>`).join('')}</optgroup>` : '';
+  }).join('');
+  const zones = b.zones.map((z, i) => `<div class="tmd"><div class="row sp"><b>Zone ${i + 1}</b>${b.status.zone === i ? '<span class="badge ok">aan</span>' : ''}
+      ${b.zones.length > 1 ? `<button class="btn small danger" type="button" data-sc="spdelzone" data-k="${esc(b.key)}" data-i="${i}" title="Zone weghalen">✕</button>` : ''}</div>
+    <label>Naam</label><input type="text" maxlength="60" data-spzone="name" data-i="${i}" value="${esc(z.name)}">
+    <label>Aan-tijd in seconden</label><input type="number" min="0" max="86400" step="1" data-spzone="seconds" data-i="${i}" value="${z.seconds}">
+    <label>Relais</label><select data-spzone="entity" data-i="${i}"><option value="">niet aangesloten</option>${gangs.replace(`value="${esc(z.entity || '')}"`, `value="${esc(z.entity || '')}" selected`)}</select>
+    ${z.entity && !scGangOf(z.entity) ? `<div class="sub"><code>${esc(z.entity)}</code> (geen blok)</div>` : ''}</div>`).join('');
+  const st = b.status;
+  return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${st.running ? 'ok' : ''}">${esc(scSprText(b))}</span><span class="sub">${esc(S.clock.time)} · ${esc(S.clock.tz)}</span></div>
+    ${props}
+    <label style="margin:6px 0;color:var(--ink);cursor:pointer"><input type="checkbox" data-spfield="enabled" ${b.enabled ? 'checked' : ''}> ${b.enabled ? 'Actief: stuurt de relais aan' : 'Uit: raakt de relais niet aan'}</label>
+    <div class="row">${st.running ? `<button class="btn small danger" type="button" data-sc="sprun" data-id="${esc(b.id)}" data-op="stop">Stoppen</button><span class="sub">nog ${Math.ceil(st.left / 60)} min</span>` : `<button class="btn small primary" type="button" data-sc="sprun" data-id="${esc(b.id)}" data-op="start" ${b.enabled ? '' : 'disabled'}>Nu starten</button>`}</div>
+    <h2>Planning</h2>
+    <label>Startuur</label><input type="time" data-spfield="start" value="${esc(b.start)}">${sel(port('start'))}
+    <label>Dagen</label><div class="row">${SC_WEEK.map((d, i) => `<label style="margin:0;color:var(--ink)"><input type="checkbox" data-spday="${i}" ${b.days.includes(i) ? 'checked' : ''}> ${d}</label>`).join('')}</div>
+    <label>Aantal cycli</label><input type="number" min="1" max="100" step="1" data-spfield="cycles" value="${b.cycles}">${sel(port('cycles'))}
+    <label>Wachttijd tussen zones (minuten)</label><input type="number" min="0" max="1440" step="1" data-spfield="wait" value="${b.wait}">${sel(port('wait'))}
+    <label>Blokkeren (bv. bij regen)</label>${sel(port('block'))}<div class="sub">Op 1 start er niets en stopt een lopende beurt.</div>
+    <label>Relais opnieuw aansturen elke (seconden)</label><input type="number" min="5" max="600" step="1" data-spfield="refresh" value="${b.refresh}">
+    <div class="sub">Herstelt een gemist bevel, ook "uit". Valt de add-on, HA of de wifi weg, dan helpt alleen een limiet in het toestel zelf.</div>
+    <h2>Zones</h2>${zones}
+    <div class="row" style="margin-top:6px">${b.zones.length < 16 ? `<button class="btn small" type="button" data-sc="spaddzone" data-k="${esc(b.key)}">+ Zone</button>` : ''}<button class="btn small danger" type="button" data-sc="delsprinkler" data-id="${esc(b.id)}">Sprinkler verwijderen</button></div>`;
+}
+
+async function scSaveSprinkler(b, patch) {
+  try {
+    await api('PUT', `sprinklers/${b.id}`, patch);
+  } finally {
+    SC.force = true;
+    await refresh();
+  }
+}
+
 function scModulePanel(b, props) {
   const sources = (p) => scBlocks().filter((s) => s.key !== b.key && ((s.kind === 'timer' && p.type === 'bool') || (s.kind === 'module' && s.out === p.type)));
   const ports = b.ports.map((p) => `<label>${esc(p.label)}</label><select data-mport="${esc(p.name)}" data-k="${esc(b.key)}"><option value="">niet aangesloten</option>${sources(p).map((s) => `<option value="${esc(s.key)}" ${s.key === p.ref ? 'selected' : ''}>${esc(s.name)} (nu ${scOut(s)})</option>`).join('')}</select>`).join('');
@@ -202,6 +287,7 @@ function scModulePanel(b, props) {
   const nosun = (b.type === 'sunrise' || b.type === 'sunset') && b.value === null ? '<div class="sub">Nog onbekend: de add-on heeft de locatie van Home Assistant nog niet, of de zon komt vandaag niet op of gaat niet onder.</div>' : '';
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge">uitgang nu ${scOut(b)}</span><span class="sub">${esc(S.clock.time)} · ${esc(S.clock.tz)}</span></div>
     <div class="sub">${esc(SC_HELP[b.type])}</div>${nosun}${props}
+    ${b.type === 'number' ? `<label for="scmnum">Waarde</label><input type="number" id="scmnum" min="0" max="100000" step="1" data-k="${esc(b.key)}" value="${esc(b.param)}">` : ''}
     ${b.type === 'time' ? `<label for="scmtime">Tijd</label><input type="time" id="scmtime" data-k="${esc(b.key)}" value="${esc(b.param)}">` : ''}
     ${ports ? `<h2>Ingangen</h2>${ports}` : ''}
     <h2>Uitgang gaat naar</h2>${users.map((u) => `<div class="sub"><a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.name)}</a></div>`).join('') || '<div class="sub">Nog nergens.</div>'}
@@ -212,9 +298,11 @@ function scModulePanel(b, props) {
 const SC_MENU = [
   ['Toestellen', [['lamp', 'Lamp', 'met touches en relais'], ['switch', 'Schakelaar', 'een toestel uit Home Assistant']]],
   ['Tijd', [['timer', 'Timer', 'intervallen per dag, geeft 0 of 1'], ['sunrise', 'Zonsopgang', 'tijd van vandaag'], ['sunset', 'Zonsondergang', 'tijd van vandaag'], ['time', 'Vaste tijd', 'bv. 02:30']]],
+  ['Waarden', [['number', 'Getal', 'bv. aantal cycli']]],
   ['Rekenen', [['add', 'Optellen', 'tijd + tijd'], ['sub', 'Aftrekken', 'tijd − tijd']]],
   ['Vergelijken', [['between', 'Tussen', '1 tussen twee tijden'], ['after', 'Na', '1 na een tijd'], ['before', 'Voor', '1 voor een tijd']]],
   ['Logica', [['and', 'En', '1 als beide 1 zijn'], ['or', 'Of', '1 als een van beide 1 is']]],
+  ['Routines', [['sprinkler', 'Sprinkler', 'zones na elkaar, in cycli']]],
 ];
 
 function scMenu() {
@@ -239,9 +327,18 @@ function scInner(list) {
     if (!tags.has(k)) tags.set(k, []);
     tags.get(k).push({ key: x.lamp.key, text: `${x.lamp.name}${x.lamp.page && x.lamp.page !== x.sw.page ? ` (${scPageName(x.lamp.page)})` : ''}` });
   }
+  for (const sp of scBlocks().filter((b) => b.kind === 'sprinkler')) { // een relais toont welke sprinkler het aanstuurt
+    sp.zones.forEach((z) => {
+      const hit = z.entity && scGangOf(z.entity);
+      if (!hit) return;
+      const k = `${hit.s.key}|${hit.g.i}|out`;
+      if (!tags.has(k)) tags.set(k, []);
+      tags.get(k).push({ key: sp.key, text: `${sp.name}: ${z.name}` });
+    });
+  }
   const shown = new Set(list.map((b) => b.key));
   const wires = !SC_WIRES ? '' : conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
-  const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : scSwitch(b, tags))).join('');
+  const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b) : scSwitch(b, tags))).join('');
   return `<g class="wires">${wires}</g>${blocks}<path id="sctemp" class="wire temp"/>`; // draden onder de blokken: anders liggen ze over de poorten
 }
 
@@ -254,6 +351,7 @@ function scPortPos(p) {
   const b = scBlock(p.b);
   if (!b) return null;
   if (b.kind === 'timer') return [b.x + SW_W, rowY(b, 0)];
+  if (b.kind === 'sprinkler') return p.role === 'min' ? [b.x, rowY(b, +p.i)] : [b.x + SW_W, rowY(b, +p.i)];
   if (b.kind === 'module') return p.role === 'min' ? [b.x, rowY(b, +p.i)] : [b.x + SW_W, rowY(b, 0)];
   if (p.role === 'disable') return [b.x, rowY(b, scRows(b) - 1)];
   if (p.role === 'control') return [b.x, rowY(b, scRows(b) - 2)];
@@ -279,7 +377,7 @@ function scTray() {
     all.sort((a, b) => (!!a.page - !!b.page));
     return `<h2>${title}</h2>${all.map(item).join('') || '<div class="sub">Geen.</div>'}`;
   };
-  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module');
+  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler');
 }
 
 function scPanel() {
@@ -292,7 +390,7 @@ function scPanel() {
   const pages = `<label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
   const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'switch' ? b.alias : b.name)}" placeholder="${esc(b.tech)}">
     <div class="sub">Technische naam: <code>${esc(b.tech)}</code></div>${pages}`;
-  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : scSwitchPanel(b, props);
+  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : scSwitchPanel(b, props);
 }
 
 function scConnRow(b, c, i, dir) {
@@ -489,9 +587,23 @@ async function scWireLogic(a, b) { // van de uitgang van een timer of module naa
   const from = scBlock(src.b), to = scBlock(sink.b);
   if (to.kind === 'lamp' && sink.role === 'control') await api('POST', 'schema/control', { lamp: to.key, source: from.kind === 'timer' ? from.id : from.key });
   else if (to.kind === 'lamp' && (!sink.role || sink.role === 'disable')) await api('POST', 'schema/disable', { lamp: to.key, timer: from.kind === 'timer' ? from.id : from.key });
+  else if (to.kind === 'sprinkler' && sink.role === 'min') await api('PUT', `sprinklers/${to.id}`, { inputs: { [to.ports[+sink.i].name]: from.key } });
   else if (to.kind === 'module' && sink.role === 'min') await api('PUT', `modules/${to.id}`, { inputs: { [to.ports[+sink.i].name]: from.key } });
   else throw new Error('Een uitgang sluit je aan op een ingang van een module of een ingang (aan/uit of disable) van een lamp.');
   SC.sel = to.key;
+  SC.force = true;
+  await refresh();
+}
+
+async function scWireZone(a, b) { // van een zone van een sprinkler naar een relais
+  const zone = a.role === 'zout' ? a : b, rel = zone === a ? b : a;
+  const sp = scBlock(zone.b), sw = scBlock(rel.b);
+  if (sw.kind !== 'switch' || rel.role !== 'relay') throw new Error('Een zone sluit je aan op het relais van een schakelaar.');
+  const gang = sw.gangs[+rel.g];
+  if (!gang.entity) throw new Error('Dit relais loopt niet via Home Assistant; een sprinkler kan het nog niet aansturen.');
+  const zones = sp.zones.map((z, i) => (i === +zone.i ? { ...z, entity: gang.entity } : z));
+  await api('PUT', `sprinklers/${sp.id}`, { zones });
+  SC.sel = sp.key;
   SC.force = true;
   await refresh();
 }
@@ -501,6 +613,7 @@ const SC_HELD = 'Deze lamp wordt vastgehouden door zijn aan/uit-ingang.';
 
 async function scWireUp(a, b) { // a en b zijn poorten; één hoort bij een lamp, de ander bij een schakelaar, of het zijn modules
   const pa = scBlock(a.b), pb = scBlock(b.b);
+  if (a.role === 'zout' || b.role === 'zout') return scWireZone(a, b);
   if (SC_LOGIC_ROLES.includes(a.role) || SC_LOGIC_ROLES.includes(b.role)) return scWireLogic(a, b);
   if (pa.kind === pb.kind) throw new Error(pa.kind === 'lamp' ? 'Een draad loopt tussen een schakelaar en een lamp, niet tussen twee lampen.' : 'Een draad loopt tussen een schakelaar en een lamp, niet tussen twee schakelaars.');
   const [lp, sp] = pa.kind === 'lamp' ? [a, b] : [b, a];
@@ -558,9 +671,29 @@ const SC_ACTIONS = {
     if (d.type === 'switch') return SC_ACTIONS.newswitch();
     if (d.type === 'timer') return SC_ACTIONS.newtimer();
     if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
-    const r = await api('POST', 'modules', { type: d.type, page: SC.page, ...scFreeSpot('module') });
+    const r = d.type === 'sprinkler' ? await api('POST', 'sprinklers', { page: SC.page, ...scFreeSpot('module') })
+      : await api('POST', 'modules', { type: d.type, page: SC.page, ...scFreeSpot('module') });
     SC.sel = SC.reveal = r.key;
     SC.force = true;
+    await refresh();
+  },
+  sprun: async (d) => {
+    await api('POST', `sprinklers/${d.id}/run`, { op: d.op });
+    SC.force = true;
+    await refresh();
+  },
+  spaddzone: (d) => {
+    const b = scBlock(d.k);
+    return scSaveSprinkler(b, { zones: [...b.zones, { name: `Zone ${b.zones.length + 1}`, entity: null, seconds: 60 }] });
+  },
+  spdelzone: (d) => {
+    const b = scBlock(d.k);
+    return scSaveSprinkler(b, { zones: b.zones.filter((_, i) => i !== +d.i) });
+  },
+  delsprinkler: async (d) => {
+    if (!confirm('Deze sprinkler verwijderen? Zijn relais krijgen nog één keer "uit".')) return;
+    await api('DELETE', `sprinklers/${d.id}`);
+    SC.sel = null;
     await refresh();
   },
   delmodule: async (d) => {
@@ -818,6 +951,7 @@ document.addEventListener('change', (ev) => {
       try {
         if (b.kind === 'switch') await api('POST', 'schema/name', { key: b.key, name });
         else if (b.kind === 'module') await api('PUT', `modules/${b.id}`, { name });
+        else if (b.kind === 'sprinkler') await api('PUT', `sprinklers/${b.id}`, { name });
         else if (b.kind === 'timer') await api('PUT', `timers/${b.id}`, { name, days: b.days });
         else if (!name) throw new Error('Een lamp heeft een naam nodig');
         else if (b.source === 'ha') await api('PUT', `groups/${b.id}`, { name });
@@ -835,6 +969,25 @@ document.addEventListener('change', (ev) => {
     act(async () => {
       try { await api('POST', 'schema/disable', { lamp: k, timer }); } finally { SC.force = true; await refresh(); }
     })();
+  }
+  if (t.id === 'scmnum' && t.value !== '') {
+    const b = scBlock(t.dataset.k), value = +t.value;
+    t.blur();
+    act(async () => {
+      try { await api('PUT', `modules/${b.id}`, { value }); } finally { SC.force = true; await refresh(); }
+    })();
+  }
+  if (t.dataset && (t.dataset.spfield || t.dataset.spinput || t.dataset.spzone || t.dataset.spday !== undefined) && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'sprinkler') {
+    const b = scBlock(SC.sel), d = t.dataset;
+    let patch;
+    if (d.spinput) patch = { inputs: { [d.spinput]: t.value || null } };
+    else if (d.spday !== undefined) patch = { days: b.days.filter((x) => x !== +d.spday).concat(t.checked ? [+d.spday] : []) };
+    else if (d.spzone) {
+      const v = d.spzone === 'seconds' ? +t.value : d.spzone === 'entity' ? (t.value || null) : t.value;
+      patch = { zones: b.zones.map((z, i) => (i === +d.i ? { ...z, [d.spzone]: v } : z)) };
+    } else patch = { [d.spfield]: d.spfield === 'enabled' ? t.checked : d.spfield === 'start' ? t.value : +t.value };
+    t.blur();
+    act(() => scSaveSprinkler(b, patch))();
   }
   if (t.id === 'scctl') {
     const k = t.dataset.k, source = t.value || null;

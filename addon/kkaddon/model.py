@@ -14,6 +14,9 @@ Bestandsformaat (network.json, ook voor export/import):
    "timers": {"nacht": {"name": "Nacht", "days": {"mon": [{"from": "03:00", "to": "07:00"}]}}},  # per dag tot 3 intervallen; "to" 00:00 = middernacht
    "modules": {"donker": {"type": "between", "name": "Donker", "inputs": {"from": "m:avond", "to": "m:ochtend"}},   # tijd en logica, zie logic.py
                "pauze": {"type": "time", "name": "Pauze", "value": "02:30", "inputs": {}}},
+   "sprinklers": {"tuin": {"name": "Tuin", "enabled": false, "start": "06:00", "cycles": 2, "wait": 5, "refresh": 30, "days": [0, 1, 2, 3, 4, 5, 6],  # wait in minuten, refresh in seconden
+                           "inputs": {"start": "m:avond", "block": "t:regen"},
+                           "zones": [{"name": "Gazon", "entity": "switch.klep_1", "seconds": 120}]}},
    "plan":   {"floors": [{"id": "g", "name": "Begane grond", "w": 1000, "h": 640,
                           "rooms": [{"x": 20, "y": 20, "w": 300, "h": 200, "name": "Living"}],
                           "items": {"n5": [120, 80], "l2.1": [200, 90]}}]},   # plattegrond, alleen weergave
@@ -32,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from .logic import BOOL, MODULE_TYPES, disable_ref
+from .logic import BOOL, MODULE_TYPES, NUMBER, SPRINKLER_INPUTS, TIME, disable_ref
 from .logic import minutes as _minutes
 from .proto import MAX_GANGS, MAX_IND, MAX_RELAYS, MAX_TRIG, MODE_BY_NAME, VIRTUAL_MAX, VIRTUAL_MIN, is_virtual
 
@@ -42,6 +45,8 @@ MAX_GROUPS, MAX_GROUP_ENTITIES = 120, 40
 MAX_PAGES, MAX_BLOCKS, MAX_SWITCHES, MAX_SWITCH_GANGS, SCHEMA_MAX = 60, 1000, 300, 64, 20000
 MAX_TIMERS, MAX_INTERVALS = 60, 3
 MAX_MODULES = 200
+MAX_SPRINKLERS, MAX_ZONES, MAX_CYCLES, MAX_WAIT, MAX_ZONE_SECONDS, MIN_REFRESH, MAX_REFRESH = 20, 16, 100, 1440, 86400, 5, 600
+MAX_NUMBER = 100000
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 FORMAT_VERSION = 1
 
@@ -200,6 +205,8 @@ def _module(mid, v) -> dict:
         if not isinstance(value, str) or not TIME_RE.match(value):
             raise ModelError("module: tijd verwacht als UU:MM")
         out["value"] = value
+    if kind == "number":
+        out["value"] = _int(v.get("value", 1), 0, MAX_NUMBER, "getal")
     return out
 
 
@@ -209,6 +216,72 @@ def _modules(raw) -> dict[str, dict]:
     if not isinstance(raw, dict) or len(raw) > MAX_MODULES:
         raise ModelError(f"modules: maximaal {MAX_MODULES}")
     return {k: _module(k, v) for k, v in raw.items()}
+
+
+_SOORT = {BOOL: "een 0 of 1", TIME: "een tijd", NUMBER: "een getal"}
+
+
+def _sprinkler(sid, v) -> dict:
+    if not isinstance(sid, str) or not GROUP_ID_RE.match(sid) or not isinstance(v, dict):
+        raise ModelError(f"sprinkler: ongeldig id {sid!r}")
+    name = _name(v.get("name"), "sprinkler.name")
+    if not name:
+        raise ModelError("geef de sprinkler een naam")
+    start = v.get("start", "06:00")
+    if not isinstance(start, str) or not TIME_RE.match(start):
+        raise ModelError("sprinkler: startuur verwacht als UU:MM")
+    days = v.get("days", list(range(7)))
+    if not isinstance(days, list) or any(isinstance(d, bool) or d not in range(7) for d in days):
+        raise ModelError("sprinkler: onbekende dag")
+    raw = v.get("inputs") or {}
+    if not isinstance(raw, dict) or set(raw) - {i[0] for i in SPRINKLER_INPUTS}:
+        raise ModelError(f"sprinkler {name}: onbekende ingang")
+    inputs = {}
+    for k, ref in raw.items():
+        if ref is None:
+            continue
+        if not isinstance(ref, str) or not SOURCE_RE.match(ref):
+            raise ModelError(f"sprinkler {name}: ongeldige bron {ref!r}")
+        inputs[k] = ref
+    rawz = v.get("zones")
+    if not isinstance(rawz, list) or not 1 <= len(rawz) <= MAX_ZONES:
+        raise ModelError(f"een sprinkler heeft 1 tot {MAX_ZONES} zones")
+    zones, seen = [], set()
+    for i, z in enumerate(rawz):
+        if not isinstance(z, dict):
+            raise ModelError("zone moet een object zijn")
+        ent = z.get("entity")
+        if ent is not None:
+            if not isinstance(ent, str) or not ENTITY_RE.match(ent):
+                raise ModelError(f"zone {i + 1}: ongeldige entiteit {ent!r}")
+            if ent in seen:
+                raise ModelError(f"{ent} staat op twee zones")
+            seen.add(ent)
+        zones.append({"name": _name(z.get("name"), "zone.name") or f"Zone {i + 1}", "entity": ent, "seconds": _int(z.get("seconds", 60), 0, MAX_ZONE_SECONDS, "seconden")})
+    return {"name": name, "enabled": bool(v.get("enabled", False)), "start": start, "days": sorted(set(days)), "inputs": inputs, "zones": zones,
+            "cycles": _int(v.get("cycles", 1), 1, MAX_CYCLES, "cycli"), "wait": _int(v.get("wait", 5), 0, MAX_WAIT, "wachttijd"),
+            "refresh": _int(v.get("refresh", 30), MIN_REFRESH, MAX_REFRESH, "herhalen")}
+
+
+def _sprinklers(raw) -> dict[str, dict]:
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict) or len(raw) > MAX_SPRINKLERS:
+        raise ModelError(f"sprinklers: maximaal {MAX_SPRINKLERS}")
+    return {k: _sprinkler(k, v) for k, v in raw.items()}
+
+
+def _check_sprinklers(sprinklers: dict[str, dict], modules: dict[str, dict], timers: dict[str, dict]) -> None:
+    for s in sprinklers.values():
+        for name, want, label in SPRINKLER_INPUTS:
+            ref = s["inputs"].get(name)
+            if ref is None:
+                continue
+            got = _source_type(ref, modules, timers)
+            if got is None:
+                raise ModelError(f"sprinkler {s['name']}: ingang {label} wijst naar iets dat niet bestaat")
+            if got != want:
+                raise ModelError(f"sprinkler {s['name']}: ingang {label} verwacht {_SOORT[want]}")
 
 
 def _source_type(ref: str, modules: dict[str, dict], timers: dict[str, dict]) -> str | None:
@@ -230,7 +303,7 @@ def _check_modules(modules: dict[str, dict], timers: dict[str, dict]) -> None:
             if got is None:
                 raise ModelError(f"module {m['name']}: ingang {label} wijst naar iets dat niet bestaat")
             if got != want:
-                raise ModelError(f"module {m['name']}: ingang {label} verwacht {'een 0 of 1' if want == BOOL else 'een tijd'}")
+                raise ModelError(f"module {m['name']}: ingang {label} verwacht {_SOORT[want]}")
     done: set[str] = set()
 
     def walk(mid: str, path: set[str]) -> None:
@@ -257,12 +330,22 @@ def _check_disable(disable, modules: dict[str, dict], timers: dict[str, dict]) -
         raise ModelError("Deze ingang heeft een 0 of 1 nodig, geen tijd. Zet er een Tussen, Na of Voor tussen.")
 
 
-def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]]) -> None:
+def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]], sprinklers: dict[str, dict] | None = None) -> None:
     """Een entiteit mag maar door één ding worden bestuurd, anders werken die elkaar tegen."""
     owner: dict[str, str] = {}
     for vid, gangs in virtual.items():
         for g in gangs:
             owner.setdefault(g["entity"], f"extern apparaat {vid}")
+    valves: dict[str, str] = {}  # een extern apparaat mag: dat is alleen de bron van de gang, geen tweede die bevelen geeft
+    for s in (sprinklers or {}).values():
+        if s["enabled"]:
+            for z in s["zones"]:
+                if z["entity"] in valves:
+                    raise ModelError(f"{z['entity']} wordt al bestuurd door {valves[z['entity']]} en staat ook op sprinkler {s['name']}")
+                if z["entity"]:
+                    valves[z["entity"]] = f"sprinkler {s['name']}"
+    for e, who in valves.items():
+        owner.setdefault(e, who)
     for gid, g in groups.items():
         if not g["enabled"]:
             continue
@@ -273,7 +356,7 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]]) -> None:
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
 
 
 def _switch_gangs(raw) -> list[dict]:
@@ -442,6 +525,7 @@ class Model:
         self.schema: dict = _schema(None)  # blokkenschema per ruimte (alleen weergave)
         self.timers: dict[str, dict] = {}  # timer-modules: id -> {name, days}
         self.modules: dict[str, dict] = {}  # tijd- en logicamodules: id -> {type, name, inputs, value}
+        self.sprinklers: dict[str, dict] = {}  # sprinklers: id -> {name, enabled, start, cycles, wait, refresh, days, inputs, zones}
         self.rev = 0
         self._listeners: list[Callable[[], None]] = []
         if self.path and self.path.exists():
@@ -490,6 +574,8 @@ class Model:
             d["timers"] = self.timers
         if self.modules:
             d["modules"] = self.modules
+        if self.sprinklers:
+            d["sprinklers"] = self.sprinklers
         if self.schema["pages"] or self.schema["switches"] or self.schema["names"]:
             d["schema"] = self.schema
         return d
@@ -531,15 +617,17 @@ class Model:
         schema = _schema(d.get("schema"))
         timers = _timers(d.get("timers"))
         modules = _modules(d.get("modules"))
+        sprinklers = _sprinklers(d.get("sprinklers"))
         if save:  # bij het opstarten nooit weigeren, bij een import wel
-            _conflicts(groups, virtual)
+            _conflicts(groups, virtual, sprinklers)
             _check_modules(modules, timers)
+            _check_sprinklers(sprinklers, modules, timers)
             for g in groups.values():
                 for key in ("disable", "control"):
                     if g.get(key, "").startswith("m:"):
                         _check_disable(g[key], modules, timers)
         self.nodes, self.lights, self.follow, self.virtual, self.plan, self.groups, self.schema, self.timers = nodes, lights, follow, virtual, plan, groups, schema, timers
-        self.modules = modules
+        self.modules, self.sprinklers = modules, sprinklers
         if save:
             self._changed()
 
@@ -561,7 +649,7 @@ class Model:
                                     "disable": old.get("disable") if old else None, "control": old.get("control") if old else None})
         if len(new) > MAX_GROUPS:
             raise ModelError(f"kringen: maximaal {MAX_GROUPS}")
-        _conflicts(new, self.virtual)
+        _conflicts(new, self.virtual, self.sprinklers)
         self.groups = new
         self._changed()
         return [it["id"] for it in items]
@@ -605,7 +693,7 @@ class Model:
             "lamp": lamp,
         })
         groups = {**self.groups, gid: new}
-        _conflicts(groups, self.virtual)
+        _conflicts(groups, self.virtual, self.sprinklers)
         self.groups = groups
         self._changed()
 
@@ -630,6 +718,49 @@ class Model:
         self.timers = {k: v for k, v in self.timers.items() if k != tid}
         self.groups = {k: {x: y for x, y in g.items() if not (x in ("disable", "control") and y == tid)} for k, g in self.groups.items()}
         self.modules = self._without_source(f"t:{tid}")
+        self.sprinklers = self._sprinklers_without(f"t:{tid}")
+        self._changed()
+        return True
+
+    def _sprinklers_without(self, ref: str) -> dict[str, dict]:
+        return {k: {**s, "inputs": {i: r for i, r in s["inputs"].items() if r != ref}} for k, s in self.sprinklers.items()}
+
+    def add_sprinkler(self, name=None, zones: int = 3) -> str:
+        """Een nieuwe sprinkler staat uit, zoals een nieuwe lamp: er gaat geen klep open voor je dat zelf kiest."""
+        if len(self.sprinklers) >= MAX_SPRINKLERS:
+            raise ModelError(f"sprinklers: maximaal {MAX_SPRINKLERS}")
+        base = _name(name, "name") or "Sprinkler"
+        slug = re.sub(r"[^a-z0-9_]+", "_", base.lower()).strip("_")[:70] or "sprinkler"
+        sid, label, n = slug, base, 2
+        while sid in self.sprinklers:
+            sid, label, n = f"{slug}_{n}", f"{base} {n}", n + 1
+        self.sprinklers = {**self.sprinklers, sid: _sprinkler(sid, {"name": label, "zones": [{} for _ in range(_int(zones, 1, MAX_ZONES, "zones"))]})}
+        self._changed()
+        return sid
+
+    def set_sprinkler(self, sid: str, **fields) -> None:
+        """Alleen wat je meegeeft verandert. In `inputs` maakt None een ingang los."""
+        old = self.sprinklers.get(sid)
+        if old is None:
+            raise ModelError("onbekende sprinkler")
+        unknown = set(fields) - {"name", "enabled", "start", "cycles", "wait", "refresh", "days", "inputs", "zones"}
+        if unknown:
+            raise ModelError(f"sprinkler: onbekend veld {sorted(unknown)[0]}")
+        if "inputs" in fields:
+            if not isinstance(fields["inputs"], dict):
+                raise ModelError("sprinkler: inputs moet een object zijn")
+            fields["inputs"] = {**old["inputs"], **fields["inputs"]}
+        new = {**self.sprinklers, sid: _sprinkler(sid, {**old, **fields})}
+        _check_sprinklers(new, self.modules, self.timers)
+        _conflicts(self.groups, self.virtual, new)
+        self.sprinklers = new
+        self._changed()
+
+    def remove_sprinkler(self, sid: str) -> bool:
+        if sid not in self.sprinklers:
+            return False
+        self.sprinklers = {k: v for k, v in self.sprinklers.items() if k != sid}
+        self.schema = {**self.schema, "blocks": {k: v for k, v in self.schema["blocks"].items() if k != f"s:{sid}"}}
         self._changed()
         return True
 
@@ -679,6 +810,7 @@ class Model:
             return False
         ref = f"m:{mid}"
         self.modules = self._without_source(ref)
+        self.sprinklers = self._sprinklers_without(ref)
         self.modules.pop(mid)
         self.groups = {k: {x: y for x, y in g.items() if not (x in ("disable", "control") and y == ref)} for k, g in self.groups.items()}
         self.schema = {**self.schema, "blocks": {k: v for k, v in self.schema["blocks"].items() if k != ref}}
@@ -777,7 +909,7 @@ class Model:
         for g in gangs:
             if g["entity"] in used:
                 raise ModelError(f"{g['entity']} hoort al bij een ander extern apparaat")
-        _conflicts(self.groups, {**self.virtual, vid: gangs})
+        _conflicts(self.groups, {**self.virtual, vid: gangs}, self.sprinklers)
         self.virtual[vid] = gangs
         n = self.nodes.setdefault(vid, {"name": "", "room": "", "adopted": True})
         n["name"], n["room"], n["adopted"] = _name(name, "name") or n["name"], _name(room, "room"), True

@@ -449,3 +449,17 @@ Code: `logic.py` (types, berekening, zon), `model.py` (`modules`, controles), bl
 - Tegen de nagebootste engine en in de browser, niet tegen de echte HA of een echte touch.
 - Alleen lampen via HA. Op een licht op het netwerk beslist de node; daar kan de add-on alleen achteraf bevelen.
 - Er is geen handmatige uitzondering: wie 's nachts de lamp uit wil, moet de ingang loskoppelen.
+
+## 25. Sprinkler
+
+Code: `sprinkler.py` (plan en aansturen, elke seconde), `model.py` (`sprinklers`), blok `s:<id>`, module `number` (`Getal`).
+
+- **Plan bij de start**: anders dan de modules heeft een beurt toestand: ze start op een moment en moet doorlopen als het startuur (bv. de zon) ondertussen verschuift. Daarom een vast plan op de monotone klok, alleen in het geheugen. Bewust niet bewaard: na een herstart gaat er liever een beurt verloren dan dat een klep onverwacht opengaat.
+- **Herhalen**: elke `refresh` s (standaard 30) krijgt elk relais opnieuw zijn stand. Dat herstelt een gemist bevel, niet een uitval van de add-on, HA of de wifi. Een bewaking in het toestel die op dit herhalen wacht werkt in ESPHome niet zomaar, want `on_turn_on` vuurt alleen bij een verandering: daarom een vaste maximale tijd in het toestel (DOCS.md).
+- **Eén eigenaar**: een relais op een actieve sprinkler mag niet ook in een actieve kring of op een andere actieve sprinkler. Een extern apparaat mag wel: dat is alleen de bron van de gang. Heeft die gang een trigger, dan ziet die het schakelen wel als een druk.
+- **Starten**: op de minuut van het startuur, één keer per minuut. Een gemiste minuut wordt niet ingehaald. Loopt er nog een beurt, dan start er geen tweede.
+
+### Niet getest / open
+- Tests met een nagebootste klok en een nagebootste HA, en de pagina in een browser. Niet met echte kleppen.
+- Alleen relais via Home Assistant; een relais van een geflashte node nog niet.
+- De stand van het relais wordt niet teruggelezen: of de klep echt open is, weet de add-on niet.

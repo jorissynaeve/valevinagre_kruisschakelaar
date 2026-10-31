@@ -16,7 +16,7 @@ import copy
 import re
 from collections import Counter
 
-from .logic import MODULE_TYPES, disable_ref
+from .logic import MODULE_TYPES, SPRINKLER_INPUTS, disable_ref
 from .model import MAX_SWITCH_GANGS, Model, ModelError
 from .proto import is_virtual
 
@@ -136,11 +136,18 @@ def _module_blocks(snap: dict) -> list[dict]:
     return out
 
 
+def _sprinkler_blocks(snap: dict) -> list[dict]:
+    return [{**{k: s[k] for k in ("id", "name", "enabled", "start", "cycles", "wait", "refresh", "days", "zones", "status")},
+             "key": f"s:{s['id']}", "kind": "sprinkler", "source": "sprinkler", "tech": "Sprinkler", "alias": "", "room": "", "online": True,
+             "ports": [{"name": n, "type": kind, "label": label, "ref": s["inputs"].get(n)} for n, kind, label in SPRINKLER_INPUTS]}
+            for s in snap.get("sprinklers", [])]
+
+
 def view(model: Model, snap: dict) -> dict:
     """Alles wat de pagina nodig heeft om het schema te tekenen."""
     states = {m["entity"]: m["on"] for g in snap["groups"] for m in g["members"]}
     owners = _gang_owners(model)
-    blocks = _switch_blocks(model, snap, owners, states) + _lamp_blocks(model, snap, owners) + _timer_blocks(snap) + _module_blocks(snap)
+    blocks = _switch_blocks(model, snap, owners, states) + _lamp_blocks(model, snap, owners) + _timer_blocks(snap) + _module_blocks(snap) + _sprinkler_blocks(snap)
     names = {b["key"]: b for b in blocks if b["kind"] == "switch"}
     for b in blocks:
         for c in b.get("inputs", []) + b.get("outputs", []):
@@ -344,6 +351,8 @@ def _new_switches(model: Model, devices: list[dict]) -> tuple[dict, dict]:
 def _height(b: dict) -> int:
     if b["kind"] == "timer":
         return HEAD + ROW + FOOT
+    if b["kind"] == "sprinkler":
+        return HEAD + max(len(b["ports"]), len(b["zones"])) * ROW + FOOT
     if b["kind"] == "module":
         return HEAD + max(len(b["ports"]), 1) * ROW + FOOT
     rows = len(b["gangs"]) if b["kind"] == "switch" else max(len(b["inputs"]), len(b["outputs"])) + (3 if b["source"] == "ha" else 1)
@@ -421,7 +430,7 @@ def convert(model: Model, engine_snapshot, devices: list[dict] | None = None, ar
     lamps = [b for b in blocks if b["kind"] == "lamp" and (b["source"] == "ha" or b["inputs"] or not is_virtual(b["node"]))]
     wired_in = {c["sw"] for b in lamps for c in b["inputs"]}
     wired_out = {c["sw"] for b in lamps for c in b["outputs"]}
-    wanted_keys = {b["key"] for b in lamps} | wired_in | wired_out | {b["key"] for b in blocks if b["kind"] in ("timer", "module")}
+    wanted_keys = {b["key"] for b in lamps} | wired_in | wired_out | {b["key"] for b in blocks if b["kind"] in ("timer", "module", "sprinkler")}
     def wanted(b):
         return b["key"] in wanted_keys
 
@@ -454,7 +463,7 @@ def convert(model: Model, engine_snapshot, devices: list[dict] | None = None, ar
         return min(hits) if hits else len(lamp_order)
     for b in sorted(todo, key=lambda b: (b["kind"] != "lamp", first_lamp(b), b["name"].lower())):
         page = page_of(room_of.get(b["key"], ""))
-        col = COL_LAMP if b["kind"] == "lamp" else COL_IN if b["key"] in wired_in or b["kind"] in ("timer", "module") else COL_OUT
+        col = COL_LAMP if b["kind"] == "lamp" else COL_IN if b["key"] in wired_in or b["kind"] in ("timer", "module", "sprinkler") else COL_OUT
         y = bottom.get((page, col), 30)
         s["blocks"][b["key"]] = {"page": page, "x": col, "y": y}
         bottom[(page, col)] = y + heights[b["key"]] + GAP

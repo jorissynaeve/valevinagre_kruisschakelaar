@@ -26,6 +26,8 @@ from .logic import disable_ref, evaluate, sun_times
 from .model import Model, ModelError, timer_active
 from .proto import CF_BRIDGE, DEFAULT_TTL, LINK_LOCAL, T, Frame, Mode
 from .replay import ReplayTable
+from .sprinkler import TICK as SPRINKLER_TICK
+from .sprinkler import Sprinklers
 from .sync import HOLD_EVERY, EntityGroups
 from .virtual import Virtuals
 
@@ -165,6 +167,8 @@ class Engine:
         self.model.on_change(self._model_changed)
         self._at(self.t.maintenance, self._maintenance)
         self._at(HOLD_EVERY, self._hold_tick)
+        self.sprinklers = Sprinklers(self)
+        self._at(SPRINKLER_TICK, self._sprinkler_tick)
 
     # ------------------------------------------------------------ klok en timers
 
@@ -247,7 +251,10 @@ class Engine:
 
     def source_value(self, source: str) -> bool | None:
         """Wat de bron op een ingang van een lamp nu geeft: 0, 1 of onbekend."""
-        ref = disable_ref(source)
+        return self.ref_value(disable_ref(source))
+
+    def ref_value(self, ref: str):
+        """De waarde van een uitgang (`t:<id>` of `m:<id>`): een 0/1, tijd of getal, of None als ze onbekend is."""
         if ref.startswith("t:"):
             return self.timer_on(ref[2:]) if ref[2:] in self.model.timers else None
         return self.module_values().get(ref[2:])
@@ -255,6 +262,10 @@ class Engine:
     def source_on(self, disable: str) -> bool:
         """Geeft de bron op een disable-ingang nu 1? Onbekend telt als 0: een lamp blijft dan gewoon te bedienen."""
         return self.source_value(disable) is True
+
+    def _sprinkler_tick(self) -> None:
+        self._at(SPRINKLER_TICK, self._sprinkler_tick)
+        self.sprinklers.tick()
 
     def _hold_tick(self) -> None:
         self._at(HOLD_EVERY, self._hold_tick)
@@ -800,6 +811,7 @@ class Engine:
             "groups": self.groups.view(),
             "timers": [{"id": k, **t, "on": self.timer_on(k)} for k, t in sorted(self.model.timers.items(), key=lambda kv: kv[1]["name"].lower())],
             "modules": [{"id": k, **m, "out": values.get(k)} for k, m in self.model.modules.items()],
+            "sprinklers": [{"id": k, **s, "status": self.sprinklers.status(k)} for k, s in self.model.sprinklers.items()],
             "clock": self._clock_view(),
             "stats": dict(self.stats),
         }
