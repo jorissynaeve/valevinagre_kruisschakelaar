@@ -289,6 +289,26 @@ async def timer_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
+async def module_post(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    mid = ctx.model.add_module(b.get("type"), b.get("name"), b.get("value"))
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"m:{mid}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "key": f"m:{mid}"})
+
+
+async def module_put(request: web.Request) -> web.Response:
+    b = await _body(request)
+    request.app[CTX].model.set_module(request.match_info["mid"], b.get("name"), b.get("value"), b.get("inputs"))
+    return web.json_response({"ok": True})
+
+
+async def module_delete(request: web.Request) -> web.Response:
+    ok = request.app[CTX].model.remove_module(request.match_info["mid"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
 async def schema_name(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     b = await _body(request)
@@ -377,7 +397,7 @@ async def virtual_delete(request: web.Request) -> web.Response:
 
 
 async def export(request: web.Request) -> web.Response:
-    return web.json_response(request.app[CTX].model.to_dict(), headers={"Content-Disposition": 'attachment; filename="kruisschakelaars.json"'})
+    return web.json_response(request.app[CTX].model.to_dict(), headers={"Content-Disposition": 'attachment; filename="huisconfig.json"'})
 
 
 async def import_(request: web.Request) -> web.Response:
@@ -454,6 +474,9 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/timers", timer_post)
     r.add_put("/api/timers/{tid}", timer_put)
     r.add_delete("/api/timers/{tid}", timer_delete)
+    r.add_post("/api/modules", module_post)
+    r.add_put("/api/modules/{mid}", module_put)
+    r.add_delete("/api/modules/{mid}", module_delete)
     r.add_put("/api/schema/pages", schema_pages)
     r.add_post("/api/schema/wire", schema_wire)
     r.add_post("/api/schema/lamp", schema_lamp)

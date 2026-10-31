@@ -416,4 +416,23 @@ Eerste logica in het schema, in de geest van de Schakelklok van Loxone. Code: `m
 ### Niet getest / open
 - Op de echte installatie is er geen druk gedaan tijdens een interval: het gedrag is getest met unit-tests tegen de engine, niet met een echte touch.
 - Een lamp zonder lamp-relais: alle leden gelden als touch.
-- Lichten op het netwerk beslissen op de node en hebben geen disable. Andere bronnen dan een timer (bv. een HA-entiteit) kunnen nog niet op de disable.
+- Lichten op het netwerk beslissen op de node en hebben geen disable. Een HA-entiteit kan nog niet op de disable (timers en modules wel, zie §23).
+
+## 23. Tijd- en logicamodules, en de naam Huisconfig
+
+De add-on doet meer dan kruisschakelen en groeit naar een algemene configuratie. Daarom heet ze sinds 0.5.0 **Huisconfig**. Alleen de zichtbare naam is veranderd: de `slug`, het MQTT-voorvoegsel `kruisschakelaars`, de repository en de codenaam `kkaddon` blijven. Een andere slug is voor HA een andere add-on, zonder `/data`; een ander voorvoegsel maakt nieuwe entiteiten in HA.
+
+Code: `logic.py` (types, berekening, zon), `model.py` (`modules`, controles), blok `m:<id>` in `schema.py` en `schema.js`.
+
+- **Soorten**: een uitgang is een tijd (minuten sinds middernacht) of een 0/1. `MODULE_TYPES` legt per type de ingangen vast; een nieuw type is daar een regel, plus de berekening en een regel in `SC_MENU`.
+- **Geen toestand**: alles wordt op het moment van de vraag berekend uit de klok, net als de timer. Er is geen planner die een moment kan missen.
+- **Onbekend**: een derde waarde (losse ingang, geen locatie, poolnacht). `en`/`of` volgen de driewaardige logica (`0 en ?` = 0, `1 of ?` = 1), de rest geeft dan onbekend. Op de disable telt onbekend als 0: een fout in de logica mag een lamp nooit onbedienbaar maken.
+- **Over middernacht**: optellen en aftrekken rekenen modulo 24 uur; `tussen` met `van` later dan `tot` loopt over middernacht. `na` en `voor` kijken alleen naar vandaag.
+- **Zon**: zelf berekend (de zonsopgangsvergelijking) met breedte en lengte uit `get_config` van HA, in plaats van `sun.sun`: die geeft de *volgende* zonsondergang, dus na zonsondergang die van morgen. Nauwkeurig op een paar minuten, en geen extra afhankelijkheid.
+- **Controles**: bij elke wijziging en import bestaan de bronnen, klopt de soort en is er geen lus. Bij het opstarten wordt niets geweigerd; een lus uit een oud bestand geeft onbekend.
+- **Disable**: `groups.<id>.disable` is een kaal timer-id (zoals in bestaande bestanden) of `m:<id>`.
+
+### Niet getest / open
+- Unit-tests tegen de engine en een nagebootste HA, en de pagina in een browser. Niet tegen de echte HA en niet met een echte touch.
+- Er is geen ingang die een lamp echt aan- of uitzet: dat is de routine die hierna komt. Die heeft wel een planner nodig (een overgang van 0 naar 1 is een moment). Voor nu kan een module alleen touches blokkeren.
+- Geen `niet`-module: overdag blokkeren geeft hetzelfde als alleen 's nachts toelaten.

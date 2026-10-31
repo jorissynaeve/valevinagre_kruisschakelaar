@@ -1,4 +1,4 @@
 # Voeg deze map (of de git-repo) toe als add-on repository in Home Assistant.
-name: Kruisschakelaars
+name: Huisconfig
 url: https://github.com/jorissynaeve/valevinagre_kruisschakelaar
 maintainer: Joris Synaeve

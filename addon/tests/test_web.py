@@ -36,7 +36,7 @@ def test_static_and_state(tmp_path):
         c = await env.client()
         try:
             r = await c.get("/")
-            assert r.status == 200 and "Kruisschakelaars" in await r.text()
+            assert r.status == 200 and "Huisconfig" in await r.text()
             for f in ("app.js", "style.css"):
                 assert (await c.get(f"/static/{f}")).status == 200
             st = await (await c.get("/api/state")).json()

@@ -12,6 +12,8 @@ Bestandsformaat (network.json, ook voor export/import):
                          "lamp": ["switch.r4b01_sonoff_4ch_r4_01_relay_4"],     # lamp: de relais die echt de lamp schakelen
                          "disable": "nacht"}},                                  # optioneel: timer die de touches blokkeert
    "timers": {"nacht": {"name": "Nacht", "days": {"mon": [{"from": "03:00", "to": "07:00"}]}}},  # per dag tot 3 intervallen; "to" 00:00 = middernacht
+   "modules": {"donker": {"type": "between", "name": "Donker", "inputs": {"from": "m:avond", "to": "m:ochtend"}},   # tijd en logica, zie logic.py
+               "pauze": {"type": "time", "name": "Pauze", "value": "02:30", "inputs": {}}},
    "plan":   {"floors": [{"id": "g", "name": "Begane grond", "w": 1000, "h": 640,
                           "rooms": [{"x": 20, "y": 20, "w": 300, "h": 200, "name": "Living"}],
                           "items": {"n5": [120, 80], "l2.1": [200, 90]}}]},   # plattegrond, alleen weergave
@@ -30,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from .logic import BOOL, MODULE_TYPES, disable_ref
+from .logic import minutes as _minutes
 from .proto import MAX_GANGS, MAX_IND, MAX_RELAYS, MAX_TRIG, MODE_BY_NAME, VIRTUAL_MAX, VIRTUAL_MIN, is_virtual
 
 MAX_NAME = 60
@@ -37,6 +41,7 @@ MAX_FLOORS, MAX_ROOMS, MAX_ITEMS, PLAN_MAX = 8, 80, 400, 4000
 MAX_GROUPS, MAX_GROUP_ENTITIES = 120, 40
 MAX_PAGES, MAX_BLOCKS, MAX_SWITCHES, MAX_SWITCH_GANGS, SCHEMA_MAX = 60, 1000, 300, 64, 20000
 MAX_TIMERS, MAX_INTERVALS = 60, 3
+MAX_MODULES = 200
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 FORMAT_VERSION = 1
 
@@ -83,6 +88,8 @@ class Light:
 ENTITY_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 FLOOR_ID_RE = re.compile(r"^[a-z0-9]{1,12}$")
 GROUP_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
+DISABLE_RE = re.compile(r"^(m:)?[a-z0-9_]{1,80}$")
+SOURCE_RE = re.compile(r"^[tm]:[a-z0-9_]{1,80}$")
 
 
 def _group(gid, v) -> dict:
@@ -107,7 +114,7 @@ def _group(gid, v) -> dict:
            "lamp": [e for e in ents if e in lamp]}
     dis = v.get("disable")
     if dis is not None:
-        if not isinstance(dis, str) or not GROUP_ID_RE.match(dis):
+        if not isinstance(dis, str) or not DISABLE_RE.match(dis):
             raise ModelError(f"kring {gid}: ongeldige timer {dis!r}")
         out["disable"] = dis
     return out
@@ -122,10 +129,6 @@ def _groups(raw) -> dict[str, dict]:
 
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-
-
-def _minutes(t: str) -> int:
-    return int(t[:2]) * 60 + int(t[3:])
 
 
 def _timer(tid, v) -> dict:
@@ -170,6 +173,89 @@ def _timers(raw) -> dict[str, dict]:
     return {k: _timer(k, v) for k, v in raw.items()}
 
 
+def _module(mid, v) -> dict:
+    if not isinstance(mid, str) or not GROUP_ID_RE.match(mid) or not isinstance(v, dict):
+        raise ModelError(f"module: ongeldig id {mid!r}")
+    kind = v.get("type")
+    if kind not in MODULE_TYPES:
+        raise ModelError(f"module {mid}: onbekend type {kind!r}")
+    name = _name(v.get("name"), "module.name")
+    if not name:
+        raise ModelError("geef de module een naam")
+    raw = v.get("inputs") or {}
+    known = {i[0] for i in MODULE_TYPES[kind]["inputs"]}
+    if not isinstance(raw, dict) or set(raw) - known:
+        raise ModelError(f"module {name}: onbekende ingang")
+    inputs = {}
+    for k, ref in raw.items():
+        if ref is None:
+            continue
+        if not isinstance(ref, str) or not SOURCE_RE.match(ref):
+            raise ModelError(f"module {name}: ongeldige bron {ref!r}")
+        inputs[k] = ref
+    out = {"type": kind, "name": name, "inputs": inputs}
+    if kind == "time":
+        value = v.get("value", "00:00")
+        if not isinstance(value, str) or not TIME_RE.match(value):
+            raise ModelError("module: tijd verwacht als UU:MM")
+        out["value"] = value
+    return out
+
+
+def _modules(raw) -> dict[str, dict]:
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict) or len(raw) > MAX_MODULES:
+        raise ModelError(f"modules: maximaal {MAX_MODULES}")
+    return {k: _module(k, v) for k, v in raw.items()}
+
+
+def _source_type(ref: str, modules: dict[str, dict], timers: dict[str, dict]) -> str | None:
+    """Wat een bron geeft: een tijd, een 0/1, of None als ze niet bestaat."""
+    if ref.startswith("t:"):
+        return BOOL if ref[2:] in timers else None
+    m = modules.get(ref[2:])
+    return MODULE_TYPES[m["type"]]["out"] if m else None
+
+
+def _check_modules(modules: dict[str, dict], timers: dict[str, dict]) -> None:
+    """Elke ingang wijst naar iets dat bestaat en van de juiste soort is, en een uitgang komt nooit bij zichzelf terug."""
+    for m in modules.values():
+        for name, want, label in MODULE_TYPES[m["type"]]["inputs"]:
+            ref = m["inputs"].get(name)
+            if ref is None:
+                continue
+            got = _source_type(ref, modules, timers)
+            if got is None:
+                raise ModelError(f"module {m['name']}: ingang {label} wijst naar iets dat niet bestaat")
+            if got != want:
+                raise ModelError(f"module {m['name']}: ingang {label} verwacht {'een 0 of 1' if want == BOOL else 'een tijd'}")
+    done: set[str] = set()
+
+    def walk(mid: str, path: set[str]) -> None:
+        if mid in path:
+            raise ModelError(f"module {modules[mid]['name']}: deze verbinding maakt een lus")
+        if mid in done:
+            return
+        for ref in modules[mid]["inputs"].values():
+            if ref.startswith("m:"):
+                walk(ref[2:], path | {mid})
+        done.add(mid)
+
+    for mid in modules:
+        walk(mid, set())
+
+
+def _check_disable(disable, modules: dict[str, dict], timers: dict[str, dict]) -> None:
+    if not isinstance(disable, str) or not DISABLE_RE.match(disable):
+        raise ModelError(f"ongeldige bron voor disable: {disable!r}")
+    got = _source_type(disable_ref(disable), modules, timers)
+    if got is None:
+        raise ModelError("onbekende module" if disable.startswith("m:") else "onbekende timer")
+    if got != BOOL:
+        raise ModelError("De disable-ingang heeft een 0 of 1 nodig, geen tijd. Zet er een Tussen, Na of Voor tussen.")
+
+
 def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]]) -> None:
     """Een entiteit mag maar door één ding worden bestuurd, anders werken die elkaar tegen."""
     owner: dict[str, str] = {}
@@ -186,7 +272,7 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]]) -> None:
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
 
 
 def _switch_gangs(raw) -> list[dict]:
@@ -354,6 +440,7 @@ class Model:
         self.groups: dict[str, dict] = {}  # entiteitskringen (AppDaemon-stijl): id -> {name, enabled, entities}
         self.schema: dict = _schema(None)  # blokkenschema per ruimte (alleen weergave)
         self.timers: dict[str, dict] = {}  # timer-modules: id -> {name, days}
+        self.modules: dict[str, dict] = {}  # tijd- en logicamodules: id -> {type, name, inputs, value}
         self.rev = 0
         self._listeners: list[Callable[[], None]] = []
         if self.path and self.path.exists():
@@ -400,6 +487,8 @@ class Model:
             d["groups"] = self.groups
         if self.timers:
             d["timers"] = self.timers
+        if self.modules:
+            d["modules"] = self.modules
         if self.schema["pages"] or self.schema["switches"] or self.schema["names"]:
             d["schema"] = self.schema
         return d
@@ -440,9 +529,15 @@ class Model:
         groups = _groups(d.get("groups"))
         schema = _schema(d.get("schema"))
         timers = _timers(d.get("timers"))
+        modules = _modules(d.get("modules"))
         if save:  # bij het opstarten nooit weigeren, bij een import wel
             _conflicts(groups, virtual)
+            _check_modules(modules, timers)
+            for g in groups.values():
+                if g.get("disable", "").startswith("m:"):
+                    _check_disable(g["disable"], modules, timers)
         self.nodes, self.lights, self.follow, self.virtual, self.plan, self.groups, self.schema, self.timers = nodes, lights, follow, virtual, plan, groups, schema, timers
+        self.modules = modules
         if save:
             self._changed()
 
@@ -493,8 +588,8 @@ class Model:
             lamp = [x for x in old["lamp"] if isinstance(ents, list) and x in ents]
         if disable is ...:
             disable = old.get("disable")
-        elif disable is not None and disable not in self.timers:
-            raise ModelError("onbekende timer")
+        elif disable is not None:
+            _check_disable(disable, self.modules, self.timers)
         new = _group(gid, {
             "disable": disable,
             "name": old["name"] if name is None else name,
@@ -527,6 +622,59 @@ class Model:
             return False
         self.timers = {k: v for k, v in self.timers.items() if k != tid}
         self.groups = {k: {x: y for x, y in g.items() if not (x == "disable" and y == tid)} for k, g in self.groups.items()}
+        self.modules = self._without_source(f"t:{tid}")
+        self._changed()
+        return True
+
+    def _without_source(self, ref: str) -> dict[str, dict]:
+        return {k: {**m, "inputs": {i: r for i, r in m["inputs"].items() if r != ref}} for k, m in self.modules.items()}
+
+    def add_module(self, kind, name=None, value=None) -> str:
+        """Zonder naam krijgt een module de naam van haar type: En, En 2, ..."""
+        if kind not in MODULE_TYPES:
+            raise ModelError(f"onbekend type module {kind!r}")
+        if len(self.modules) >= MAX_MODULES:
+            raise ModelError(f"modules: maximaal {MAX_MODULES}")
+        given = _name(name, "name")
+        base = given or MODULE_TYPES[kind]["label"]
+        slug = re.sub(r"[^a-z0-9_]+", "_", base.lower()).strip("_")[:70] or "module"
+        mid, label, n = slug, base, 2
+        names = {m["name"] for m in self.modules.values()}
+        while mid in self.modules or (not given and label in names):
+            mid, label, n = f"{slug}_{n}", f"{base} {n}", n + 1
+        v = {"type": kind, "name": base if given else label, "inputs": {}}
+        if value is not None:
+            v["value"] = value
+        self.modules = {**self.modules, mid: _module(mid, v)}
+        self._changed()
+        return mid
+
+    def set_module(self, mid: str, name=None, value=None, inputs=None) -> None:
+        """Alleen wat je meegeeft verandert. In `inputs` maakt None een ingang los."""
+        old = self.modules.get(mid)
+        if old is None:
+            raise ModelError("onbekende module")
+        if inputs is not None and not isinstance(inputs, dict):
+            raise ModelError("module: inputs moet een object zijn")
+        v = {**old, "inputs": {**old["inputs"], **(inputs or {})}}
+        if name is not None:
+            v["name"] = name
+        if value is not None:
+            v["value"] = value
+        modules = {**self.modules, mid: _module(mid, v)}
+        _check_modules(modules, self.timers)
+        self.modules = modules
+        self._changed()
+
+    def remove_module(self, mid: str) -> bool:
+        """Wat haar gebruikte is daarna niet meer aangesloten; een lamp is dan gewoon weer te bedienen."""
+        if mid not in self.modules:
+            return False
+        ref = f"m:{mid}"
+        self.modules = self._without_source(ref)
+        self.modules.pop(mid)
+        self.groups = {k: {x: y for x, y in g.items() if not (x == "disable" and y == ref)} for k, g in self.groups.items()}
+        self.schema = {**self.schema, "blocks": {k: v for k, v in self.schema["blocks"].items() if k != ref}}
         self._changed()
         return True
 

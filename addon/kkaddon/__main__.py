@@ -26,7 +26,7 @@ log = logging.getLogger("kk")
 async def run() -> None:
     s = cfg.load()
     logging.basicConfig(level=s.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    log.info("Kruisschakelaars add-on %s, peer-id 0x%04x", __version__, s.peer_id)
+    log.info("Huisconfig add-on %s, peer-id 0x%04x", __version__, s.peer_id)
     if s.key_generated:
         log.warning("Nieuwe netwerksleutel gemaakt in %s/network.key. Zet hem in firmware/secrets.h (zie het tabblad Instellingen).", s.data_dir)
 

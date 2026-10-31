@@ -156,7 +156,7 @@ function viewSettings() {
     <p class="sub">Alle nodes van dit huis delen één sleutel, die bij het compileren in de firmware komt (<code>firmware/secrets.h</code>, staat in .gitignore).</p>
     <div class="row"><button class="btn" data-act="showkey">Toon secrets.h</button></div><div id="keybox"></div>
     <h2>Back-up</h2>
-    <div class="row"><a class="btn" href="api/export" download="kruisschakelaars.json">Exporteer configuratie</a>
+    <div class="row"><a class="btn" href="api/export" download="huisconfig.json">Exporteer configuratie</a>
     <label class="btn" style="margin:0;color:var(--ink)">Importeer… <input id="imp" type="file" accept="application/json" hidden></label></div>
     <p class="sub">Versie ${esc(S.version)}.</p>`;
 }

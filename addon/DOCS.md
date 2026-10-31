@@ -1,4 +1,4 @@
-# Kruisschakelaars
+# Huisconfig
 
 Deze add-on is de viewer en configurator van het ESP-NOW kruisschakelaar-netwerk. De lichten werken zonder
 Home Assistant: de nodes beslissen zelf. De add-on laat zien wat er gebeurt, bedient lichten als "virtuele
@@ -8,7 +8,7 @@ knop", leert welke schakelaar welk licht bedient en houdt de configuratie van de
 
 1. Installeer de Mosquitto-broker en de MQTT-integratie van Home Assistant (voor lichten en knoppen in HA).
 2. Installeer en start deze add-on. Bij de eerste start maakt hij een **netwerksleutel** en bewaart die.
-3. Open **Kruisschakelaars** in de zijbalk, tabblad *Instellingen* → *Toon secrets.h*. Zet die regel in
+3. Open **Huisconfig** in de zijbalk, tabblad *Instellingen* → *Toon secrets.h*. Zet die regel in
    `firmware/secrets.h` en compileer de firmware. Alle nodes van dit huis delen die sleutel.
 4. De add-on praat via UDP (poort 47474) met de bridge(s). Dat gaat standaard via broadcast. Staat een bridge
    achter een repeater die broadcast filtert (bv. het poolhuis), zet hem dan bij **Vaste bridges** in de opties.
@@ -37,7 +37,7 @@ staan ze samen, en de verwijzingen tonen er geen ruimtenaam. *Opnieuw indelen* v
 
 ### Timer en disable
 
-Een **timer** (paars, knop *+ Timer*) heeft per dag tot 3 intervallen waarin zijn uitgang 1 is, en anders 0. De tijd is die van Home
+Een **timer** (paars, *+ Module* → *Tijd*) heeft per dag tot 3 intervallen waarin zijn uitgang 1 is, en anders 0. De tijd is die van Home
 Assistant. Een interval loopt niet over middernacht: maak er twee van, op twee dagen. *Tot 00:00* is tot middernacht.
 
 Sluit de timer aan op de **disable-ingang** van een lamp: sleep naar het paarse bolletje, of kies hem in de zijbalk van de lamp. Staat de
@@ -47,6 +47,28 @@ HA (het lamp-relais) blijft kunnen. Een lamp die niet *Actief* is, doet sowieso 
 
 Een lamp via Home Assistant werkt alleen met HA-entiteiten, en een licht op het netwerk alleen met nodes en externe apparaten.
 Zijn uitgang ligt vast. Mengen kan nog niet.
+
+### Tijd- en logicamodules
+
+Alles wat je op een pagina zet, staat in het menu **+ Module**, rechtsboven in het schema:
+
+| Groep | Module | Uitgang |
+|---|---|---|
+| Toestellen | Lamp, Schakelaar | |
+| Tijd | Timer | 1 binnen de intervallen van de dag |
+| | Zonsopgang, Zonsondergang | de tijd van vandaag, op de locatie van Home Assistant |
+| | Vaste tijd | een tijd of duur, bv. 02:30 |
+| Rekenen | Optellen, Aftrekken | tijd + tijd, tijd − tijd; over middernacht telt het gewoon door |
+| Vergelijken | Tussen | 1 als het nu tussen *van* en *tot* is; is *van* later dan *tot*, dan loopt het over middernacht |
+| | Na | 1 vanaf die tijd tot middernacht |
+| | Voor | 1 van middernacht tot die tijd |
+| Logica | En, Of | 1 als beide, of minstens één van de ingangen, 1 is |
+
+Verbind door van een uitgang (rechts) naar een ingang (links) te slepen, of kies de bron in de zijbalk. Cyaan poorten zijn tijden, paarse zijn een 0 of 1;
+de verkeerde soort aansluiten of een lus maken wordt geweigerd. Een uitgang die niet te bepalen is (losse ingang, locatie nog niet bekend) toont `?` en blokkeert niets.
+
+Een uitgang met 0 of 1 past op de **disable-ingang** van een lamp. Voorbeeld: touches alleen laten werken tussen zonsondergang en zonsopgang. Zet een *Tussen* met *van* = Zonsopgang
+en *tot* = Zonsondergang op de disable: overdag is hij 1 en blokkeert hij de touches. Modules schakelen zelf nog niets: er is nog geen ingang die een lamp aan- of uitzet.
 
 ## Een licht instellen
 

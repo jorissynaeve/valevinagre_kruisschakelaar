@@ -52,7 +52,7 @@ def _device(engine: Engine, node: int) -> dict:
     d = {
         "identifiers": [f"kk_{node}"],
         "name": m.get("name") or f"Node {node}",
-        "manufacturer": "Kruisschakelaars",
+        "manufacturer": "Huisconfig",
         "model": "Extern apparaat (via HA)" if info and info.virtual else "ESP-NOW bridge" if info and info.bridge else "ESP-NOW node",
     }
     if info and info.fw:

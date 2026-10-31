@@ -22,6 +22,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import proto
+from .logic import disable_ref, evaluate, sun_times
 from .model import Model, ModelError, timer_active
 from .proto import CF_BRIDGE, DEFAULT_TTL, LINK_LOCAL, T, Frame, Mode
 from .replay import ReplayTable
@@ -154,6 +155,7 @@ class Engine:
         self._ui_evt = 0
         self._vver: dict[str, int] = {}  # bewaarde ver-tellers van externe gangen
         self.boot = 0
+        self.location: tuple[float, float] | None = None  # breedte en lengte uit HA, voor de zon
 
         self._load_state()
         self.virt = Virtuals(self)
@@ -226,6 +228,26 @@ class Engine:
             return False
         now = self.local_now()
         return timer_active(t, now.weekday(), now.hour * 60 + now.minute)
+
+    def set_location(self, lat, lon) -> None:
+        ok = all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in (lat, lon))
+        self.location = (float(lat), float(lon)) if ok else None
+        if not ok:
+            log.warning("geen locatie uit HA: de zonsopgang en -ondergang blijven onbekend")
+
+    def sun_today(self) -> tuple[int, int] | None:
+        if self.location is None:
+            return None
+        return sun_times(self.local_now().date(), *self.location, getattr(self, "tz", None))
+
+    def module_values(self) -> dict:
+        now = self.local_now()
+        return evaluate(self.model.modules, lambda t: self.timer_on(t) if t in self.model.timers else None, now.hour * 60 + now.minute, self.sun_today())
+
+    def source_on(self, disable: str) -> bool:
+        """Geeft de bron op een disable-ingang nu 1? Onbekend telt als 0: een lamp blijft dan gewoon te bedienen."""
+        ref = disable_ref(disable)
+        return self.timer_on(ref[2:]) if ref.startswith("t:") else self.module_values().get(ref[2:]) is True
 
     def _model_changed(self) -> None:
         self.virt.rebuild()
@@ -734,6 +756,7 @@ class Engine:
         return {"time": now.strftime("%H:%M"), "day": now.weekday(), "tz": str(getattr(self, "tz", None) or "tijd van de add-on")}
 
     def snapshot(self) -> dict:
+        values = self.module_values()
         lights = []
         for key, l in sorted(self.model.lights.items()):
             info = self.nodes.get(l.node)
@@ -765,6 +788,7 @@ class Engine:
             "learn": learn,
             "groups": self.groups.view(),
             "timers": [{"id": k, **t, "on": self.timer_on(k)} for k, t in sorted(self.model.timers.items(), key=lambda kv: kv[1]["name"].lower())],
+            "modules": [{"id": k, **m, "out": values.get(k)} for k, m in self.model.modules.items()],
             "clock": self._clock_view(),
             "stats": dict(self.stats),
         }

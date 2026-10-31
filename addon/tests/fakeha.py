@@ -66,6 +66,8 @@ class FakeHa:
             if t == "subscribe_events":
                 self.subs[ws] = i
                 await ws.send_json({"id": i, "type": "result", "success": True, "result": None})
+            elif t == "get_config":
+                await ws.send_json({"id": i, "type": "result", "success": True, "result": {"time_zone": "Europe/Lisbon", "latitude": 38.72, "longitude": -9.14}})
             elif t == "get_states":
                 res = [{"entity_id": e, "state": s, "attributes": {"friendly_name": self.names.get(e, e)}} for e, s in self.states.items()]
                 await ws.send_json({"id": i, "type": "result", "success": True, "result": res})

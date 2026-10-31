@@ -12,7 +12,7 @@ touch drukt, dan krijgen de andere dezelfde stand (absoluut, dus ook als er eent
     drukken achter elkaar geen heen-en-weer geven: we geven alleen een bevel als de laatst opgedragen (of bekende)
     stand afwijkt.
   * Een entiteit die niet beschikbaar is wordt overgeslagen; een bevel dat niet wordt opgevolgd wordt gemeld.
-  * Geeft de `disable`-timer van een kring 1, dan bedient een touch de lamp niet. Zijn eigen relais is dan al omgezet
+  * Geeft de `disable`-bron (timer of module) van een kring 1, dan bedient een touch de lamp niet. Zijn eigen relais is dan al omgezet
     (dat doet het toestel zelf), dus dat zetten we terug op de stand van de lamp. Bedienen via de UI of HA blijft kunnen.
 
 Alles loopt op de klok van de engine; HA zelf (de websocket) zit in habridge.py.
@@ -112,7 +112,7 @@ class EntityGroups:
 
     def blocked(self, gid: str) -> bool:
         g = self.e.model.groups.get(gid)
-        return bool(g and g.get("disable") and self.e.timer_on(g["disable"]))
+        return bool(g and g.get("disable") and self.e.source_on(g["disable"]))
 
     def _hold(self, gid: str, src: Member, prev: bool) -> None:
         """Een druk terwijl de lamp geblokkeerd is: alleen de touch terug naar de stand van de lamp."""

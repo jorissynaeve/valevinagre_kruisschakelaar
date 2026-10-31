@@ -1,4 +1,4 @@
-# Kruisschakelaars over ESP-NOW
+# Huisconfig: kruisschakelaars over ESP-NOW en meer
 
 Lokale verlichtingsbesturing met ESP-NOW tussen ESP8266/ESP32-nodes, Home Assistant als viewer en configurator.
 Ontwerp: [DESIGN.md](DESIGN.md).
@@ -44,7 +44,7 @@ Gebruik en opties: [addon/DOCS.md](addon/DOCS.md). Ontwerp en resultaten: DESIGN
 ## Installeren op Home Assistant
 
 1. Instellingen → Apps → App store → ⋮ → *Repositories* → voeg `https://github.com/jorissynaeve/valevinagre_kruisschakelaar` toe.
-2. Zoek *Kruisschakelaars* (eventueel eerst ⋮ → *Op updates controleren*), installeer en start de app.
+2. Zoek *Huisconfig* (eventueel eerst ⋮ → *Op updates controleren*), installeer en start de app.
 3. Na een nieuwe versie op GitHub: ⋮ → *Op updates controleren* (soms twee keer) en dan *Bijwerken*. HA bouwt alleen opnieuw als `version` in `addon/config.yaml` hoger is.
 
 Gebouwd en gestart op een Raspberry Pi 3 (aarch64). De app vindt Mosquitto en de HA-API zelf via de Supervisor.
