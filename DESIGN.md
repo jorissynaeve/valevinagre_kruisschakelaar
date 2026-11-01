@@ -507,7 +507,7 @@ Code: `hasp.py` (ontwerp en aanrakingen, puur), `hasphub.py` (MQTT, HA-standen, 
 
 ## 28. Tuya rechtstreeks
 
-Code: `tuya.py` (protocol en verbinding), `tuyahub.py` (toestellen, profielen, entiteiten), tabblad *Tuya*, `tests/test_tuya.py`.
+Code: `tuya.py` (protocol en verbinding), `tuyahub.py` (toestellen, profielen, entiteiten), blok `y:<id>` (`schema.py`, `static/schema.js`), `tests/test_tuya.py`.
 
 - **Waarom**: de Feyree-lader spreekt protocol 3.5 en LocalTuya 5.2.3 niet ("no datapoints found"). Zelf doen vervangt HACS en LocalTuya en geeft per toestel de vrijheid over de entiteiten.
 - **Eigen client in asyncio, geen tinytuya**: tinytuya blokkeert. Het is wel de referentie: de frames en sessiesleutels in de tests zijn vectoren die eruit komen. Afhankelijkheid: `cryptography` (AES-ECB en AES-GCM; PyNaCl kent ze niet). Geen wheel voor musl op armv7: de marker in `requirements.txt` slaat haar daar over en de functie staat dan uit, zodat de add-on op armv7 blijft bouwen.
@@ -519,4 +519,4 @@ Code: `tuya.py` (protocol en verbinding), `tuyahub.py` (toestellen, profielen, e
 ### Niet getest / open
 - Getest tegen een nagebootst toestel voor 3.3, 3.4 en 3.5, en lezen tegen de echte lader (3.5). De paden voor 3.3 en 3.4, en het `data unvalid`-geval, zijn niet op een echt toestel geprobeerd. 3.1 wordt niet ondersteund.
 - Geen UDP-ontdekking en geen massa-import van sleutels: elk toestel wordt met de hand toegevoegd.
-- Geen blok op het schema: de entiteiten zijn gewone HA-entiteiten en kunnen zo via een extern apparaat of kring meedoen (nog met de omweg via HA).
+- Het blok heeft geen poorten: de entiteiten zijn gewone HA-entiteiten en kunnen zo via een extern apparaat of kring meedoen (nog met de omweg via HA).

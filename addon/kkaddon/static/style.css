@@ -2,7 +2,7 @@
   --bg: #f6f7f9; --card: #fff; --ink: #1c2330; --mute: #667085; --line: #e3e6eb;
   --accent: #2563eb; --accent-ink: #fff; --on: #f5b301; --on-ink: #3b2a00;
   --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --chip: #eef1f5;
-  --t-lamp: #fdf0b5; --t-sw: #cfeeda; --t-box: #fcdcc2; --t-ext: #cdebf3; --t-node: #d9e2fb; --t-timer: #e7dcfb; --t-time: #d5e8f7; --t-logic: #f6dcec; --t-spr: #d3f0e4; --t-panel: #e3e6ea; --t-screen: #dfeaf7;
+  --t-lamp: #fdf0b5; --t-sw: #cfeeda; --t-box: #fcdcc2; --t-ext: #cdebf3; --t-node: #d9e2fb; --t-timer: #e7dcfb; --t-time: #d5e8f7; --t-logic: #f6dcec; --t-spr: #d3f0e4; --t-panel: #e3e6ea; --t-screen: #dfeaf7; --t-tuya: #fbe0d8;
   --c0: #2563eb; --c1: #d55e00; --c2: #15803d; --c3: #c026d3; --c4: #0891b2; --c5: #7c3aed; --c6: #92400e; --c7: #475569;
 }
 @media (prefers-color-scheme: dark) {
@@ -10,7 +10,7 @@
     --bg: #12161d; --card: #1b212b; --ink: #e8ecf2; --mute: #98a2b3; --line: #2b3340;
     --accent: #5b8def; --accent-ink: #0b1220; --on: #f5b301; --on-ink: #221800;
     --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --chip: #252d3a;
-    --t-lamp: #54470f; --t-sw: #1d4d33; --t-box: #5a3519; --t-ext: #17475a; --t-node: #283665; --t-timer: #41306a; --t-time: #1f3f5c; --t-logic: #5a2a48; --t-spr: #1b4a44; --t-panel: #3a4048; --t-screen: #24405e;
+    --t-lamp: #54470f; --t-sw: #1d4d33; --t-box: #5a3519; --t-ext: #17475a; --t-node: #283665; --t-timer: #41306a; --t-time: #1f3f5c; --t-logic: #5a2a48; --t-spr: #1b4a44; --t-panel: #3a4048; --t-screen: #24405e; --t-tuya: #5a2f26;
     --c0: #6ea0ff; --c1: #ff8a3d; --c2: #4ade80; --c3: #e879f9; --c4: #22d3ee; --c5: #a78bfa; --c6: #d6a45c; --c7: #94a3b8;
   }
 }
@@ -99,6 +99,7 @@ body.linking .sctab:not(.add) { color: var(--ink); outline: 1px dashed var(--acc
 .trd.t-spr { background: var(--t-spr); border-radius: 2px; }
 .trd.t-panel { background: var(--t-panel); border-radius: 2px; }
 .trd.t-screen { background: var(--t-screen); border-radius: 2px; }
+.trd.t-tuya { background: var(--t-tuya); border-radius: 2px; }
 .trd.t-time { background: var(--t-time); border-radius: 2px; } .trd.t-logic { background: var(--t-logic); border-radius: 2px; }
 .trd.t-sw, .trd.t-box, .trd.t-ext, .trd.t-node { border-radius: 2px; }
 .trd.t-sw { background: var(--t-sw); } .trd.t-box { background: var(--t-box); } .trd.t-ext { background: var(--t-ext); } .trd.t-node { background: var(--t-node); }
@@ -111,7 +112,7 @@ body.linking .sctab:not(.add) { color: var(--ink); outline: 1px dashed var(--acc
 .bk.off .bkbox { stroke-dasharray: 5 4; }
 .bkhead { fill: var(--chip); stroke: none; }
 .t-lamp .bkhead { fill: var(--t-lamp); } .t-sw .bkhead { fill: var(--t-sw); } .t-box .bkhead { fill: var(--t-box); }
-.t-panel .bkhead { fill: var(--t-panel); } .t-screen .bkhead { fill: var(--t-screen); } .t-spr .bkhead { fill: var(--t-spr); } .bkt.zon { font-weight: 700; fill: var(--ok); }
+.t-panel .bkhead { fill: var(--t-panel); } .t-screen .bkhead { fill: var(--t-screen); } .t-tuya .bkhead { fill: var(--t-tuya); } .t-spr .bkhead { fill: var(--t-spr); } .bkt.zon { font-weight: 700; fill: var(--ok); }
 .t-time .bkhead { fill: var(--t-time); } .t-logic .bkhead { fill: var(--t-logic); }
 .t-timer .bkhead { fill: var(--t-timer); } .t-ext .bkhead { fill: var(--t-ext); } .t-node .bkhead { fill: var(--t-node); }
 .bkhead.lamph.on { fill: var(--on); }

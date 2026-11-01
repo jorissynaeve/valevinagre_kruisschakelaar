@@ -96,7 +96,6 @@ def build_state(ctx: Ctx) -> dict:
     snap["plan"] = ctx.model.plan
     snap["names"] = {str(k): v.get("name", "") for k, v in ctx.model.nodes.items()}
     snap["schema"] = schema.view(ctx.model, snap)
-    snap["tuya"] = ctx.tuya.status() if ctx.tuya else {"available": False, "devices": [], "profiles": {}}
     return snap
 
 
@@ -390,7 +389,12 @@ def _tuya(request: web.Request):
 
 
 async def tuya_post(request: web.Request) -> web.Response:
-    return web.json_response({"ok": True, "id": _tuya(request).add(await _body(request))})
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    did = _tuya(request).add(b)
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"y:{did}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "id": did, "key": f"y:{did}"})
 
 
 async def tuya_put(request: web.Request) -> web.Response:

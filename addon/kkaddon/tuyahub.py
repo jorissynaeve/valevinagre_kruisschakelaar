@@ -78,6 +78,8 @@ FEYREE = {
 }
 PROFILES = {"feyree": FEYREE}
 PROFILE_NAMES = {"feyree": "Feyree EV-lader"}
+PROFILE_MAIN = {"feyree": ("101", "124", "109", "115")}  # de rijen op het blok
+MAIN_ROWS = 4
 
 
 def parse_model(text: str) -> dict:
@@ -116,13 +118,14 @@ class TuyaHub:
         self.values: dict[str, dict] = {}
         self.tasks: dict[str, asyncio.Task] = {}
         self._load()
+        engine.tuya_view = self.status
 
     # ------------------------------------------------------------ opslag
 
     def _load(self) -> None:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-            self.devices = {k: v for k, v in raw.get("devices", {}).items() if isinstance(v, dict) and v.get("device_id") and v.get("key")}
+            self.devices = {k: v for k, v in raw.get("devices", {}).items() if isinstance(v, dict)}
         except FileNotFoundError:
             pass
         except (ValueError, OSError, AttributeError) as e:
@@ -140,12 +143,13 @@ class TuyaHub:
     def _check(self, dev: dict) -> None:
         if not dev.get("name"):
             raise ModelError("geef het toestel een naam")
-        if not ID_RE.match(dev.get("device_id", "")):
+        # een nieuw blok is nog leeg: wat ingevuld is moet kloppen, verbinden doet het pas als alles er is
+        if dev.get("device_id") and not ID_RE.match(dev["device_id"]):
             raise ModelError("ongeldig device-id")
-        if not HOST_RE.match(dev.get("host", "")):
+        if dev.get("host") and not HOST_RE.match(dev["host"]):
             raise ModelError("ongeldig adres: geef het IP zonder https://")
         try:
-            ok = len(dev.get("key", "").encode("latin1")) == 16
+            ok = not dev.get("key") or len(dev["key"].encode("latin1")) == 16
         except UnicodeEncodeError:
             ok = False
         if not ok:
@@ -167,13 +171,16 @@ class TuyaHub:
             new["defs"] = parse_model(str(b["model"]))
         return new
 
+    def _unique(self, did: str, dev: dict) -> None:
+        if dev.get("device_id") and any(k != did and x.get("device_id") == dev["device_id"] for k, x in self.devices.items()):
+            raise ModelError("dit toestel staat er al")
+
     def add(self, b: dict) -> str:
         if len(self.devices) >= MAX_DEVICES:
             raise ModelError(f"maximaal {MAX_DEVICES} toestellen")
-        dev = self._fields({"version": "auto", "profile": "", "defs": {}}, b)
+        dev = self._fields({"name": "Tuya", "device_id": "", "host": "", "key": "", "version": "auto", "profile": "", "defs": {}}, b)
         self._check(dev)
-        if any(x["device_id"] == dev["device_id"] for x in self.devices.values()):
-            raise ModelError("dit toestel staat er al")
+        self._unique("", dev)
         base = did = _slug(dev["name"])
         n = 2
         while did in self.devices:
@@ -189,8 +196,7 @@ class TuyaHub:
             raise ModelError("onbekend toestel")
         dev = self._fields(self.devices[did], b)
         self._check(dev)
-        if any(k != did and x["device_id"] == dev["device_id"] for k, x in self.devices.items()):
-            raise ModelError("dit toestel staat er al")
+        self._unique(did, dev)
         reconnect = any(dev.get(k) != self.devices[did].get(k) for k in ("device_id", "host", "version", "key"))
         self.devices[did] = dev
         self._save()
@@ -207,6 +213,8 @@ class TuyaHub:
         del self.devices[did]
         self.values.pop(did, None)
         self._save()
+        m = self.engine.model
+        m.set_schema({**m.schema, "blocks": {k: v for k, v in m.schema["blocks"].items() if k != f"y:{did}"}})
         self._poke()
         return True
 
@@ -218,10 +226,16 @@ class TuyaHub:
 
     def _start(self, did: str) -> None:
         dev = self.devices[did]
+        if not self._complete(dev):
+            return
         c = TuyaClient(dev["device_id"], dev["key"], dev["host"], dev.get("version", "auto"),
                        on_dps=lambda dps, i=did: self._on_dps(i, dps), on_link=lambda _up: self._poke(), on_version=lambda v, i=did: self._on_version(i, v))
         self.clients[did] = c
         self.tasks[did] = asyncio.get_running_loop().create_task(c.run())
+
+    @staticmethod
+    def _complete(dev: dict) -> bool:
+        return bool(dev.get("device_id") and dev.get("host") and dev.get("key"))
 
     def _stop(self, did: str) -> None:
         t = self.tasks.pop(did, None)
@@ -260,7 +274,7 @@ class TuyaHub:
 
     # ------------------------------------------------------------ voor de pagina: nooit de sleutel
 
-    def status(self) -> dict:
+    def status(self) -> list[dict]:
         out = []
         for did, dev in self.devices.items():
             c = self.clients.get(did)
@@ -269,9 +283,13 @@ class TuyaHub:
             for dp, v in sorted(self.values.get(did, {}).items(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
                 de = defs.get(dp) or {}
                 points.append({"dp": dp, "name": de.get("name") or f"Datapunt {dp}", "value": self._shown(de, v), "unit": de.get("unit", ""), "rw": de.get("access") == "rw", "hide": bool(de.get("hide"))})
-            out.append({"id": did, "name": dev["name"], "device_id": dev["device_id"], "host": dev["host"], "version": c.version if c else dev.get("version"), "profile": dev.get("profile", ""),
-                        "has_model": bool(dev.get("defs")), "online": self._online(did), "error": c.last_error if c else "", "points": points})
-        return {"available": CRYPTO, "devices": out, "profiles": PROFILE_NAMES}
+            wanted = PROFILE_MAIN.get(dev.get("profile") or "")
+            shown = [p for p in points if not p["hide"]]
+            main = [p for dp in wanted for p in shown if p["dp"] == dp] if wanted else shown[:MAIN_ROWS]
+            out.append({"id": did, "name": dev["name"], "device_id": dev.get("device_id", ""), "host": dev.get("host", ""), "version": c.version if c else dev.get("version"), "profile": dev.get("profile", ""),
+                        "has_key": bool(dev.get("key")), "configured": self._complete(dev), "has_model": bool(dev.get("defs")), "online": self._online(did), "error": c.last_error if c else "",
+                        "points": points, "main": main, "available": CRYPTO, "profiles": PROFILE_NAMES})
+        return out
 
     @staticmethod
     def _shown(de: dict, v):

@@ -49,13 +49,13 @@ function scType(b) { // bepaalt de kleur van het blok
   if (b.kind === 'lamp' || b.kind === 'timer') return b.kind;
   if (b.kind === 'module') return b.out === 'bool' ? 'logic' : 'time';
   if (b.kind === 'sprinkler') return 'spr';
-  if (b.kind === 'panel' || b.kind === 'screen') return b.kind;
+  if (b.kind === 'panel' || b.kind === 'screen' || b.kind === 'tuya') return b.kind;
   if (b.source === 'node') return 'node';
   if (b.source === 'virtual') return 'ext';
   const conns = scConns().filter((x) => x.sw && x.sw.key === b.key);
   return conns.length && conns.every((x) => x.dir === 'out') ? 'box' : 'sw'; // alleen geschakeld, nooit bediend: een relaisbox
 }
-const SC_TYPE_NL = { panel: 'NSPanel', screen: 'Scherm · openHASP', timer: 'Timer', node: 'Node', ext: 'Extern apparaat', box: 'Relaisbox · HA', sw: 'Schakelaar · HA' };
+const SC_TYPE_NL = { panel: 'NSPanel', screen: 'Scherm · openHASP', tuya: 'Tuya · lokaal', timer: 'Timer', node: 'Node', ext: 'Extern apparaat', box: 'Relaisbox · HA', sw: 'Schakelaar · HA' };
 const wireSel = (x) => SC.sel && SC.sel.lamp === x.lamp.key && SC.sel.dir === x.dir && SC.sel.i === x.i;
 
 function wirePath(x0, y0, dir0, x1, y1, dir1) { // dir: naar welke kant de poort kijkt (-1 links, 1 rechts)
@@ -82,7 +82,7 @@ function scSwitch(b, tags) {
     const y = rowY(b, g.i);
     const st = g.on === true ? 'on' : g.on === null ? 'unknown' : '';
     return `<line class="bkrule" x1="${b.x}" x2="${b.x + SW_W}" y1="${y - SC_ROW / 2}" y2="${y - SC_ROW / 2}"/>
-      <text class="bkt" x="${b.x + SW_W / 2}" y="${y + 4}" text-anchor="middle">${esc(scCut(g.label, 18))}</text>
+      <text class="bkt" x="${b.x + SW_W / 2}" y="${y + 4}" text-anchor="middle">${esc(scCut(g.label, g.touch || g.relay ? 18 : 34))}</text>
       ${g.touch ? `<circle class="pt tou" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="touch" data-g="${g.i}"><title>Touch: geeft de druk door (ingang)</title></circle><text class="ptl" x="${b.x + 11}" y="${y + 4}">touch</text>` : ''}
       ${g.relay ? `<circle class="pt rel ${st}" cx="${b.x + SW_W}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="relay" data-g="${g.i}"><title>Relais: wordt geschakeld (uitgang)</title></circle><text class="ptl" x="${b.x + SW_W - 11}" y="${y + 4}" text-anchor="end">relais</text>` : ''}
       ${(tags.get(`${b.key}|${g.i}|in`) || []).map((t, n) => `<text class="stub" x="${b.x - 11}" y="${y + 4 + n * 13}" text-anchor="end" data-sc="go" data-k="${esc(t.key)}">${esc(scCut(t.text, 28))} ←<title>${esc(t.text)}</title></text>`).join('')}
@@ -302,6 +302,38 @@ async function scSaveScreen(b, patch) {
   }
 }
 
+function scTuyaState(b) {
+  if (!b.available) return 'niet beschikbaar op armv7';
+  if (!b.configured) return 'nog niet ingesteld';
+  return b.online ? `verbonden, protocol ${b.version}` : b.error || 'verbinden…';
+}
+
+function scTuyaPanel(b, props) {
+  const opt = (v, cur, text) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(text)}</option>`;
+  const rows = b.points.filter((p) => !p.hide).map((p) => `<tr><td>${esc(p.name)}${p.rw ? ' <span class="badge">instelbaar</span>' : ''}</td><td>${esc(p.value)}${p.unit ? ` ${esc(p.unit)}` : ''}</td><td class="sub">${esc(p.dp)}</td></tr>`).join('');
+  return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scTuyaState(b))}</span></div>
+    ${props}
+    <label>Device-id</label><input type="text" maxlength="40" data-tyfield="device_id" spellcheck="false" autocomplete="off" value="${esc(b.device_id)}">
+    <label>IP-adres</label><input type="text" maxlength="253" data-tyfield="host" spellcheck="false" autocomplete="off" placeholder="192.168.8.26" value="${esc(b.host)}">
+    <label>Local key</label><input type="password" maxlength="16" data-tyfield="key" autocomplete="new-password" placeholder="${b.has_key ? 'ingesteld, leeg laten om te behouden' : '16 tekens'}">
+    <div class="sub">Uit de Tuya API Explorer (<code>local_key</code>). Blijft in de add-on en gaat niet mee in de export.</div>
+    <label>Protocol</label><select data-tyfield="version">${opt('auto', b.version, 'automatisch zoeken')}${['3.5', '3.4', '3.3'].map((v) => opt(v, b.version, v)).join('')}</select>
+    <label>Profiel</label><select data-tyfield="profile">${opt('', b.profile, b.has_model ? 'eigen datamodel' : 'geen')}${Object.keys(b.profiles).map((k) => opt(k, b.profile, b.profiles[k])).join('')}</select>
+    <label>Datamodel plakken</label><textarea rows="2" data-tyfield="model" placeholder="Antwoord van Query Things Data Model"></textarea>
+    <div class="sub">Zonder profiel of datamodel zijn de datapunten alleen te lezen. Veel toestellen laten maar één verbinding toe: haal het toestel eerst uit LocalTuya en sluit de SmartLife-app.</div>
+    ${rows ? `<h2>Datapunten</h2><div class="scroll"><table><tbody>${rows}</tbody></table></div>` : ''}
+    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="deltuya" data-id="${esc(b.id)}">Toestel verwijderen</button></div>`;
+}
+
+async function scSaveTuya(b, patch) {
+  try {
+    await api('PUT', `tuya/${b.id}`, patch);
+  } finally {
+    SC.force = true;
+    await refresh();
+  }
+}
+
 const SC_WEEK = ['ma', 'di', 'wo', 'do', 'vr', 'za', 'zo'];
 
 function scSprinklerPanel(b, props) {
@@ -394,7 +426,7 @@ function scModulePanel(b, props) {
 
 // Het menu "+ Module": alles wat je op een pagina kunt zetten, per soort
 const SC_MENU = [
-  ['Toestellen', [['lamp', 'Lamp', 'met touches en relais'], ['switch', 'Schakelaar', 'een toestel uit Home Assistant'], ['panel', 'NSPanel', 'scherm met twee relais'], ['screen', 'Scherm', 'aanraakscherm met openHASP']]],
+  ['Toestellen', [['lamp', 'Lamp', 'met touches en relais'], ['switch', 'Schakelaar', 'een toestel uit Home Assistant'], ['panel', 'NSPanel', 'scherm met twee relais'], ['screen', 'Scherm', 'aanraakscherm met openHASP'], ['tuya', 'Tuya', 'toestel rechtstreeks over het LAN']]],
   ['Tijd', [['timer', 'Timer', 'intervallen per dag, geeft 0 of 1'], ['sunrise', 'Zonsopgang', 'tijd van vandaag'], ['sunset', 'Zonsondergang', 'tijd van vandaag'], ['time', 'Vaste tijd', 'bv. 02:30']]],
   ['Waarden', [['number', 'Getal', 'bv. aantal cycli']]],
   ['Rekenen', [['add', 'Optellen', 'tijd + tijd'], ['sub', 'Aftrekken', 'tijd − tijd']]],
@@ -493,7 +525,7 @@ function scTray() {
     all.sort((a, b) => (!!a.page - !!b.page));
     return `<h2>${title}</h2>${all.map(item).join('') || '<div class="sub">Geen.</div>'}`;
   };
-  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Panelen', 'panel') + part('Schermen', 'screen');
+  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Panelen', 'panel') + part('Schermen', 'screen') + part('Tuya', 'tuya');
 }
 
 function scPanel() {
@@ -506,7 +538,7 @@ function scPanel() {
   const pages = `<label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
   const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'switch' ? b.alias : b.name)}" placeholder="${esc(b.tech)}">
     <div class="sub">Technische naam: <code>${esc(b.tech)}</code></div>${pages}`;
-  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : scSwitchPanel(b, props);
+  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : b.kind === 'tuya' ? scTuyaPanel(b, props) : scSwitchPanel(b, props);
 }
 
 function scConnRow(b, c, i, dir) {
@@ -825,6 +857,7 @@ const SC_ACTIONS = {
     const r = d.type === 'sprinkler' ? await api('POST', 'sprinklers', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'panel' ? await api('POST', 'panels', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'screen' ? await api('POST', 'screens', { page: SC.page, ...scFreeSpot('module') })
+      : d.type === 'tuya' ? await api('POST', 'tuya', { page: SC.page, ...scFreeSpot('module') })
       : await api('POST', 'modules', { type: d.type, page: SC.page, ...scFreeSpot('module') });
     SC.sel = SC.reveal = r.key;
     SC.force = true;
@@ -881,6 +914,12 @@ const SC_ACTIONS = {
   delscreen: async (d) => {
     if (!confirm('Dit scherm verwijderen? Op het scherm zelf blijft het ontwerp staan tot het opnieuw opstart.')) return;
     await api('DELETE', `screens/${d.id}`);
+    SC.sel = null;
+    await refresh();
+  },
+  deltuya: async (d) => {
+    if (!confirm('Dit Tuya-toestel verwijderen? Zijn entiteiten verdwijnen uit Home Assistant.')) return;
+    await api('DELETE', `tuya/${d.id}`);
     SC.sel = null;
     await refresh();
   },
@@ -1169,6 +1208,7 @@ document.addEventListener('change', (ev) => {
         else if (b.kind === 'sprinkler') await api('PUT', `sprinklers/${b.id}`, { name });
         else if (b.kind === 'panel') await api('PUT', `panels/${b.id}`, { name });
         else if (b.kind === 'screen') await api('PUT', `screens/${b.id}`, { name });
+        else if (b.kind === 'tuya') await api('PUT', `tuya/${b.id}`, { name });
         else if (b.kind === 'timer') await api('PUT', `timers/${b.id}`, { name, days: b.days });
         else if (!name) throw new Error('Een lamp heeft een naam nodig');
         else if (b.source === 'ha') await api('PUT', `groups/${b.id}`, { name });
@@ -1223,6 +1263,12 @@ document.addEventListener('change', (ev) => {
     } else patch = { [d.spfield]: d.spfield === 'enabled' ? t.checked : d.spfield === 'start' ? t.value : +t.value };
     t.blur();
     act(() => scSaveSprinkler(b, patch))();
+  }
+  if (t.dataset && t.dataset.tyfield && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'tuya') {
+    const b = scBlock(SC.sel);
+    const value = t.dataset.tyfield === 'key' ? t.value : t.value.trim();
+    t.blur();
+    if (value || t.dataset.tyfield !== 'model') act(() => scSaveTuya(b, { [t.dataset.tyfield]: value }))();
   }
   if (t.dataset && (t.dataset.hsfield || t.dataset.hstitle !== undefined || t.dataset.hslabel !== undefined || t.dataset.hsent !== undefined) && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'screen') {
     const b = scBlock(SC.sel), d = t.dataset;

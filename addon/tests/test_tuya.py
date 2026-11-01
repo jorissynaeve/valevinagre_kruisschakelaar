@@ -10,7 +10,7 @@ import pytest
 
 pytest.importorskip("cryptography")
 
-from kkaddon import tuya  # noqa: E402
+from kkaddon import schema, tuya  # noqa: E402
 from kkaddon.model import ModelError  # noqa: E402
 from kkaddon.tuyahub import TuyaHub, parse_model  # noqa: E402
 from tests.rig import Rig  # noqa: E402
@@ -294,7 +294,7 @@ def test_key_never_leaves_the_add_on(tmp_path):
     hub, did = hub_with(tmp_path)
     out = json.dumps([hub.status(), hub.discovery(), hub.states()])
     assert KEY.decode() not in out
-    assert hub.status()["devices"][0]["device_id"] == DEV
+    assert hub.status()[0]["device_id"] == DEV and hub.status()[0]["has_key"]
     assert "tuya" not in (tmp_path / "network.json").read_text(encoding="utf-8") if (tmp_path / "network.json").exists() else True
 
 
@@ -335,6 +335,43 @@ def test_edit_without_key_keeps_it_and_duplicates_are_refused(tmp_path):
             hub.add(dict(CHARGER))
         assert hub.remove(did) and not hub.remove(did) and did not in hub.values
         hub.close()
+    asyncio.run(go())
+
+
+def test_a_new_block_starts_empty_and_connects_when_complete(tmp_path):
+    async def go():
+        r = Rig(tmp_path)
+        hub = TuyaHub(tmp_path, r.engine)
+        did = hub.add({})
+        assert hub.devices[did]["name"] == "Tuya" and did not in hub.clients and not hub.status()[0]["configured"]
+        hub.update(did, {"device_id": DEV, "host": "192.0.2.1"})
+        assert did not in hub.clients
+        hub.update(did, {"key": KEY.decode()})
+        assert did in hub.clients and hub.status()[0]["configured"]
+        hub.close()
+    asyncio.run(go())
+
+
+def test_block_on_the_schema_shows_the_main_values_and_no_key(tmp_path):
+    async def go():
+        r = Rig(tmp_path)
+        hub = TuyaHub(tmp_path, r.engine)
+        did = hub.add(dict(CHARGER))
+        hub.close()
+        hub._on_dps(did, REPORT)
+        page = schema.view(r.model, r.engine.snapshot())
+        r.model.set_schema({**r.model.schema, "pages": [{"id": "p1", "name": "Garage"}]})
+        schema.place(r.model, r.engine.snapshot(), f"y:{did}", "p1", 40, 40)
+        view = schema.view(r.model, r.engine.snapshot())
+        b = next(x for x in view["blocks"] if x["key"] == f"y:{did}")
+        assert b["kind"] == "tuya" and b["page"] == "p1"
+        assert [g["label"] for g in b["gangs"]] == ["Status: connect", "Laden: WaitOperation", "Laadstroom: 16 A"]
+        assert not any(g["touch"] or g["relay"] for g in b["gangs"])
+        assert KEY.decode() not in json.dumps(view) and KEY.decode() not in json.dumps(r.engine.snapshot())
+        assert page["blocks"]
+        assert hub.remove(did)
+        assert f"y:{did}" not in r.model.schema["blocks"]
+        assert not any(x["key"] == f"y:{did}" for x in schema.view(r.model, r.engine.snapshot())["blocks"])
     asyncio.run(go())
 
 
