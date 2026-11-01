@@ -500,5 +500,7 @@ Code: `hasp.py` (ontwerp en aanrakingen, puur), `hasphub.py` (MQTT, HA-standen, 
 ### Niet getest / open
 - Getest: de hub tegen nagebootste schermberichten en een nagebootste HA, en de zijbalk in een browser.
 - Gemeten op `scherm03` met de echte broker (0.9.0): het ontwerp komt aan en ziet er goed uit (screenshot), de add-on mag op `hasp/#`, `p0b250.text` en `.hidden` antwoorden, `backlight` zonder inhoud antwoordt, `backlight on` werkt en wordt gemeld, en de time-out stuurt op tijd `backlight off`. `idle off` maakt een scherm na `backlight off` niet wakker, daarom stuurt de hub na een ontwerp `backlight on`.
-- Nog niet gemeten: een echte aanraking (schakelen, kleur, wakker maken, de volgorde van `backlight` en `down`) en een herstart van de add-on zonder knipperen.
+- Getest in huis op `scherm01` en `scherm03` (0.9.1): aanraken op het echte scherm is in orde bevonden, en bij de herstart van de add-on is geen geknipper gezien. Na een herstart van HA stonden beide schermen online en kwamen de kleuren overeen met HA (29 van de 30 knoppen uitgelezen, alle gecontroleerde lampen uit; "aan" is daarbij dus niet uitgelezen).
+- De firmware rondt kleuren af: `#DDE3E8` komt terug als `#dee2ee`. Vergelijk dus niet letterlijk met wat je hebt gestuurd.
+- Niet gemeten: de precieze volgorde van `state/backlight` en het `down`-event bij het wakker maken.
 - Niet ondersteund: de poort (komt als `script.*` of `button.*` in HA; het model en de hub kennen die domeinen, de keuzelijst nog niet), camera's, de Pool-pagina, dimmen.
