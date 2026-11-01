@@ -447,13 +447,15 @@ dlg().addEventListener('close', () => {
 
 // ---------------------------------------------------------------- data en live updates
 
-let reqSeq = 0, appliedSeq = 0;
+let reqSeq = 0, appliedSeq = 0, pageVersion = null;
 async function refresh() {
   const mine = ++reqSeq;
   try {
     const next = await api('GET', 'state');
     if (mine < appliedSeq) return; // een nieuwer antwoord was al binnen: dit is verouderd
     appliedSeq = mine;
+    if (pageVersion && next.version !== pageVersion) { location.reload(); return; } // add-on bijgewerkt: nooit een oud script bij nieuwe gegevens
+    pageVersion = next.version;
     S = next;
     render();
   } catch (e) {
