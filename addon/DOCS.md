@@ -103,16 +103,15 @@ switch:
 
 ## NSPanel
 
-Tabblad *Paneel*: het scherm met twee knoppen (Sonoff NSPanel) praat rechtstreeks met deze add-on, zonder MQTT en zonder AppDaemon. De Tasmota-firmware en de TFT van
-nspanel-lovelace-ui blijven op de panel; alleen het brein verhuist.
+*+ Module → Toestellen → NSPanel* zet het scherm met twee knoppen (Sonoff NSPanel) als blok op het schema. De panel praat dan rechtstreeks met deze add-on, zonder MQTT en zonder AppDaemon. De Tasmota-firmware en de TFT van nspanel-lovelace-ui blijven op de panel; alleen het brein verhuist. Alles staat in de zijbalk van het blok en zit in de back-up (*Exporteer configuratie*). Staat er een wachtwoord in je YAML, zoals bij een wifi-QR-code, dan staat dat dus ook in die export.
 
-* **Configuratie**: plak de YAML van `nspanel-lovelace-ui` (het hele `apps.yaml`-blok mag, of alleen `cards:` enzovoort) in het paneel en geef het IP-adres van de panel. Een fout in de YAML wordt bij het opslaan geweigerd, en de vorige config blijft.
+* **Configuratie**: plak de YAML van `nspanel-lovelace-ui` (het hele `apps.yaml`-blok mag, of alleen `cards:` enzovoort), geef het IP-adres van de panel en kies *Opslaan*. Een fout in de YAML wordt geweigerd: de vorige config blijft gelden en wat je typte blijft staan.
 * **Ondersteund**: de kaarten `cardGrid`, `cardEntities`, `cardQR` en `cardPower`, verborgen kaarten (`hiddenCards`, `navigate.<key>`), `iText`, `delete`, de screensaver met weer en voorspelling (`weather.*` of een sensor met `forecast`), statuspictogrammen, tijd, datum en helderheid. Namen, kleuren en waarden mogen een Jinja-sjabloon zijn (`{{ ... }}`): de add-on laat HA ze uitrekenen en volgt de wijzigingen.
-  Schakelen: `switch`, `light`, `fan`, `input_boolean`, `automation` (aan/uit en wisselen), `scene`, `script`, `button`, `lock`, `number`. Een ander kaarttype (thermostaat, media, alarm, …), de detailpagina's en de lange druk worden nog niet ondersteund.
-* **Pictogrammen**: een selectie (±100) uit het lettertype van het scherm. Een onbekende naam geeft een uitroepteken. Extra namen kun je zetten in `panel_icons.json` in de datamap: `{"naam": ""}` (de tekens uit `icon_mapping.py` van nspanel-lovelace-ui).
-* **Relais en temperatuur** komen als apparaat in Home Assistant (via MQTT-discovery): *Relais 1*, *Relais 2*, *Temperatuur*, en een Wifi-signaal. De knoppen op de panel schakelen de relais zelf, ook als HA of de add-on weg is.
-  Let op: de entiteit van de temperatuur heet voortaan bv. `sensor.nspanel_1_temperatuur`. Zet die in je `screensaver`-config in plaats van `sensor.tasmota_analog_temperature1`.
-* **Op de panel zetten**: onderaan het tabblad staat hoe (script `huisconfig.be` met het adres van deze add-on, uploaden, één regel in `autoexec.be`). Zet de AppDaemon-app eerst uit.
+  Schakelen: `switch`, `light`, `fan`, `input_boolean`, `automation` (aan/uit en wisselen), `scene`, `script`, `button`, `lock`, `number`. Een ander kaarttype (thermostaat, media, alarm, ...), de detailpagina's en de lange druk worden nog niet ondersteund.
+* **Pictogrammen**: een selectie (ongeveer 100) uit het lettertype van het scherm. Een onbekende naam geeft een uitroepteken. Extra namen kun je zetten in `panel_icons.json` in de datamap: `{"naam": "\\ue334"}` (de tekens uit `icon_mapping.py` van nspanel-lovelace-ui).
+* **Relais**: het blok heeft rechts twee uitgangen. Sleep er een naar de uitgang van een lamp, of naar een zone van een sprinkler. Dat loopt via hun entiteit in HA (`switch.kk_panel_<paneel>_relay1` en `_relay2`), dus alleen als HA en de add-on draaien. De knoppen op de panel schakelen de relais altijd zelf.
+* **In Home Assistant** (via MQTT-discovery): *Relais 1*, *Relais 2*, *Temperatuur* (`sensor.kk_panel_<paneel>_temp`) en een Wifi-signaal. Zet die temperatuur in je `screensaver`-config in plaats van `sensor.tasmota_analog_temperature1`.
+* **Op de panel zetten**: de stappen staan in de zijbalk (script `huisconfig.be` met het adres van deze add-on, uploaden, een regel in `autoexec.be`). Zet de AppDaemon-app eerst uit.
   Terugdraaien kan altijd: de regel weghalen en herstarten.
 * **Netwerk**: UDP, poort 47480 op de add-on en 47481 op de panel. Het verkeer is niet versleuteld en de add-on kijkt alleen naar het IP-adres van de panel; houd het op een vertrouwd LAN.
   Een pakket kan verloren gaan: de add-on stuurt de huidige pagina daarom elke twee minuten opnieuw, en een stand die verandert meteen.

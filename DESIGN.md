@@ -467,17 +467,19 @@ Code: `sprinkler.py` (plan en aansturen, elke seconde), `model.py` (`sprinklers`
 
 ## 26. NSPanel
 
-Code: `panel.py` (configuratie en schermtaal, puur), `panelhub.py` (UDP, HA-standen, relais), `habridge.py` (alle standen, sjablonen, voorspellingen, algemene service-aanroepen), `berry/huisconfig.be` (op de panel), tab *Paneel* (`static/panel.js`).
+Code: `panel.py` (configuratie en schermtaal, puur), `panelhub.py` (UDP, HA-standen, relais), `habridge.py` (alle standen, sjablonen, voorspellingen, algemene service-aanroepen), `berry/huisconfig.be` (op de panel), `model.py` (`panels`), blok `p:<id>` (`schema.py`, `static/schema.js`).
 
 - **Wat blijft**: Tasmota op de ESP32 en de Nextion-TFT van nspanel-lovelace-ui. Het scherm is een domme renderer die tekstregels krijgt (`pageType~`, `entityUpd~`, `weatherUpdate~`, ...) en aanrakingen terugmeldt (`event,buttonPress2,...`). We schrijven dus geen schermsoftware en flashen de ESP32 niet (er is geen seriële noodweg).
 - **Wat vervangt**: AppDaemon (de pagina's maken) en MQTT (het transport). De driver in `autoexec.be` legt `CustomSend` en `CustomRecv` al bloot; ons Berry-script hangt daar een UDP-brug aan: `D|tekst` naar het scherm, `S|tekst` van het scherm, hartslag `H|{relais, temperatuur, rssi}`.
 - **Herkomst en licentie**: het protocol en het gedrag (veldvolgorde, kleuren, navigatie) heb ik uit de broncode van nspanel-lovelace-ui gelezen en daarna zelf uitgeschreven, getest tegen de config van dit huis. De pictogramtabel (`panel_icons.py`) is een selectie uit de lettertypecodes van de TFT. Die repo is GPL-3.0: staat dit project ooit publiek, laat dan nakijken of dat volstaat of dat deze module dezelfde licentie moet krijgen.
 - **Eén eigenaar per scherm**: AppDaemon en deze add-on mogen niet tegelijk sturen. Overschakelen = AppDaemon-app uit, `load("huisconfig.be")` in `autoexec.be`.
 - **Relais als objecten**: de panel meldt ze in zijn hartslag, de add-on biedt ze aan met MQTT-discovery (`switch`, `sensor`) en zet ze via `P|n|0/1`. De knoppen op de panel blijven lokaal werken (Tasmota).
+- **Module op het schema**: de configuratie staat in het model, dus in de back-up; de hub volgt het model. `panels.json` van 0.8.0 wordt eenmalig overgenomen. De relais zijn gewone uitgangen via hun HA-entiteit, die met `default_entity_id` vast ligt, zodat een draad niet afhangt van de naam in HA. De kaarten blijven voorlopig YAML in de zijbalk: eerst moet de keten op de echte panel bewezen zijn, dan pas een visuele editor.
 - **Verloren pakketten**: UDP, geen bevestiging. De add-on spaart de ontvangstbuffer van de ESP32 (30 ms tussen pakketten, hartslag-poll als de panel stil is) en stuurt de huidige pagina elke 2 minuten opnieuw.
 - **Starten**: de hub wacht tot de panel zich meldt en HA verbonden is, en stuurt dan klok, helderheid en screensaver. Zegt het scherm zelf `event,startup` (herstart), dan begint de hub opnieuw.
 
 ### Niet getest / open
 - Getest: de schermtaal tegen de config van dit huis (`tests/data/nspanel1.yaml`), de hub met echte UDP naar een nepl panel en een nagebootste HA, en het Berry-script los op de echte panel (laden, hartslag, `Q|`, een scherm-event; de relais en het schermcommando zijn daarbij niet bediend).
+- `default_entity_id` is niet getest tegen een echte HA: geeft die het relais een andere entiteit, dan werkt een draad naar een lamp niet (de panel en zijn eigen relaisknoppen wel).
 - Niet getest: de volledige keten op de echte panel met de echte TFT (of de pagina's er precies zo uitzien als via AppDaemon), `autoexec.be` na een herstart, en een lange periode met verloren pakketten.
 - Niet ondersteund: kaarttypes thermostaat/media/alarm/ontgrendelen/grafiek, detailpagina's (lange druk), `cover`-schuiven, dimmen van lichten, `service:`-items, de update van de TFT.

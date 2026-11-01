@@ -650,3 +650,25 @@ class Panel:
         elif domain == "lock":
             st = self.state(entity)
             self.env.call("lock", "unlock" if st and st[0] == "locked" else "lock", {"entity_id": entity})
+
+
+class _NoEnv:
+    def state(self, entity):
+        return None
+
+    def template(self, text):
+        return None
+
+    def forecast(self, entity):
+        return []
+
+    def now(self):
+        return datetime.now()
+
+    def call(self, domain, service, data):
+        pass
+
+
+def validate(source: Any) -> None:
+    """Gooit PanelError als deze configuratie niet te gebruiken is."""
+    Panel(source, _NoEnv(), lambda _text: None)

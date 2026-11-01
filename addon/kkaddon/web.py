@@ -344,39 +344,28 @@ def _panels(request: web.Request):
     return hub
 
 
-async def panels_get(request: web.Request) -> web.Response:
-    return web.json_response({"panels": _panels(request).status(), "udp_port": _panels(request).port})
-
-
 async def panel_post(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
     b = await _body(request)
-    try:
-        pid = _panels(request).create(str(b.get("name") or ""), str(b.get("host") or ""), str(b.get("yaml") or ""))
-    except ValueError as e:
-        raise ModelError(str(e))
-    return web.json_response({"ok": True, "id": pid})
+    pid = ctx.model.add_panel(b.get("name"), b.get("host") or "", b.get("yaml") or "")
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"p:{pid}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "id": pid, "key": f"p:{pid}"})
 
 
 async def panel_put(request: web.Request) -> web.Response:
-    b = await _body(request)
-    try:
-        _panels(request).update(request.match_info["pid"], b.get("name"), b.get("host"), b.get("yaml"))
-    except KeyError:
-        raise ModelError("onbekend paneel")
-    except ValueError as e:
-        raise ModelError(str(e))
+    request.app[CTX].model.set_panel(request.match_info["pid"], **await _body(request))
     return web.json_response({"ok": True})
 
 
 async def panel_delete(request: web.Request) -> web.Response:
-    ok = _panels(request).remove(request.match_info["pid"])
+    ok = request.app[CTX].model.remove_panel(request.match_info["pid"])
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
 async def panel_relay(request: web.Request) -> web.Response:
     b = await _body(request)
-    ok = _panels(request).set_relay(request.match_info["pid"], int(request.match_info["n"]), bool(b.get("on")))
-    if not ok:
+    if not _panels(request).set_relay(request.match_info["pid"], int(request.match_info["n"]), bool(b.get("on"))):
         raise ModelError("onbekend paneel of relais, of het paneel heeft nog geen IP-adres")
     return web.json_response({"ok": True})
 
@@ -541,7 +530,7 @@ def asset_version() -> str:
 async def index(request: web.Request) -> web.Response:
     v = asset_version()
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    for f in ("style.css", "groups.js", "schema.js", "app.js", "panel.js"):
+    for f in ("style.css", "groups.js", "schema.js", "app.js"):
         html = html.replace(f'static/{f}"', f'static/{f}?v={v}"')
     return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
@@ -582,7 +571,6 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/sprinklers/{sid}", sprinkler_put)
     r.add_delete("/api/sprinklers/{sid}", sprinkler_delete)
     r.add_post("/api/sprinklers/{sid}/run", sprinkler_run)
-    r.add_get("/api/panels", panels_get)
     r.add_get("/api/panels/script", panel_script)
     r.add_post("/api/panels", panel_post)
     r.add_put("/api/panels/{pid}", panel_put)

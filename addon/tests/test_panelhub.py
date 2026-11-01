@@ -8,10 +8,10 @@ import pytest
 from aiohttp.test_utils import TestServer
 
 from fakeha import FakeHa
-from kkaddon import panelhub
+from kkaddon import panelhub, schema
 from kkaddon.engine import Engine
 from kkaddon.habridge import HaBridge
-from kkaddon.model import Model
+from kkaddon.model import Model, ModelError
 from kkaddon.panelhub import PanelHub
 from rig import KEY
 
@@ -92,7 +92,7 @@ class Env:
         return self
 
     def new_hub(self):
-        return PanelHub(self.tmp / "panels.json", self.bridge, self.engine, port=0, panel_port=self.fake.tp.get_extra_info("sockname")[1],
+        return PanelHub(self.tmp, self.bridge, self.engine, port=0, panel_port=self.fake.tp.get_extra_info("sockname")[1],
                         clock=lambda: time.monotonic() + self.offset)
 
     async def _tick(self):
@@ -123,7 +123,7 @@ class Env:
         self.fake.to_hub(self.port, "S|" + text)
 
     def add(self):
-        return self.hub.create("NSPanel 1", "127.0.0.1", YAML)
+        return self.engine.model.add_panel("NSPanel 1", "127.0.0.1", YAML)
 
 
 def run(coro):
@@ -219,11 +219,11 @@ def test_the_relays_are_set_and_reported_and_show_up_as_objects_for_ha(tmp_path)
 def test_packets_from_other_addresses_are_ignored_and_a_silent_panel_goes_offline(tmp_path):
     async def go():
         async with Env(tmp_path) as e:
-            pid = e.hub.create("NSPanel 1", "10.9.9.9", YAML)  # niet het adres van onze nepl panel
+            pid = e.engine.model.add_panel("NSPanel 1", "10.9.9.9", YAML)  # niet het adres van onze nepl panel
             e.beat()
             await asyncio.sleep(0.2)
             assert not e.hub.links[pid].online
-            e.hub.update(pid, host="127.0.0.1")
+            e.engine.model.set_panel(pid, host="127.0.0.1")
             e.beat()
             await e.until(lambda: e.hub.links[pid].online)
             e.offset = panelhub.STALE + 1
@@ -245,21 +245,76 @@ def test_an_offline_panel_is_asked_for_a_heartbeat(tmp_path):
     run(go())
 
 
-def test_a_bad_yaml_is_refused_and_the_old_config_stays_and_the_config_survives_a_restart(tmp_path):
+def test_a_bad_yaml_is_refused_and_the_old_config_stays_and_the_config_is_part_of_the_model(tmp_path):
     async def go():
         async with Env(tmp_path) as e:
             pid = e.add()
-            with pytest.raises(ValueError, match="cardThermo"):
-                e.hub.update(pid, yaml="cards:\n  - type: cardThermo\n    title: X\n")
+            model = e.engine.model
+            with pytest.raises(ModelError, match="cardThermo"):
+                model.set_panel(pid, yaml="cards:\n  - type: cardThermo\n    title: X\n")
             assert e.hub.links[pid].yaml == YAML and e.hub.links[pid].panel is not None
-            with pytest.raises(ValueError, match="geldig"):
-                e.hub.update(pid, host="1.2.3.4; rm -rf")
-            e.hub.update(pid, name="Gang", host="127.0.0.1")
-            again = e.new_hub()
-            assert [(l.id, l.name, l.host, l.yaml == YAML) for l in again.links.values()] == [(pid, "Gang", "127.0.0.1", True)]
-            assert again.links[pid].panel is not None
-            assert e.hub.remove(pid) is True and e.hub.remove(pid) is False
-            assert json.loads((tmp_path / "panels.json").read_text())["panels"] == {}
+            with pytest.raises(ModelError, match="geldig"):
+                model.set_panel(pid, host="1.2.3.4; rm -rf")
+            model.set_panel(pid, name="Gang")
+            assert e.hub.links[pid].name == "Gang"
+            exported = model.to_dict()["panels"]
+            assert exported == {pid: {"name": "Gang", "host": "127.0.0.1", "yaml": YAML}}, "het paneel zit in de back-up"
+            other = Model()
+            other.load_dict(model.to_dict())
+            assert other.panels == model.panels
+            assert model.remove_panel(pid) is True and model.remove_panel(pid) is False
+            assert e.hub.links == {}, "de hub volgt het model"
+
+    run(go())
+
+
+def test_a_config_that_no_longer_validates_still_loads_at_startup_and_shows_its_error(tmp_path):
+    async def go():
+        async with Env(tmp_path) as e:
+            model = e.engine.model
+            d = model.to_dict()
+            d["panels"] = {"oud": {"name": "Oud", "host": "127.0.0.1", "yaml": "cards:\n  - type: cardThermo\n    title: X\n"}}
+            with pytest.raises(ModelError):
+                model.load_dict(d)  # een import weigert
+            model.load_dict(d, save=False)  # opstarten niet
+            e.hub._sync()
+            assert e.hub.links["oud"].panel is None and "cardThermo" in e.hub.links["oud"].error
+
+    run(go())
+
+
+def test_panels_json_of_version_0_8_is_taken_over_once(tmp_path):
+    async def go():
+        (tmp_path / "panels.json").write_text(json.dumps({"panels": {"nspanel_1": {"name": "NSPanel 1", "host": "127.0.0.1", "yaml": YAML}}}), encoding="utf-8")
+        async with Env(tmp_path) as e:
+            assert e.engine.model.panels["nspanel_1"]["yaml"] == YAML and e.hub.links["nspanel_1"].panel is not None
+            assert not (tmp_path / "panels.json").exists() and (tmp_path / "panels.json.overgenomen").exists()
+
+    run(go())
+
+
+def test_the_panel_is_a_block_on_the_schema_and_its_relay_can_be_the_output_of_a_lamp(tmp_path):
+    async def go():
+        async with Env(tmp_path) as e:
+            pid = e.add()
+            model = e.engine.model
+            model.set_schema({**model.schema, "pages": [{"id": "hal", "name": "Hal"}]})
+            schema.place(model, e.engine.snapshot(), f"p:{pid}", "hal", 40, 60)
+            e.beat(p1=1, p2=0)
+            await e.until(lambda: e.hub.links[pid].online)
+            block = next(b for b in schema.view(model, e.engine.snapshot())["blocks"] if b["key"] == f"p:{pid}")
+            assert block["kind"] == "panel" and block["page"] == "hal" and (block["x"], block["y"]) == (40, 60) and block["online"] and block["temperature"] == 24.7
+            assert [(g["label"], g["on"], g["relay"], g["touch"]) for g in block["gangs"]] == [("Relais 1", True, True, False), ("Relais 2", False, True, False)]
+            relay = block["gangs"][0]["entity"]
+            assert relay == f"switch.kk_panel_{pid}_relay1"
+            assert e.hub.discovery()[f"homeassistant/switch/kk_panel_{pid}_relay1/config"]["default_entity_id"] == relay, "dezelfde entiteit als in HA"
+            model.set_groups([{"id": "hal", "name": "Hal", "entities": [EAT, KITCHEN]}])
+            schema.wire(model, e.engine, "g:hal", "out", {"entity": relay})
+            lamp = next(b for b in schema.view(model, e.engine.snapshot())["blocks"] if b["key"] == "g:hal")
+            out = next(c for c in lamp["outputs"] if c["ref"]["entity"] == relay)
+            assert out["sw"] == f"p:{pid}" and out["label"] == "Relais 1" and out["swName"] == "NSPanel 1"
+            model.remove_panel(pid)
+            assert f"p:{pid}" not in model.schema["blocks"], "weg van het schema"
 
     run(go())
 
@@ -276,14 +331,18 @@ def test_the_web_api_adds_edits_and_removes_panels_and_serves_the_script(tmp_pat
             c = TestClient(TestServer(web.make_app(ctx)))
             await c.start_server()
             try:
-                r = await c.post("/api/panels", json={"name": "NSPanel 1", "host": "127.0.0.1", "yaml": YAML})
-                pid = (await r.json())["id"]
-                assert r.status == 200 and pid == "nspanel_1"
+                e.engine.model.set_schema({**e.engine.model.schema, "pages": [{"id": "hal", "name": "Hal"}]})
+                r = await c.post("/api/panels", json={"page": "hal", "x": 40, "y": 60})
+                j = await r.json()
+                pid = j["id"]
+                assert r.status == 200 and j["key"] == "p:nspanel"
+                st = await (await c.get("/api/state")).json()
+                assert next(b for b in st["schema"]["blocks"] if b["key"] == j["key"])["page"] == "hal"
+                assert (await c.put(f"/api/panels/{pid}", json={"host": "127.0.0.1", "yaml": YAML})).status == 200
                 bad = await c.put(f"/api/panels/{pid}", json={"yaml": "cards:\n  - type: cardThermo\n    title: X\n"})
                 assert bad.status == 400 and "cardThermo" in (await bad.json())["error"]
-                st = await (await c.get("/api/panels")).json()
-                assert [p["id"] for p in st["panels"]] == [pid] and st["panels"][0]["yaml"] == YAML and st["panels"][0]["online"] is False
                 assert (await c.put("/api/panels/nergens", json={"name": "x"})).status == 400
+                assert (await c.put(f"/api/panels/{pid}", json={"onzin": 1})).status == 400
                 assert (await c.post(f"/api/panels/{pid}/relay/1", json={"on": True})).status == 200
                 await e.until(lambda: "P|1|1" in e.fake.got)
                 assert (await c.post(f"/api/panels/{pid}/relay/7", json={"on": True})).status == 400
@@ -291,10 +350,8 @@ def test_the_web_api_adds_edits_and_removes_panels_and_serves_the_script(tmp_pat
                 assert (await c.get("/api/panels/script?hub=1.2.3.4;x")).status == 400
                 script = await (await c.get("/api/panels/script?hub=192.168.0.180")).text()
                 assert 'var HUB_HOST = "192.168.0.180"' in script and f"var HUB_PORT = {e.hub.port}" in script
-                assert f"var LISTEN_PORT = {e.hub.panel_port}" in script and "@" not in script.replace("@HUB", "")
+                assert f"var LISTEN_PORT = {e.hub.panel_port}" in script and "@" not in script
                 assert (await c.delete(f"/api/panels/{pid}")).status == 200 and (await c.delete(f"/api/panels/{pid}")).status == 404
-                html = await (await c.get("/")).text()
-                assert "static/panel.js?v=" in html and 'data-tab="panel"' in html
             finally:
                 await c.close()
 

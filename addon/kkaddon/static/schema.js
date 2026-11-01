@@ -11,6 +11,7 @@ const SC = {
   zoom: null, // null = de pagina past in de breedte
   q: '',
   lastPanel: '',
+  panelDraft: {}, // paneel-id -> wat je typt en nog niet hebt opgeslagen
   force: false, // de zijbalk vervangen, ook als er nog een veld de focus heeft
   reveal: null, // blok dat bij de volgende tekening in beeld moet komen
 };
@@ -48,12 +49,13 @@ function scType(b) { // bepaalt de kleur van het blok
   if (b.kind === 'lamp' || b.kind === 'timer') return b.kind;
   if (b.kind === 'module') return b.out === 'bool' ? 'logic' : 'time';
   if (b.kind === 'sprinkler') return 'spr';
+  if (b.kind === 'panel') return 'panel';
   if (b.source === 'node') return 'node';
   if (b.source === 'virtual') return 'ext';
   const conns = scConns().filter((x) => x.sw && x.sw.key === b.key);
   return conns.length && conns.every((x) => x.dir === 'out') ? 'box' : 'sw'; // alleen geschakeld, nooit bediend: een relaisbox
 }
-const SC_TYPE_NL = { timer: 'Timer', node: 'Node', ext: 'Extern apparaat', box: 'Relaisbox · HA', sw: 'Schakelaar · HA' };
+const SC_TYPE_NL = { panel: 'NSPanel', timer: 'Timer', node: 'Node', ext: 'Extern apparaat', box: 'Relaisbox · HA', sw: 'Schakelaar · HA' };
 const wireSel = (x) => SC.sel && SC.sel.lamp === x.lamp.key && SC.sel.dir === x.dir && SC.sel.i === x.i;
 
 function wirePath(x0, y0, dir0, x1, y1, dir1) { // dir: naar welke kant de poort kijkt (-1 links, 1 rechts)
@@ -90,7 +92,7 @@ function scSwitch(b, tags) {
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 28))}</text>
-    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">${b.alias ? `${esc(scCut(b.tech, 20))} · ` : ''}${sub}${b.online ? '' : ' · offline'}</text>${rows}</g>`;
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">${b.alias ? `${esc(scCut(b.tech, 20))} · ` : ''}${sub}${b.kind === 'panel' && b.online && b.temperature != null ? ` · ${b.temperature.toFixed(1)} °C` : ''}${b.online ? '' : ' · offline'}</text>${rows}</g>`;
 }
 
 function scRowText(c, name) { // de gang is het belangrijkste: inkorten gaat ten koste van de toestelnaam
@@ -202,7 +204,7 @@ function scModule(b) {
 
 function scGangOf(entity) { // welk relais van welk schakelaar-blok hoort bij deze entiteit
   for (const s of scBlocks()) {
-    if (s.kind !== 'switch') continue;
+    if (s.kind !== 'switch' && s.kind !== 'panel') continue;
     const g = s.gangs.find((x) => x.entity === entity);
     if (g) return { s, g };
   }
@@ -234,6 +236,35 @@ function scSprinkler(b) {
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 28))}</text>
     <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Sprinkler · ${esc(scCut(scSprText(b), 30))}</text>${left}${right}</g>`;
+}
+
+function scPanelState(b) {
+  if (!b.host) return 'nog geen IP-adres';
+  if (!b.online) return 'offline';
+  return [b.greeted ? 'online' : 'online, wacht op HA', b.temperature != null ? `${b.temperature.toFixed(1)} °C` : ''].filter(Boolean).join(' · ');
+}
+
+function scPanelPanel(b, props) {
+  const draft = SC.panelDraft[b.id] || {};
+  const hub = location.hostname;
+  const relays = b.gangs.map((g) => `<button class="btn small" type="button" data-sc="pnrelay" data-id="${esc(b.id)}" data-n="${g.i + 1}" data-on="${g.on ? 0 : 1}" ${g.on === null ? 'disabled' : ''}>${esc(g.label)}: ${g.on === null ? '?' : g.on ? 'aan' : 'uit'}</button>`).join('');
+  return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scPanelState(b))}</span>${b.rssi != null ? `<span class="sub">${b.rssi} dBm</span>` : ''}</div>
+    ${props}
+    <label>IP-adres van de panel</label><input type="text" data-pnfield="host" data-id="${esc(b.id)}" placeholder="192.168.0.105" value="${esc(draft.host ?? b.host)}">
+    <label>Configuratie (YAML van nspanel-lovelace-ui)</label><textarea rows="14" style="flex:none;min-height:260px" spellcheck="false" data-pnfield="yaml" data-id="${esc(b.id)}" placeholder="cards:&#10;  - type: cardGrid&#10;    title: Licht&#10;    entities: ...">${esc(draft.yaml ?? b.yaml)}</textarea>
+    ${b.error ? `<div class="sub">Config niet te gebruiken: ${esc(b.error)}</div>` : ''}
+    <div class="row" style="margin-top:6px"><button class="btn small primary" type="button" data-sc="pnsave" data-id="${esc(b.id)}">Opslaan</button>${Object.keys(draft).length ? '<span class="sub">niet opgeslagen</span>' : ''}</div>
+    <h2>Relais</h2><div class="row">${relays}</div>
+    <div class="sub">Sleep een relais naar de uitgang van een lamp, of gebruik <code>${esc(b.gangs[0].entity)}</code> in HA. De knoppen op de panel blijven ook zonder HA werken.</div>
+    <h2>Op de panel zetten</h2>
+    <ol class="sub" style="padding-left:18px;margin:4px 0">
+      <li>Zet de AppDaemon-app <code>nspanel-lovelace-ui</code> uit.</li>
+      <li>IP-adres van Home Assistant: <input type="text" id="pnhub" value="${esc(hub)}"> <a id="pndl" class="btn small" href="api/panels/script?hub=${encodeURIComponent(hub)}">huisconfig.be downloaden</a></li>
+      <li>Webpagina van de panel → <b>Consoles → Manage File system</b>: upload het bestand.</li>
+      <li>Zet als laatste regel in <code>autoexec.be</code>: <code>load("huisconfig.be")</code> en herstart de panel.</li>
+    </ol>
+    <div class="sub">Terugdraaien: die regel weghalen, herstarten en AppDaemon weer aanzetten.</div>
+    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="delpanel" data-id="${esc(b.id)}">Paneel verwijderen</button></div>`;
 }
 
 const SC_WEEK = ['ma', 'di', 'wo', 'do', 'vr', 'za', 'zo'];
@@ -328,7 +359,7 @@ function scModulePanel(b, props) {
 
 // Het menu "+ Module": alles wat je op een pagina kunt zetten, per soort
 const SC_MENU = [
-  ['Toestellen', [['lamp', 'Lamp', 'met touches en relais'], ['switch', 'Schakelaar', 'een toestel uit Home Assistant']]],
+  ['Toestellen', [['lamp', 'Lamp', 'met touches en relais'], ['switch', 'Schakelaar', 'een toestel uit Home Assistant'], ['panel', 'NSPanel', 'scherm met twee relais']]],
   ['Tijd', [['timer', 'Timer', 'intervallen per dag, geeft 0 of 1'], ['sunrise', 'Zonsopgang', 'tijd van vandaag'], ['sunset', 'Zonsondergang', 'tijd van vandaag'], ['time', 'Vaste tijd', 'bv. 02:30']]],
   ['Waarden', [['number', 'Getal', 'bv. aantal cycli']]],
   ['Rekenen', [['add', 'Optellen', 'tijd + tijd'], ['sub', 'Aftrekken', 'tijd − tijd']]],
@@ -387,7 +418,7 @@ function scPortPos(p) {
   if (b.kind === 'module') return p.role === 'min' ? [b.x, rowY(b, +p.i)] : [b.x + SW_W, rowY(b, 0)];
   if (p.role === 'disable') return [b.x, rowY(b, scRows(b) - 1)];
   if (p.role === 'control') return [b.x, rowY(b, scRows(b) - 2)];
-  if (b.kind === 'switch') return [p.role === 'relay' ? b.x + SW_W : b.x, rowY(b, +p.g)];
+  if (b.kind === 'switch' || b.kind === 'panel') return [p.role === 'relay' ? b.x + SW_W : b.x, rowY(b, +p.g)];
   const n = p.role === 'in' ? b.inputs.length : b.outputs.length;
   return [p.role === 'in' ? b.x : b.x + LAMP_W, rowY(b, p.i === 'new' ? n : +p.i)];
 }
@@ -409,7 +440,7 @@ function scTray() {
     all.sort((a, b) => (!!a.page - !!b.page));
     return `<h2>${title}</h2>${all.map(item).join('') || '<div class="sub">Geen.</div>'}`;
   };
-  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler');
+  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Panelen', 'panel');
 }
 
 function scPanel() {
@@ -422,7 +453,7 @@ function scPanel() {
   const pages = `<label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
   const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'switch' ? b.alias : b.name)}" placeholder="${esc(b.tech)}">
     <div class="sub">Technische naam: <code>${esc(b.tech)}</code></div>${pages}`;
-  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : scSwitchPanel(b, props);
+  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : scSwitchPanel(b, props);
 }
 
 function scConnRow(b, c, i, dir) {
@@ -619,7 +650,7 @@ function schemaUpdate() {
   scDraw();
   const panel = $('#scpanel'), html = scPanel(), active = document.activeElement;
   // een lijst die net open staat of een veld waarin je typt niet onder je handen vervangen
-  if (SC.force || (html !== SC.lastPanel && !(active && panel.contains(active) && /SELECT|INPUT/.test(active.tagName)))) {
+  if (SC.force || (html !== SC.lastPanel && !(active && panel.contains(active) && /SELECT|INPUT|TEXTAREA/.test(active.tagName)))) {
     SC.force = false;
     panel.innerHTML = html;
     SC.lastPanel = html;
@@ -662,7 +693,7 @@ async function scWireLogic(a, b) { // van de uitgang van een timer of module naa
 async function scWireZone(a, b) { // van een zone van een sprinkler naar een relais
   const zone = a.role === 'zout' ? a : b, rel = zone === a ? b : a;
   const sp = scBlock(zone.b), sw = scBlock(rel.b);
-  if (sw.kind !== 'switch' || rel.role !== 'relay') throw new Error('Een zone sluit je aan op het relais van een schakelaar.');
+  if ((sw.kind !== 'switch' && sw.kind !== 'panel') || rel.role !== 'relay') throw new Error('Een zone sluit je aan op het relais van een schakelaar.');
   const gang = sw.gangs[+rel.g];
   if (!gang.entity) throw new Error('Dit relais loopt niet via Home Assistant; een sprinkler kan het nog niet aansturen.');
   const zones = sp.zones.map((z, i) => (i === +zone.i ? { ...z, entity: gang.entity } : z));
@@ -737,6 +768,7 @@ const SC_ACTIONS = {
     if (d.type === 'timer') return SC_ACTIONS.newtimer();
     if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
     const r = d.type === 'sprinkler' ? await api('POST', 'sprinklers', { page: SC.page, ...scFreeSpot('module') })
+      : d.type === 'panel' ? await api('POST', 'panels', { page: SC.page, ...scFreeSpot('module') })
       : await api('POST', 'modules', { type: d.type, page: SC.page, ...scFreeSpot('module') });
     SC.sel = SC.reveal = r.key;
     SC.force = true;
@@ -755,6 +787,24 @@ const SC_ACTIONS = {
   spdelzone: (d) => {
     const b = scBlock(d.k);
     return scSaveSprinkler(b, { zones: b.zones.filter((_, i) => i !== +d.i) });
+  },
+  pnsave: async (d) => {
+    const pid = d.id, draft = SC.panelDraft[pid] || {};
+    await api('PUT', `panels/${pid}`, draft);
+    delete SC.panelDraft[pid]; // bij een weigering blijft wat je getypt hebt staan
+    SC.force = true;
+    toast('Opgeslagen');
+    await refresh();
+  },
+  pnrelay: async (d) => {
+    await api('POST', `panels/${d.id}/relay/${d.n}`, { on: d.on === '1' });
+  },
+  delpanel: async (d) => {
+    if (!confirm('Dit paneel verwijderen? Zijn relais en temperatuur verdwijnen ook uit Home Assistant.')) return;
+    await api('DELETE', `panels/${d.id}`);
+    delete SC.panelDraft[d.id];
+    SC.sel = null;
+    await refresh();
   },
   delsprinkler: async (d) => {
     if (!confirm('Deze sprinkler verwijderen? Zijn relais krijgen nog één keer "uit".')) return;
@@ -1013,6 +1063,15 @@ document.addEventListener('input', (ev) => {
   if (ev.target.id === 'scq') { SC.q = ev.target.value; $('#sctraylist').innerHTML = scTray(); }
 });
 
+document.addEventListener('input', (ev) => {
+  const t = ev.target, f = t.dataset && t.dataset.pnfield;
+  if (f) (SC.panelDraft[t.dataset.id] = SC.panelDraft[t.dataset.id] || {})[f] = t.value; // een statuswijziging tekent de zijbalk opnieuw: dit blijft staan
+  if (t.id === 'pnhub') {
+    const a = $('#pndl');
+    if (a) a.href = `api/panels/script?hub=${encodeURIComponent(t.value.trim())}`;
+  }
+});
+
 document.addEventListener('change', (ev) => {
   const t = ev.target;
   if (t.id === 'scname') {
@@ -1022,6 +1081,7 @@ document.addEventListener('change', (ev) => {
         if (b.kind === 'switch') await api('POST', 'schema/name', { key: b.key, name });
         else if (b.kind === 'module') await api('PUT', `modules/${b.id}`, { name });
         else if (b.kind === 'sprinkler') await api('PUT', `sprinklers/${b.id}`, { name });
+        else if (b.kind === 'panel') await api('PUT', `panels/${b.id}`, { name });
         else if (b.kind === 'timer') await api('PUT', `timers/${b.id}`, { name, days: b.days });
         else if (!name) throw new Error('Een lamp heeft een naam nodig');
         else if (b.source === 'ha') await api('PUT', `groups/${b.id}`, { name });

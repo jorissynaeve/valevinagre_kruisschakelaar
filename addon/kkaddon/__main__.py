@@ -40,7 +40,7 @@ async def run() -> None:
 
     mqtt = MqttBridge(s, engine)
     ha = HaBridge(s.ha_url, s.ha_token, engine)
-    panels = PanelHub(s.data_dir / "panels.json", ha, engine, port=s.panel_port, panel_port=s.panel_remote_port)
+    panels = PanelHub(s.data_dir, ha, engine, port=s.panel_port, panel_port=s.panel_remote_port)
     mqtt.extras.append(panels)
     panels.changed = mqtt.resync
     await panels.start()

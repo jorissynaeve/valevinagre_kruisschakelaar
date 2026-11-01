@@ -17,7 +17,7 @@ import re
 from collections import Counter
 
 from .logic import MODULE_TYPES, SPRINKLER_INPUTS, disable_ref
-from .model import MAX_SWITCH_GANGS, Model, ModelError
+from .model import MAX_SWITCH_GANGS, Model, ModelError, panel_relay_entity
 from .proto import is_virtual
 
 NO_ROOM = "Centraal"
@@ -60,6 +60,9 @@ def _gang_owners(model: Model) -> dict[str, tuple[str, int]]:
     for sid, s in model.schema["switches"].items():
         for i, g in enumerate(s["gangs"]):
             own.setdefault(g["entity"], (f"d:{sid}", i))
+    for pid in model.panels:
+        for i in range(2):
+            own.setdefault(panel_relay_entity(pid, i + 1), (f"p:{pid}", i))
     return own
 
 
@@ -143,12 +146,19 @@ def _sprinkler_blocks(snap: dict) -> list[dict]:
             for s in snap.get("sprinklers", [])]
 
 
+def _panel_blocks(snap: dict) -> list[dict]:
+    return [{**{k: p[k] for k in ("id", "name", "host", "yaml", "online", "error", "greeted", "last_seen", "temperature", "rssi")},
+             "key": f"p:{p['id']}", "kind": "panel", "source": "panel", "tech": "NSPanel", "alias": "", "room": "",
+             "gangs": [{"i": i, "label": f"Relais {i + 1}", "entity": panel_relay_entity(p["id"], i + 1), "touch": False, "relay": True, "on": p["relays"][i]} for i in range(2)]}
+            for p in snap.get("panels", [])]
+
+
 def view(model: Model, snap: dict) -> dict:
     """Alles wat de pagina nodig heeft om het schema te tekenen."""
     states = {m["entity"]: m["on"] for g in snap["groups"] for m in g["members"]}
     owners = _gang_owners(model)
-    blocks = _switch_blocks(model, snap, owners, states) + _lamp_blocks(model, snap, owners) + _timer_blocks(snap) + _module_blocks(snap) + _sprinkler_blocks(snap)
-    names = {b["key"]: b for b in blocks if b["kind"] == "switch"}
+    blocks = _switch_blocks(model, snap, owners, states) + _lamp_blocks(model, snap, owners) + _timer_blocks(snap) + _module_blocks(snap) + _sprinkler_blocks(snap) + _panel_blocks(snap)
+    names = {b["key"]: b for b in blocks if b["kind"] in ("switch", "panel")}
     for b in blocks:
         for c in b.get("inputs", []) + b.get("outputs", []):
             sw = names.get(c["sw"])
@@ -355,7 +365,7 @@ def _height(b: dict) -> int:
         return HEAD + max(len(b["ports"]), len(b["zones"])) * ROW + FOOT
     if b["kind"] == "module":
         return HEAD + max(len(b["ports"]), 1) * ROW + FOOT
-    rows = len(b["gangs"]) if b["kind"] == "switch" else max(len(b["inputs"]), len(b["outputs"])) + (3 if b["source"] == "ha" else 1)
+    rows = len(b["gangs"]) if b["kind"] in ("switch", "panel") else max(len(b["inputs"]), len(b["outputs"])) + (3 if b["source"] == "ha" else 1)
     return HEAD + rows * ROW + FOOT
 
 
@@ -430,7 +440,7 @@ def convert(model: Model, engine_snapshot, devices: list[dict] | None = None, ar
     lamps = [b for b in blocks if b["kind"] == "lamp" and (b["source"] == "ha" or b["inputs"] or not is_virtual(b["node"]))]
     wired_in = {c["sw"] for b in lamps for c in b["inputs"]}
     wired_out = {c["sw"] for b in lamps for c in b["outputs"]}
-    wanted_keys = {b["key"] for b in lamps} | wired_in | wired_out | {b["key"] for b in blocks if b["kind"] in ("timer", "module", "sprinkler")}
+    wanted_keys = {b["key"] for b in lamps} | wired_in | wired_out | {b["key"] for b in blocks if b["kind"] in ("timer", "module", "sprinkler", "panel")}
     def wanted(b):
         return b["key"] in wanted_keys
 
@@ -463,7 +473,7 @@ def convert(model: Model, engine_snapshot, devices: list[dict] | None = None, ar
         return min(hits) if hits else len(lamp_order)
     for b in sorted(todo, key=lambda b: (b["kind"] != "lamp", first_lamp(b), b["name"].lower())):
         page = page_of(room_of.get(b["key"], ""))
-        col = COL_LAMP if b["kind"] == "lamp" else COL_IN if b["key"] in wired_in or b["kind"] in ("timer", "module", "sprinkler") else COL_OUT
+        col = COL_LAMP if b["kind"] == "lamp" else COL_IN if b["key"] in wired_in or b["kind"] in ("timer", "module", "sprinkler", "panel") else COL_OUT
         y = bottom.get((page, col), 30)
         s["blocks"][b["key"]] = {"page": page, "x": col, "y": y}
         bottom[(page, col)] = y + heights[b["key"]] + GAP

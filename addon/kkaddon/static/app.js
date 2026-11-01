@@ -178,9 +178,6 @@ function render() {
   if (tab === 'schema') { // het kader blijft staan, anders verspring je bij elke druk terug naar de linkerbovenhoek
     if (!$('#scsvg')) { $('#main').innerHTML = viewSchema(); SC.lastPanel = ''; }
     schemaUpdate();
-  } else if (tab === 'panel') {
-    if (!$('#panelview')) $('#main').innerHTML = viewPanel();
-    panelDraw(); // alleen de status; wat je typt blijft staan
   } else if (tab !== 'settings' || !$('#keybox')) $('#main').innerHTML = { nodes: viewNodes, log: viewLog, settings: viewSettings }[tab]();
   if (L) refreshPicks();
 }
@@ -472,7 +469,6 @@ function connect() {
       S.log.push(e);
       if (S.log.length > 300) S.log.shift();
     }
-    if (e && e.t === 'panel' && typeof panelLoad === 'function') panelLoad();
     clearTimeout(tokenRefresh);
     tokenRefresh = setTimeout(refresh, 120); // gebundeld: een druk geeft meerdere events
   };
@@ -481,4 +477,4 @@ function connect() {
 
 refresh();
 connect();
-setInterval(() => { refresh(); if (tab === 'panel') panelLoad(); }, 20000); // vangnet als de websocket stil valt (bv. proxy)
+setInterval(refresh, 20000); // vangnet als de websocket stil valt (bv. proxy)

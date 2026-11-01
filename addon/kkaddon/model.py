@@ -21,7 +21,7 @@ Bestandsformaat (network.json, ook voor export/import):
                           "rooms": [{"x": 20, "y": 20, "w": 300, "h": 200, "name": "Living"}],
                           "items": {"n5": [120, 80], "l2.1": [200, 90]}}]},   # plattegrond, alleen weergave
    "schema": {"pages": [{"id": "keuken", "name": "Keuken"}],                    # schema: één pagina per ruimte, alleen weergave
-              "blocks": {"g:keuken": {"page": "keuken", "x": 420, "y": 40}},    # g:<kring>, l<node>.<relais>, n<node>, d:<schakelaar>
+              "blocks": {"g:keuken": {"page": "keuken", "x": 420, "y": 40}},    # g:<kring>, l<node>.<relais>, n<node>, d:<schakelaar>, p:<paneel>
               "switches": {"abc": {"name": "T4B001", "gangs": [{"entity": "switch.a", "name": "relay_1"}]}},
               "names": {"d:abc": "Touch keuken"}}}                              # eigen naam van een schakelaar-blok, naast de technische
 """
@@ -37,6 +37,8 @@ from typing import Callable
 
 from .logic import BOOL, MODULE_TYPES, NUMBER, SPRINKLER_INPUTS, TIME, disable_ref
 from .logic import minutes as _minutes
+from .panel import PanelError
+from .panel import validate as _validate_panel
 from .proto import MAX_GANGS, MAX_IND, MAX_RELAYS, MAX_TRIG, MODE_BY_NAME, VIRTUAL_MAX, VIRTUAL_MIN, is_virtual
 
 MAX_NAME = 60
@@ -49,6 +51,9 @@ MAX_SPRINKLERS, MAX_ZONES, MAX_CYCLES, MAX_WAIT, MAX_ZONE_SECONDS, MIN_REFRESH, 
 MAX_NUMBER = 100000
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 FORMAT_VERSION = 1
+MAX_PANELS = 8
+MAX_PANEL_YAML = 100_000
+PANEL_HOST_RE = re.compile(r"[A-Za-z0-9.\-]{1,253}")
 
 
 class ModelError(ValueError):
@@ -263,6 +268,37 @@ def _sprinkler(sid, v) -> dict:
             "refresh": _int(v.get("refresh", 30), MIN_REFRESH, MAX_REFRESH, "herhalen")}
 
 
+def panel_relay_entity(pid: str, n: int) -> str:
+    """De entiteit van een relais van een NSPanel in HA (`default_entity_id` in de discovery)."""
+    return f"switch.kk_panel_{pid}_relay{n}"
+
+
+def _panel(pid, v, strict: bool) -> dict:
+    """`strict`: een YAML die niet te gebruiken is weigeren. Bij het opstarten niet: de hub toont dan de fout."""
+    if not isinstance(pid, str) or not re.fullmatch(r"[a-z0-9_]{1,40}", pid) or not isinstance(v, dict):
+        raise ModelError(f"paneel: ongeldig id {pid!r}")
+    name = _name(v.get("name"), "paneel.name") or pid
+    host, text = v.get("host") or "", v.get("yaml") or ""
+    if not isinstance(host, str) or (host.strip() and not PANEL_HOST_RE.fullmatch(host.strip())):
+        raise ModelError("paneel: geen geldig IP-adres of hostnaam")
+    if not isinstance(text, str) or len(text) > MAX_PANEL_YAML:
+        raise ModelError(f"paneel: YAML van maximaal {MAX_PANEL_YAML} tekens verwacht")
+    if strict and text.strip():
+        try:
+            _validate_panel(text)
+        except PanelError as e:
+            raise ModelError(str(e)) from e
+    return {"name": name, "host": host.strip(), "yaml": text}
+
+
+def _panels(raw, strict: bool) -> dict[str, dict]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or len(raw) > MAX_PANELS:
+        raise ModelError(f"panelen: maximaal {MAX_PANELS}")
+    return {k: _panel(k, v, strict) for k, v in raw.items()}
+
+
 def _sprinklers(raw) -> dict[str, dict]:
     if raw in (None, {}):
         return {}
@@ -356,7 +392,7 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]], sprinkle
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
 
 
 def _switch_gangs(raw) -> list[dict]:
@@ -526,6 +562,7 @@ class Model:
         self.timers: dict[str, dict] = {}  # timer-modules: id -> {name, days}
         self.modules: dict[str, dict] = {}  # tijd- en logicamodules: id -> {type, name, inputs, value}
         self.sprinklers: dict[str, dict] = {}  # sprinklers: id -> {name, enabled, start, cycles, wait, refresh, days, inputs, zones}
+        self.panels: dict[str, dict] = {}  # NSPanels: id -> {name, host, yaml}
         self.rev = 0
         self._listeners: list[Callable[[], None]] = []
         if self.path and self.path.exists():
@@ -576,6 +613,8 @@ class Model:
             d["modules"] = self.modules
         if self.sprinklers:
             d["sprinklers"] = self.sprinklers
+        if self.panels:
+            d["panels"] = self.panels
         if self.schema["pages"] or self.schema["switches"] or self.schema["names"]:
             d["schema"] = self.schema
         return d
@@ -618,6 +657,7 @@ class Model:
         timers = _timers(d.get("timers"))
         modules = _modules(d.get("modules"))
         sprinklers = _sprinklers(d.get("sprinklers"))
+        panels = _panels(d.get("panels"), strict=save)
         if save:  # bij het opstarten nooit weigeren, bij een import wel
             _conflicts(groups, virtual, sprinklers)
             _check_modules(modules, timers)
@@ -627,7 +667,7 @@ class Model:
                     if g.get(key, "").startswith("m:"):
                         _check_disable(g[key], modules, timers)
         self.nodes, self.lights, self.follow, self.virtual, self.plan, self.groups, self.schema, self.timers = nodes, lights, follow, virtual, plan, groups, schema, timers
-        self.modules, self.sprinklers = modules, sprinklers
+        self.modules, self.sprinklers, self.panels = modules, sprinklers, panels
         if save:
             self._changed()
 
@@ -761,6 +801,37 @@ class Model:
             return False
         self.sprinklers = {k: v for k, v in self.sprinklers.items() if k != sid}
         self.schema = {**self.schema, "blocks": {k: v for k, v in self.schema["blocks"].items() if k != f"s:{sid}"}}
+        self._changed()
+        return True
+
+    def add_panel(self, name=None, host="", yaml="") -> str:
+        if len(self.panels) >= MAX_PANELS:
+            raise ModelError(f"panelen: maximaal {MAX_PANELS}")
+        base = _name(name, "name") or "NSPanel"
+        slug = re.sub(r"[^a-z0-9_]+", "_", base.lower()).strip("_")[:30] or "nspanel"
+        pid, label, n = slug, base, 2
+        while pid in self.panels:
+            pid, label, n = f"{slug}_{n}", f"{base} {n}", n + 1
+        self.panels = {**self.panels, pid: _panel(pid, {"name": label, "host": host, "yaml": yaml}, strict=True)}
+        self._changed()
+        return pid
+
+    def set_panel(self, pid: str, **fields) -> None:
+        """Alleen wat je meegeeft verandert. Een YAML die niet klopt wordt geweigerd; de vorige blijft."""
+        old = self.panels.get(pid)
+        if old is None:
+            raise ModelError("onbekend paneel")
+        unknown = set(fields) - {"name", "host", "yaml"}
+        if unknown:
+            raise ModelError(f"paneel: onbekend veld {sorted(unknown)[0]}")
+        self.panels = {**self.panels, pid: _panel(pid, {**old, **fields}, strict=True)}
+        self._changed()
+
+    def remove_panel(self, pid: str) -> bool:
+        if pid not in self.panels:
+            return False
+        self.panels = {k: v for k, v in self.panels.items() if k != pid}
+        self.schema = {**self.schema, "blocks": {k: v for k, v in self.schema["blocks"].items() if k != f"p:{pid}"}}
         self._changed()
         return True
 

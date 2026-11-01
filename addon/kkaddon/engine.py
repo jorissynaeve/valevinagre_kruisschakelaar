@@ -168,6 +168,7 @@ class Engine:
         self._at(self.t.maintenance, self._maintenance)
         self._at(HOLD_EVERY, self._hold_tick)
         self.sprinklers = Sprinklers(self)
+        self.panel_view: Callable[[], list[dict]] | None = None  # status van de panelen (panelhub.py)
         self._at(SPRINKLER_TICK, self._sprinkler_tick)
 
     # ------------------------------------------------------------ klok en timers
@@ -812,6 +813,8 @@ class Engine:
             "timers": [{"id": k, **t, "on": self.timer_on(k)} for k, t in sorted(self.model.timers.items(), key=lambda kv: kv[1]["name"].lower())],
             "modules": [{"id": k, **m, "out": values.get(k)} for k, m in self.model.modules.items()],
             "sprinklers": [{"id": k, **s, "status": self.sprinklers.status(k)} for k, s in self.model.sprinklers.items()],
+            "panels": self.panel_view() if self.panel_view else [{"id": k, **p, "online": False, "error": "", "greeted": False, "last_seen": None, "relays": [None, None],
+                                                                  "temperature": None, "rssi": None} for k, p in self.model.panels.items()],
             "clock": self._clock_view(),
             "stats": dict(self.stats),
         }

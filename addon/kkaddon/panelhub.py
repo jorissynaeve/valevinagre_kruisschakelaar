@@ -25,6 +25,7 @@ from typing import Any, Callable
 from . import discovery as d
 from .engine import Engine
 from .habridge import HaBridge
+from .model import ModelError, _panel, panel_relay_entity
 from .panel import Panel, PanelError
 
 log = logging.getLogger("kk.panelhub")
@@ -36,9 +37,7 @@ PACE = 0.03  # s tussen twee pakketten naar een panel: de ontvangstbuffer van de
 DEBOUNCE = 0.3
 RESEND = 120.0  # s: de huidige pagina elke zoveel tijd opnieuw sturen, voor het geval er een pakket verloren ging
 FORECAST_EVERY = 1800.0
-MAX_PANELS = 8
 SET_RE = re.compile(rf"^{d.PREFIX}/panel/([a-z0-9_]+)/relay/([12])/set$")
-ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 
 
 def t_status(pid: str) -> str:
@@ -107,9 +106,9 @@ class _Env:
 
 
 class PanelHub(asyncio.DatagramProtocol):
-    def __init__(self, path: Path, ha: HaBridge, engine: Engine, port: int = HUB_PORT, panel_port: int = PANEL_PORT,
+    def __init__(self, data_dir: Path, ha: HaBridge, engine: Engine, port: int = HUB_PORT, panel_port: int = PANEL_PORT,
                  clock: Callable[[], float] = time.monotonic) -> None:
-        self.path, self.ha, self.engine = path, ha, engine
+        self.data_dir, self.ha, self.engine = data_dir, ha, engine
         self.port, self.panel_port, self._clock = port, panel_port, clock
         self.links: dict[str, Link] = {}
         self.forecasts: dict[str, list[dict]] = {}
@@ -121,16 +120,19 @@ class PanelHub(asyncio.DatagramProtocol):
         self._tasks: set[asyncio.Task] = set()
         self._env = _Env(self)
         self.icons = self._load_icons()
-        self._load()
+        self._migrate()
+        self._sync()
+        engine.model.on_change(self._sync)
+        engine.panel_view = self.status
         ha.state_listeners.append(self._on_state)
         ha.template_listeners.append(self._on_template)
 
-    # ------------------------------------------------------------ opslag
+    # ------------------------------------------------------------ de configuratie staat in het model
 
     def _load_icons(self) -> dict[str, str]:
-        """Extra pictogrammen: {"naam": "\ue334"} in panel_icons.json naast de configuratie."""
+        """Extra pictogrammen: {"naam": "<teken>"} in panel_icons.json in de datamap."""
         try:
-            raw = json.loads((self.path.parent / "panel_icons.json").read_text(encoding="utf-8"))
+            raw = json.loads((self.data_dir / "panel_icons.json").read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
         except (OSError, ValueError) as e:
@@ -138,23 +140,52 @@ class PanelHub(asyncio.DatagramProtocol):
             return {}
         return {str(k).removeprefix("mdi:"): v for k, v in raw.items() if isinstance(v, str)} if isinstance(raw, dict) else {}
 
-    def _load(self) -> None:
+    def _migrate(self) -> None:
+        """Versie 0.8.0 bewaarde de panelen in panels.json, buiten de back-up van het model."""
+        old = self.data_dir / "panels.json"
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            raw = json.loads(old.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return
         except (OSError, ValueError) as e:
-            log.error("%s onleesbaar, geen panelen geladen: %s", self.path, e)
+            log.error("%s onleesbaar, niet overgenomen: %s", old, e)
             return
+        model = self.engine.model
         for pid, v in (raw.get("panels") or {}).items():
-            self.links[pid] = self._build(Link(pid, str(v.get("name") or pid), str(v.get("host") or ""), str(v.get("yaml") or "")))
+            if pid not in model.panels:
+                try:
+                    model.panels = {**model.panels, pid: _panel(pid, v, strict=False)}
+                except ModelError as e:
+                    log.error("paneel %s niet overgenomen: %s", pid, e)
+        model.save()
+        os.replace(old, old.with_suffix(".json.overgenomen"))
+        log.info("panelen overgenomen uit panels.json in het model")
 
-    def _save(self) -> None:
-        data = {"panels": {k: {"name": l.name, "host": l.host, "yaml": l.yaml} for k, l in self.links.items()}}
-        tmp = self.path.with_suffix(".tmp")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, self.path)
+    def _sync(self) -> None:
+        """Volgt het model: panelen erbij, eraf, of met een ander adres of andere YAML."""
+        panels = self.engine.model.panels
+        changed = False
+        for pid in [p for p in self.links if p not in panels]:
+            link = self.links.pop(pid)
+            if link.sender:
+                link.sender.cancel()
+            changed = True
+        for pid, p in panels.items():
+            link = self.links.get(pid)
+            if link is None:
+                self.links[pid] = self._build(Link(pid, p["name"], p["host"], p["yaml"]))
+                changed = True
+                continue
+            if link.name != p["name"]:
+                link.name, changed = p["name"], True
+            if (link.host, link.yaml) != (p["host"], p["yaml"]):
+                if link.host != p["host"]:
+                    link.online = False  # een ander adres: wie daar zit moet zich eerst melden
+                link.host, link.yaml = p["host"], p["yaml"]
+                self._build(link)
+                changed = True
+        if changed:
+            self._poke()
 
     def _build(self, link: Link) -> Link:
         link.panel, link.error = None, ""
@@ -169,55 +200,6 @@ class PanelHub(asyncio.DatagramProtocol):
                 self.ha.track_template(t)
             self._forecast_at = 0.0
         return link
-
-    # ------------------------------------------------------------ beheer (web-API)
-
-    def create(self, name: str, host: str, yaml: str) -> str:
-        if len(self.links) >= MAX_PANELS:
-            raise ValueError(f"maximaal {MAX_PANELS} panelen")
-        base = re.sub(r"[^a-z0-9_]+", "_", (name or "nspanel").lower()).strip("_")[:30] or "nspanel"
-        pid, n = base, 2
-        while pid in self.links:
-            pid, n = f"{base}_{n}", n + 1
-        self.links[pid] = Link(pid, name.strip() or pid, "", "")
-        try:
-            self.update(pid, host=host, yaml=yaml)
-        except ValueError:
-            del self.links[pid]
-            raise
-        return pid
-
-    def update(self, pid: str, name: str | None = None, host: str | None = None, yaml: str | None = None) -> None:
-        link = self.links.get(pid)
-        if link is None:
-            raise KeyError(pid)
-        host = link.host if host is None else host.strip()
-        if host and not re.fullmatch(r"[A-Za-z0-9.\-]{1,253}", host):
-            raise ValueError("geen geldig IP-adres of hostnaam")
-        text = link.yaml if yaml is None else yaml
-        if text.strip():  # een fout in de YAML wordt geweigerd, niet bewaard
-            try:
-                Panel(text, self._env, lambda _t: None)
-            except PanelError as e:
-                raise ValueError(str(e)) from e
-        if name is not None:
-            link.name = name.strip() or link.name
-        reset = host != link.host or text != link.yaml
-        link.host, link.yaml = host, text
-        if reset:
-            self._build(link)
-        self._save()
-        self._poke()
-
-    def remove(self, pid: str) -> bool:
-        link = self.links.pop(pid, None)
-        if link is None:
-            return False
-        if link.sender:
-            link.sender.cancel()
-        self._save()
-        self._poke()
-        return True
 
     def set_relay(self, pid: str, n: int, on: bool) -> bool:
         link = self.links.get(pid)
@@ -407,10 +389,12 @@ class PanelHub(asyncio.DatagramProtocol):
             for n in (1, 2):
                 oid = f"kk_panel_{l.id}_relay{n}"
                 out[f"{d.DISCOVERY}/switch/{oid}/config"] = {**base, "name": f"Relais {n}", "unique_id": oid, "command_topic": t_relay_set(l.id, n),
-                                                              "state_topic": t_relay(l.id, n), "payload_on": "ON", "payload_off": "OFF"}
+                                                              "state_topic": t_relay(l.id, n), "payload_on": "ON", "payload_off": "OFF",
+                                                              "default_entity_id": panel_relay_entity(l.id, n)}
             oid = f"kk_panel_{l.id}_temp"
             out[f"{d.DISCOVERY}/sensor/{oid}/config"] = {**base, "name": "Temperatuur", "unique_id": oid, "state_topic": t_temp(l.id),
-                                                          "device_class": "temperature", "unit_of_measurement": "°C", "state_class": "measurement"}
+                                                          "device_class": "temperature", "unit_of_measurement": "°C", "state_class": "measurement",
+                                                          "default_entity_id": f"sensor.{oid}"}
             oid = f"kk_panel_{l.id}_rssi"
             out[f"{d.DISCOVERY}/sensor/{oid}/config"] = {**base, "name": "Wifi-signaal", "unique_id": oid, "state_topic": t_rssi(l.id),
                                                           "device_class": "signal_strength", "unit_of_measurement": "dBm", "entity_category": "diagnostic",
