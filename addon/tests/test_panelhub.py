@@ -144,7 +144,7 @@ def test_a_panel_that_reports_in_gets_its_screensaver_and_a_touch_opens_a_page(t
             assert "~Thuis~18°C" in weather or "~weather.thuis~18°C" in weather or "~18°C" in weather
             assert "~Sun~12°C" in weather, "de voorspelling komt uit weather.get_forecasts"
             e.fake.got.clear()
-            e.touch("event,buttonPress2,screensaver,bExit,1")
+            e.touch("event,buttonPress2,screensaver,bExit,2")
             e.touch("event,buttonPress2,navigate.sub,button,")
             await e.until(lambda: any(s.startswith("entityUpd~Main~") for s in e.fake.screen()), what="verborgen pagina")
             page = next(s for s in e.fake.screen() if s.startswith("entityUpd~Main~"))
@@ -160,7 +160,7 @@ def test_pressing_a_switch_goes_to_ha_and_the_new_state_comes_back_on_the_page(t
             await e.until(lambda: e.bridge.connected)
             e.beat()
             await e.until(lambda: any(s.startswith("weatherUpdate") for s in e.fake.screen()))
-            e.touch("event,buttonPress2,screensaver,bExit,1")
+            e.touch("event,buttonPress2,screensaver,bExit,2")
             e.touch("event,buttonPress2,navigate.sub,button,")
             await e.until(lambda: any(s.startswith("entityUpd~Main~") for s in e.fake.screen()))
             e.fake.got.clear()
@@ -182,7 +182,7 @@ def test_a_template_answer_from_ha_recolours_the_page(tmp_path):
             await e.until(lambda: e.bridge.connected)
             e.beat()
             await e.until(lambda: any(s.startswith("weatherUpdate") for s in e.fake.screen()))
-            e.touch("event,buttonPress2,screensaver,bExit,1")
+            e.touch("event,buttonPress2,screensaver,bExit,2")
             e.touch("event,buttonPress2,navigate.uuid.c1,button,")
             await e.until(lambda: any(s.startswith("entityUpd~Power~") and "~64800~power~" in s for s in e.fake.screen()), what="oranje")
             e.fake.got.clear()

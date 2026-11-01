@@ -195,6 +195,7 @@ class Panel:
         self.by_uid = {c.uid: c for c in self.cards}
         self.current = self.saver
         self.history: list[Card] = [self.default_card()]
+        self._awake_since: datetime | None = None
         self._last_page = ""
         self._last_saver: list[str] = []
         self._last_clock: tuple = ()
@@ -507,6 +508,8 @@ class Panel:
 
     def dim(self) -> str:
         sleep, bright = self._level(self.cfg["sleepBrightness"]), self._level(self.cfg["screenBrightness"])
+        if self._awake_since is not None:  # eerste tik op de screensaver: helder, tot de slaaptijd om is
+            sleep = bright
         if sleep == bright:  # dezelfde waarde breekt de slaaptimer van de firmware
             sleep -= 1
         bg = self.cfg["defaultBackgroundColor"]
@@ -563,6 +566,7 @@ class Panel:
 
     def startup(self) -> None:
         self._seen_startup = True
+        self._awake_since = None
         self.current = self.saver
         self.history = [self.default_card()]
         self.clock(force=True)
@@ -579,6 +583,9 @@ class Panel:
 
     def tick(self) -> None:
         if self._seen_startup:
+            timeout = self.cfg["sleepTimeout"]
+            if self._awake_since is not None and isinstance(timeout, int) and timeout > 0 and (self.env.now() - self._awake_since).total_seconds() >= timeout:
+                self._awake_since = None  # niemand tikte verder: terug naar donker
             self.clock()
 
     # ------------------------------------------------------------ van het scherm
@@ -591,6 +598,8 @@ class Panel:
         if kind == "startup":
             self.startup()
         elif kind == "sleepReached":
+            self._awake_since = None
+            self.clock()
             self.history.append(self.current)
             self.current = self.saver
             self.render(self.saver)
@@ -608,9 +617,16 @@ class Panel:
                 self.history = [found]
             if not self.history:
                 self.history.append(self.default_card())
-            double = (self.cfg.get("screensaver") or {}).get("doubleTapToUnlock")
-            if double and int(value or 0) < 2:
+            sc = self.cfg.get("screensaver") or {}
+            taps = int(value or 0)
+            if sc.get("doubleTapToUnlock") and taps < 2:
                 return
+            if sc.get("tapToWake", True) and self._awake_since is None and taps < 2:
+                self._awake_since = self.env.now()  # eerste tik: de screensaver helder, de pagina's pas bij de volgende
+                self.clock()
+                return
+            self._awake_since = None
+            self.clock()
             self.current = self.history.pop()
             self.render(self.current)
             return

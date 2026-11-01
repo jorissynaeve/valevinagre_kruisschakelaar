@@ -13,6 +13,10 @@ LISBON = ZoneInfo("Europe/Lisbon")
 KITCHEN, EAT = "switch.dingtian_relay81038_r1_kitchen", "switch.dingtian_relay81038_r3_eat_room"
 
 
+def NOW_PLUS(seconds):
+    return datetime(2026, 10, 31, 23, 25, seconds, tzinfo=LISBON)
+
+
 class FakeEnv:
     def __init__(self):
         self.states = {
@@ -65,7 +69,7 @@ def started(p, out):
 
 def wake(p, out):
     started(p, out)
-    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    p.on_screen("event,buttonPress2,screensaver,bExit,2")
     out.clear()
 
 
@@ -112,7 +116,7 @@ def test_dutch_locale_gives_dutch_days_and_date():
 def test_the_grid_card_has_arrows_round_the_deck_and_buttons_to_the_hidden_pages(rig):
     p, _, out = rig
     started(p, out)
-    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    p.on_screen("event,buttonPress2,screensaver,bExit,2")
     nav = lambda uid, arrow, title: f"button~navigate.{uid}~{I[arrow]}~65535~{title}~Press"
     sub = lambda key, title: f"~button~navigate.{key}~{I['gesture-tap-button']}~17299~{title}~Press"
     assert out == [
@@ -203,7 +207,7 @@ def test_sleeping_goes_to_the_screensaver_and_a_tap_returns_to_the_same_page(rig
     p.on_screen("event,sleepReached,cardGrid")
     assert out[0] == "pageType~screensaver" and out[2].startswith("weatherUpdate")
     out.clear()
-    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    p.on_screen("event,buttonPress2,screensaver,bExit,2")
     assert out[0] == "pageType~cardGrid" and out[2].startswith("entityUpd~Outside~")
 
 
@@ -239,7 +243,7 @@ def test_a_row_can_be_hidden_by_a_condition_and_a_missing_entity_is_shown_as_suc
               f"      - {{entity: {KITCHEN}, state: 'off'}}\n      - {{entity: {EAT}, state_not: 'on'}}\n      - {{entity: switch.weg}}\n", env, out.append)
     p.reset()
     p.on_screen("event,startup,59,eu")
-    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    p.on_screen("event,buttonPress2,screensaver,bExit,2")
     page = out[-1]
     assert KITCHEN not in page and EAT in page
     assert f"~text~switch.weg~{I['alert-circle-outline']}~17299~Not found~check config" in page
@@ -251,7 +255,7 @@ def test_more_than_six_tiles_switches_to_the_wide_grid():
     p = Panel(f"cards:\n  - type: cardGrid\n    title: T\n    entities:\n{rows}", env, out.append)
     p.reset()
     p.on_screen("event,startup,59,eu")
-    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    p.on_screen("event,buttonPress2,screensaver,bExit,2")
     assert "pageType~cardGrid2" in out
 
 
@@ -270,6 +274,49 @@ def test_extra_icons_from_the_data_dir_are_used_and_unknown_names_get_the_questi
     p = Panel(cfg, env, out.append, icons={"eigen": "\ue001"})
     p.reset()
     p.on_screen("event,startup,59,eu")
-    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    p.on_screen("event,buttonPress2,screensaver,bExit,2")
     assert "~text~iText.a~\ue001~17299~A~a" in out[-1]
     assert f"~text~iText.b~{I['alert-circle-outline']}~17299~B~b" in out[-1]
+
+
+def test_the_first_tap_makes_the_screensaver_bright_and_the_second_opens_the_pages(rig):
+    p, env, out = rig
+    started(p, out)
+    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    assert out == ["time~23:25~", "dimmode~99~100~6371~~0"], "helder, en geen andere pagina"
+    assert p.current is p.saver
+    out.clear()
+    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    assert out[0] == "time~23:25~" and out[1] == "dimmode~20~100~6371~~0", "de screensaver wordt straks weer donker"
+    assert "pageType~cardGrid" in out and any(m.startswith("entityUpd~Light~") for m in out)
+
+
+def test_a_bright_screensaver_goes_dark_again_after_the_sleep_timeout(rig):
+    p, env, out = rig
+    started(p, out)
+    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    out.clear()
+    env.when = NOW_PLUS(19)
+    p.tick()
+    assert out == [] or not any(m.startswith("dimmode") for m in out)
+    env.when = NOW_PLUS(20)
+    p.tick()
+    assert "dimmode~20~100~6371~~0" in out
+    out.clear()
+    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    assert "dimmode~99~100~6371~~0" in out and p.current is p.saver, "daarna is het weer de eerste tik"
+
+
+def test_a_double_tap_goes_straight_to_the_pages_and_tap_to_wake_can_be_turned_off():
+    env, out = FakeEnv(), []
+    p = Panel(YAML, env, out.append)
+    p.reset()
+    p.on_screen("event,startup,59,eu")
+    p.on_screen("event,buttonPress2,screensaver,bExit,2")
+    assert p.current is not p.saver
+    env, out = FakeEnv(), []
+    p = Panel("screensaver:\n  tapToWake: false\ncards:\n  - type: cardGrid\n    title: T\n    entities:\n      - entity: iText.x\n", env, out.append)
+    p.reset()
+    p.on_screen("event,startup,59,eu")
+    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    assert p.current is not p.saver
