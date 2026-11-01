@@ -140,6 +140,18 @@ Zonder de add-on of HA doen de knoppen niets; de lampen zelf blijven werken. In 
 3. *Opslaan*. De add-on stuurt de configuratie naar de betrokken nodes en toont in het logboek wanneer die
    bevestigd is. De indicator (LED) van een touch volgt automatisch het licht dat die knop bedient.
 
+## Tuya rechtstreeks (zonder HACS, LocalTuya of cloud)
+
+Tabblad *Tuya* → *Toestel toevoegen*: naam, device-id, IP-adres en local key. Het protocol (3.3, 3.4 of 3.5) zoekt de add-on zelf. De
+entiteiten komen via MQTT in HA, dus de Mosquitto-broker en de MQTT-integratie zijn nodig.
+
+* **Local key**: Tuya IoT Platform → API Explorer → *Query Device Details* (`local_key`). Ze verandert als je het toestel opnieuw koppelt. Daarna is
+  geen internet meer nodig.
+* **Datapunten**: kies een profiel (*Feyree EV-lader*) of plak het antwoord van *Query Things Data Model*. Zonder een van beide zijn de datapunten alleen te lezen.
+* **Eén verbinding**: veel toestellen laten maar één lokale verbinding toe. Haal een toestel eerst uit LocalTuya en sluit de SmartLife-app als het niet verbindt.
+* **Vast IP**: de add-on zoekt toestellen niet zelf; geef ze een vast IP via een DHCP-reservering.
+* De sleutels staan in `/data/tuya.json`: ze zitten in de HA-back-up, niet in *Exporteer configuratie*. Op armv7 is deze functie niet beschikbaar.
+
 ## Externe apparaten (Tuya via local-tuya)
 
 Schakelaars die niet te flashen zijn, doen toch mee in je kruisschakelingen:

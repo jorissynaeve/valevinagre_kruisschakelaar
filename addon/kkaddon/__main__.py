@@ -20,6 +20,7 @@ from .model import Model
 from .mqttbridge import MqttBridge
 from .panelhub import PanelHub
 from .transport import UdpTransport
+from .tuyahub import TuyaHub
 from .web import Ctx, make_app
 
 log = logging.getLogger("kk")
@@ -49,7 +50,11 @@ async def run() -> None:
     mqtt.extras.append(screens)
     screens.changed = mqtt.resync
     screens.publish = mqtt.publish
-    ctx = Ctx(s, engine, transport, mqtt, ha, panels)
+    tuya = TuyaHub(s.data_dir, engine)
+    mqtt.extras.append(tuya)
+    tuya.changed = mqtt.resync
+    tuya.start()
+    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya)
     runner = web.AppRunner(make_app(ctx), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", s.web_port).start()
@@ -75,6 +80,7 @@ async def run() -> None:
         t.cancel()
     panels.close()
     screens.close()
+    tuya.close()
     engine.close()  # zet het leren uit en bewaart de staat
     await asyncio.sleep(0.2)  # laat de Learn(uit)-frames nog weggaan
     transport.close()

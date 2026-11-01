@@ -296,7 +296,7 @@ De e2e-test dekt: nodes ontdekken, MQTT-discovery, leren met live detectie (er s
 
 ## 17. Externe apparaten (Tuya via local-tuya)
 
-Een schakelaar die niet te flashen is (hier: nieuwe 4-gang Tuya-schakelaars) kan geen ESP-NOW spreken. De add-on vertegenwoordigt hem op de mesh als **virtuele node** (id `0xE000..0xEFFF`; echte nodes `1..0xDFFF`, add-on `0xF000+`). De gangen zijn HA-entiteiten (`switch.*`, `light.*`, ...) uit de bestaande local-tuya-koppeling. De add-on bewaart dus geen Tuya-sleutels. Code: `addon/kkaddon/virtual.py` (gedrag), `habridge.py` (websocket naar HA), model in `model.py` (`virtual`).
+Een schakelaar die niet te flashen is (hier: nieuwe 4-gang Tuya-schakelaars) kan geen ESP-NOW spreken. De add-on vertegenwoordigt hem op de mesh als **virtuele node** (id `0xE000..0xEFFF`; echte nodes `1..0xDFFF`, add-on `0xF000+`). De gangen zijn HA-entiteiten (`switch.*`, `light.*`, ...) uit de bestaande local-tuya-koppeling. Deze route bewaart dus geen Tuya-sleutels; §28 is de rechtstreekse route, die dat wel doet. Code: `addon/kkaddon/virtual.py` (gedrag), `habridge.py` (websocket naar HA), model in `model.py` (`virtual`).
 
 Per gang `i` (relais i = knop i), met `lamp` = stuurt de gang een lamp aan:
 
@@ -504,3 +504,19 @@ Code: `hasp.py` (ontwerp en aanrakingen, puur), `hasphub.py` (MQTT, HA-standen, 
 - De firmware rondt kleuren af: `#DDE3E8` komt terug als `#dee2ee`. Vergelijk dus niet letterlijk met wat je hebt gestuurd.
 - Niet gemeten: de precieze volgorde van `state/backlight` en het `down`-event bij het wakker maken.
 - Niet ondersteund: de poort (komt als `script.*` of `button.*` in HA; het model en de hub kennen die domeinen, de keuzelijst nog niet), camera's, de Pool-pagina, dimmen.
+
+## 28. Tuya rechtstreeks
+
+Code: `tuya.py` (protocol en verbinding), `tuyahub.py` (toestellen, profielen, entiteiten), tabblad *Tuya*, `tests/test_tuya.py`.
+
+- **Waarom**: de Feyree-lader spreekt protocol 3.5 en LocalTuya 5.2.3 niet ("no datapoints found"). Zelf doen vervangt HACS en LocalTuya en geeft per toestel de vrijheid over de entiteiten.
+- **Eigen client in asyncio, geen tinytuya**: tinytuya blokkeert. Het is wel de referentie: de frames en sessiesleutels in de tests zijn vectoren die eruit komen. Afhankelijkheid: `cryptography` (AES-ECB en AES-GCM; PyNaCl kent ze niet). Geen wheel voor musl op armv7: de marker in `requirements.txt` slaat haar daar over en de functie staat dan uit, zodat de add-on op armv7 blijft bouwen.
+- **Sleutels apart**: `/data/tuya.json` (0600), niet in `network.json`, want dat bestand gaat mee in de export. `status()` geeft nooit een sleutel.
+- **Entiteiten**: een entiteit bestaat pas als het toestel het datapunt meldt. Datamodel uit de Tuya-cloud: eenmalig via een profiel in de code of geplakt. Schrijven kan alleen op een datapunt dat het datamodel beschrijfbaar noemt en binnen het bereik. De stand in HA komt altijd uit een melding van het toestel, nooit uit het bevel.
+- **Verbinding**: hartslag elke 10 s, statusvraag elke 30 s, opnieuw verbinden met wachttijd tot 60 s. `auto` probeert 3.5, 3.4, 3.3 en bewaart wat werkt.
+- **Op de lader gemeten**: DP's 101 (`connect`), 102–104 (schaal 0,1 V) en 124 komen door. `switch` (18), `work_state` (3) en `work_mode` (14) staan in het datamodel maar meldt deze lader niet: starten en stoppen gaat via 124 (`ChargingOperation`).
+
+### Niet getest / open
+- Getest tegen een nagebootst toestel voor 3.3, 3.4 en 3.5, en lezen tegen de echte lader (3.5). De paden voor 3.3 en 3.4, en het `data unvalid`-geval, zijn niet op een echt toestel geprobeerd. 3.1 wordt niet ondersteund.
+- Geen UDP-ontdekking en geen massa-import van sleutels: elk toestel wordt met de hand toegevoegd.
+- Geen blok op het schema: de entiteiten zijn gewone HA-entiteiten en kunnen zo via een extern apparaat of kring meedoen (nog met de omweg via HA).

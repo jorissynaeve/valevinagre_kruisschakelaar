@@ -143,6 +143,41 @@ function viewNodes() {
     <p class="sub">"Niet beheerd": de node heeft een andere configuratie dan het model, maar jij hebt hem nog niet aan een licht gekoppeld, dus wordt er niets overschreven.</p>`;
 }
 
+function viewTuya() {
+  const T = S.tuya;
+  const add = '<div class="row" style="margin-top:12px"><button class="btn" data-act="tnew">Toestel toevoegen</button></div>';
+  const intro = '<p class="sub">Tuya-toestellen rechtstreeks over het LAN, zonder cloud, HACS of LocalTuya. De local key blijft in deze add-on en gaat niet mee in de export. Haal een toestel eerst uit LocalTuya en sluit de SmartLife-app: veel toestellen laten maar één verbinding toe.</p>';
+  if (!T.available) return `${intro}<p class="empty">Niet beschikbaar op deze processor (armv7).</p>`;
+  if (!T.devices.length) return `${intro}${add}<p class="empty">Nog geen toestellen.</p>`;
+  const cards = T.devices.map((t) => {
+    const pts = t.points.filter((p) => !p.hide).map((p) => `<tr><td>${esc(p.name)}${p.rw ? ' <span class="badge">instelbaar</span>' : ''}</td><td>${esc(p.value)}${p.unit ? ` ${esc(p.unit)}` : ''}</td><td class="sub">${esc(p.dp)}</td></tr>`).join('');
+    return `<h2><span class="dot ${t.online ? 'on' : 'off'}"></span>${esc(t.name)}</h2>
+      <p class="sub">${esc(t.host)} · protocol ${esc(t.version)} · ${t.online ? 'verbonden' : esc(t.error || 'verbinden…')}${t.profile ? ` · ${esc(T.profiles[t.profile] || t.profile)}` : t.has_model ? ' · eigen datamodel' : ' · geen datamodel: alleen lezen'}</p>
+      <div class="row"><button class="btn small" data-act="tedit" data-id="${esc(t.id)}">Bewerken</button><button class="btn small danger" data-act="tdel" data-id="${esc(t.id)}">Verwijderen</button></div>
+      ${pts ? `<div class="scroll" style="margin-top:8px"><table><thead><tr><th>Datapunt</th><th>Waarde</th><th>DP</th></tr></thead><tbody>${pts}</tbody></table></div>` : ''}`;
+  }).join('');
+  return `${intro}${add}${cards}`;
+}
+
+function tuyaDialog(t) {
+  const P = S.tuya.profiles;
+  smallDialog(`<h3>${t ? 'Tuya-toestel bewerken' : 'Tuya-toestel toevoegen'}</h3>
+    <label for="tname">Naam</label><input type="text" id="tname" maxlength="60" value="${esc(t ? t.name : '')}" placeholder="bv. Lader">
+    <label for="tdev">Device-id</label><input type="text" id="tdev" maxlength="40" value="${esc(t ? t.device_id : '')}">
+    <label for="thost">IP-adres</label><input type="text" id="thost" maxlength="253" value="${esc(t ? t.host : '')}" placeholder="192.168.8.26">
+    <label for="tkey">Local key${t ? ' (leeg laten om te behouden)' : ''}</label><input type="password" id="tkey" maxlength="16" autocomplete="off">
+    <label for="tver">Protocol</label><select id="tver">${['auto', '3.5', '3.4', '3.3'].map((v) => `<option value="${v}" ${t && t.version === v ? 'selected' : ''}>${v === 'auto' ? 'automatisch zoeken' : v}</option>`).join('')}</select>
+    <label for="tprof">Profiel</label><select id="tprof"><option value="">geen</option>${Object.keys(P).map((k) => `<option value="${esc(k)}" ${t && t.profile === k ? 'selected' : ''}>${esc(P[k])}</option>`).join('')}</select>
+    <label for="tmodel">Datamodel (optioneel)</label><textarea id="tmodel" rows="3" placeholder="Antwoord van Query Things Data Model"></textarea>
+    <p class="sub">Zonder profiel of datamodel zijn de datapunten alleen te lezen.</p>`,
+  async () => {
+    const b = { name: $('#tname').value, device_id: $('#tdev').value, host: $('#thost').value, version: $('#tver').value, profile: $('#tprof').value };
+    if ($('#tkey').value) b.key = $('#tkey').value;
+    if ($('#tmodel').value.trim()) b.model = $('#tmodel').value;
+    await api(t ? 'PUT' : 'POST', t ? `tuya/${t.id}` : 'tuya', b);
+  });
+}
+
 function viewLog() {
   const rows = [...S.log].reverse().map((e) => `<div><time>${time(e.ts)}</time><span>${esc(logText(e))}</span></div>`).join('');
   return rows ? `<div class="log" style="margin-top:12px">${rows}</div>` : '<p class="empty">Nog niets gebeurd.</p>';
@@ -178,7 +213,7 @@ function render() {
   if (tab === 'schema') { // het kader blijft staan, anders verspring je bij elke druk terug naar de linkerbovenhoek
     if (!$('#scsvg')) { $('#main').innerHTML = viewSchema(); SC.lastPanel = ''; }
     schemaUpdate();
-  } else if (tab !== 'settings' || !$('#keybox')) $('#main').innerHTML = { nodes: viewNodes, log: viewLog, settings: viewSettings }[tab]();
+  } else if (tab !== 'settings' || !$('#keybox')) $('#main').innerHTML = { nodes: viewNodes, tuya: viewTuya, log: viewLog, settings: viewSettings }[tab]();
   if (L) refreshPicks();
 }
 
@@ -391,6 +426,13 @@ const ACTIONS = {
   showkey: async () => {
     const k = await api('GET', 'secrets');
     $('#keybox').innerHTML = `<pre>${esc(k.secrets_h)}</pre>${k.generated ? '<p class="sub">Deze sleutel is zojuist door de add-on gemaakt. Bewaar hem veilig: elke node moet hem krijgen.</p>' : ''}`;
+  },
+  tnew: () => tuyaDialog(null),
+  tedit: (d) => tuyaDialog(S.tuya.devices.find((t) => t.id === d.id)),
+  tdel: async (d) => {
+    if (!confirm('Dit Tuya-toestel verwijderen? Zijn entiteiten verdwijnen uit Home Assistant.')) return;
+    await api('DELETE', `tuya/${d.id}`);
+    await refresh();
   },
   vnew: () => openVirtual(null),
   vimport: () => openImport(),

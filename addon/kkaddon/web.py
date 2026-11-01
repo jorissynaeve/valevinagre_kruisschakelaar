@@ -21,15 +21,15 @@ STATIC = Path(__file__).parent / "static"
 CTX = web.AppKey("ctx", object)
 INGRESS_PROXY = {"172.30.32.2", "127.0.0.1", "::1"}
 # Events die de pagina moet kennen; de rest (bv. losse commando-statussen) is ruis.
-PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen"}
+PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya"}
 
 
 class Ctx:
     """Alles wat de handlers nodig hebben."""
 
-    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None) -> None:
+    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None) -> None:
         self.settings, self.engine, self.model = settings, engine, engine.model
-        self.transport, self.mqtt, self.ha, self.panels = transport, mqtt, ha, panels
+        self.transport, self.mqtt, self.ha, self.panels, self.tuya = transport, mqtt, ha, panels, tuya
         self.clients: set[web.WebSocketResponse] = set()
         engine.subscribe(self._on_event)
 
@@ -96,6 +96,7 @@ def build_state(ctx: Ctx) -> dict:
     snap["plan"] = ctx.model.plan
     snap["names"] = {str(k): v.get("name", "") for k, v in ctx.model.nodes.items()}
     snap["schema"] = schema.view(ctx.model, snap)
+    snap["tuya"] = ctx.tuya.status() if ctx.tuya else {"available": False, "devices": [], "profiles": {}}
     return snap
 
 
@@ -381,6 +382,27 @@ async def panel_script(request: web.Request) -> web.Response:
     return web.Response(text=text, content_type="text/plain", headers={"Content-Disposition": 'attachment; filename="huisconfig.be"'})
 
 
+def _tuya(request: web.Request):
+    hub = request.app[CTX].tuya
+    if hub is None:
+        raise ModelError("Tuya is niet beschikbaar")
+    return hub
+
+
+async def tuya_post(request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, "id": _tuya(request).add(await _body(request))})
+
+
+async def tuya_put(request: web.Request) -> web.Response:
+    _tuya(request).update(request.match_info["did"], await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def tuya_delete(request: web.Request) -> web.Response:
+    ok = _tuya(request).remove(request.match_info["did"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
 async def screen_post(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     b = await _body(request)
@@ -598,6 +620,9 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/screens", screen_post)
     r.add_put("/api/screens/{sid}", screen_put)
     r.add_delete("/api/screens/{sid}", screen_delete)
+    r.add_post("/api/tuya", tuya_post)
+    r.add_put("/api/tuya/{did}", tuya_put)
+    r.add_delete("/api/tuya/{did}", tuya_delete)
     r.add_put("/api/schema/pages", schema_pages)
     r.add_post("/api/schema/wire", schema_wire)
     r.add_post("/api/schema/lamp", schema_lamp)

@@ -3,3 +3,4 @@ aiohttp>=3.9,<4
 aiomqtt>=2.0,<3
 PyYAML>=6,<7
 tzdata
+cryptography>=42,<60; platform_machine != "armv7l"
