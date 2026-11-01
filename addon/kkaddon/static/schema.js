@@ -406,8 +406,26 @@ function scInner(list) {
 }
 
 function scDrawTemp() { // alleen dit ene pad: de poort onder de cursor moet blijven bestaan, anders mist de volgende klik hem
-  const a = SC.link && scPortPos(SC.link), el = $('#sctemp');
+  const b = SC.link && scBlock(SC.link.b), el = $('#sctemp');
+  const a = !b ? null : b.page === SC.page ? scPortPos(SC.link) : [SC.link.x, 0]; // uit een andere ruimte: de draad komt van bij de tabbladen
   if (el) el.setAttribute('d', a ? `M ${a[0]} ${a[1]} L ${SC.link.x} ${SC.link.y}` : '');
+}
+
+function scLinkBar() { // zolang een draad wacht op zijn andere kant: waar hij vandaan komt en hoe je stopt
+  const el = $('#sclink');
+  if (!el) return;
+  const l = SC.link && SC.link.armed ? SC.link : null, b = l && scBlock(l.b);
+  if (l && !b) SC.link = null; // het blok is intussen weg
+  document.body.classList.toggle('linking', !!b);
+  if (!b) { el.innerHTML = ''; return; }
+  const gang = b.gangs && l.g !== undefined ? b.gangs[+l.g] : null;
+  el.innerHTML = `<b>Draad vanaf ${esc(b.name)}${gang ? ` · ${esc(gang.label)}` : ''}</b> <span>Kies eventueel een andere ruimte en klik op de poort of de lamp waar hij heen moet.</span> <button class="btn small" type="button" data-sc="linkstop">Stoppen (Esc)</button>`;
+}
+
+function scLinkStop() {
+  SC.link = null;
+  scDraw();
+  scLinkBar();
 }
 
 function scPortPos(p) {
@@ -606,6 +624,7 @@ function viewSchema() {
       <button class="btn small" data-sc="convert" title="Nieuwe kringen en toestellen op hun plek zetten. Wat al staat blijft staan.">Omzetten</button>
       <button class="btn small" data-sc="relayout" title="Alles opnieuw verdelen over de ruimtes">Opnieuw indelen</button>
       ${scMenu()}</span></div>
+    <div id="sclink"></div>
     <div class="scwrap"><aside class="card sctray"><input type="search" id="scq" placeholder="Zoek een blok" autocomplete="off" value="${esc(SC.q)}"><div id="sctraylist"></div></aside>
       <div id="sccanvas"><div id="scempty"></div><svg id="scsvg" role="img" aria-label="Schema van de ruimte"></svg></div>
       <aside class="card" id="scpanel"></aside></div>`;
@@ -648,6 +667,7 @@ function schemaUpdate() {
   $('#scsvg').style.display = noPages ? 'none' : 'block';
   document.querySelectorAll('.scbar [data-sc=renamepage], .scbar [data-sc=delpage]').forEach((x) => { x.disabled = noPages; });
   scDraw();
+  scLinkBar();
   const panel = $('#scpanel'), html = scPanel(), active = document.activeElement;
   // een lijst die net open staat of een veld waarin je typt niet onder je handen vervangen
   if (SC.force || (html !== SC.lastPanel && !(active && panel.contains(active) && /SELECT|INPUT|TEXTAREA/.test(active.tagName)))) {
@@ -818,7 +838,8 @@ const SC_ACTIONS = {
     SC.sel = null;
     await refresh();
   },
-  page: (d) => { SC.page = d.id; SC.sel = null; SC.link = null; render(); },
+  page: (d) => { SC.page = d.id; SC.sel = null; if (SC.link && !SC.link.armed) SC.link = null; render(); }, // een draad die wacht gaat mee
+  linkstop: () => scLinkStop(),
   go: (d) => { const b = scBlock(d.k); if (b && b.page) SC.page = b.page; SC.sel = SC.reveal = d.k; render(); },
   trayitem: async (d) => {
     const b = scBlock(d.k);
@@ -950,8 +971,6 @@ const scPortOf = (el) => (el && el.dataset && el.dataset.role ? { b: el.dataset.
 
 function scFinish(target) {
   const from = SC.link;
-  SC.link = null;
-  scDrawTemp(); // ook als de verbinding zo meteen geweigerd wordt, mag de draad niet blijven hangen
   const toPort = target && target.closest && target.closest('.pt');
   const toBlock = target && target.closest && target.closest('[data-block]');
   const norm = (p) => ({ b: p.b, role: scBlock(p.b).kind === 'lamp' ? p.lampRole : p.swRole, g: p.g, i: p.i });
@@ -962,7 +981,16 @@ function scFinish(target) {
   } else if (toBlock && toBlock.dataset.block !== from.b && scBlock(toBlock.dataset.block).kind === 'lamp') {
     dest = { b: toBlock.dataset.block, lampRole: null }; // losgelaten op de lamp zelf: de poort waar je begon beslist
   }
-  if (!dest) { scDraw(); return; }
+  if (dest && dest.b === from.b && dest.g === from.g && dest.i === from.i && dest.swRole === from.swRole) dest = null;
+  if (!dest) { // nergens op beland: de draad blijft wachten, zodat je nog naar een andere ruimte kunt
+    SC.link.armed = true;
+    scLinkBar();
+    scDrawTemp();
+    return;
+  }
+  SC.link = null;
+  scDrawTemp(); // ook als de verbinding zo meteen geweigerd wordt, mag de draad niet blijven hangen
+  scLinkBar();
   act(() => scWireUp(norm(from), norm(dest)))();
 }
 
@@ -1024,7 +1052,7 @@ function scUp(ev) {
     const near = Math.hypot(ev.clientX - SC.link.startX, ev.clientY - SC.link.startY) < 6;
     if (near) { // alleen geklikt: de draad hangt nu aan de cursor, de volgende klik sluit hem aan
       SC.link.armed = true;
-      toast('Klik nu op de poort of de lamp waar de draad heen moet (Esc om te stoppen)');
+      scLinkBar();
       return;
     }
     const el = document.elementFromPoint(ev.clientX, ev.clientY);
@@ -1039,11 +1067,11 @@ function scUp(ev) {
   }
 }
 document.addEventListener('pointerup', scUp);
-document.addEventListener('pointercancel', () => { SC.link = null; SC.drag = null; if (tab === 'schema') render(); });
+document.addEventListener('pointercancel', () => { if (SC.link && !SC.link.armed) SC.link = null; SC.drag = null; if (tab === 'schema') render(); });
 
 document.addEventListener('keydown', (ev) => {
   if (tab !== 'schema' || dlg().open || /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
-  if (ev.key === 'Escape' && SC.link) { SC.link = null; scDraw(); }
+  if (ev.key === 'Escape' && SC.link) scLinkStop();
   if ((ev.key === 'Delete' || ev.key === 'Backspace') && SC.sel && SC.sel.lamp) {
     ev.preventDefault();
     act(scUnwire)(`${SC.sel.lamp}|${SC.sel.dir}|${SC.sel.i}`);

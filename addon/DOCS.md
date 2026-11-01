@@ -29,6 +29,7 @@ staan ze samen, en de verwijzingen tonen er geen ruimtenaam. *Opnieuw indelen* v
 * Een **schakelaar-blok** is een toestel met per gang links een **touch** (ingang) en rechts een **relais** (uitgang).
 * Klik op een blok voor de eigenschappen in de zijbalk: een **eigen naam** naast de technische naam uit HA, en de **ruimte**.
 * **Draad trekken**: sleep van een poort naar een andere poort, of klik op de ene en daarna op de andere (handig op een tablet).
+  **Naar een andere ruimte**: laat de draad los op een lege plek, of klik op de poort. Hij blijft dan wachten: kies het tabblad van de andere ruimte en klik daar op de poort of de lamp. *Stoppen* of Esc breekt af.
   Een verbinding weghalen: klik op de regel in de lamp en druk op Delete, of kies ✕ rechts. Een verbinding in een actieve lamp geldt **meteen**.
 * Elke verbinding staat voorlopig als **verwijzing**: `↗` op de lamp en een blauwe tekst op de schakelaar (klik om erheen te gaan). Er worden geen lijnen getekend.
 * De kleur toont het type: lamp geel, schakelaar groen, relaisbox oranje, extern apparaat cyaan, node blauw.
