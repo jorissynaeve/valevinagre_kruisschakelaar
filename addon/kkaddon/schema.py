@@ -149,7 +149,7 @@ def _sprinkler_blocks(snap: dict) -> list[dict]:
 def _panel_blocks(snap: dict) -> list[dict]:
     return [{**{k: p[k] for k in ("id", "name", "host", "yaml", "online", "error", "greeted", "last_seen", "temperature", "rssi")},
              "key": f"p:{p['id']}", "kind": "panel", "source": "panel", "tech": "NSPanel", "alias": "", "room": "",
-             "gangs": [{"i": i, "label": f"Relais {i + 1}", "entity": panel_relay_entity(p["id"], i + 1), "touch": False, "relay": True, "on": p["relays"][i]} for i in range(2)]}
+             "gangs": [{"i": i, "label": f"Gang {i + 1}", "entity": panel_relay_entity(p["id"], i + 1), "touch": True, "relay": True, "on": p["relays"][i]} for i in range(2)]}
             for p in snap.get("panels", [])]
 
 

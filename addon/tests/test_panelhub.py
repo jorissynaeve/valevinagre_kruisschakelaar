@@ -304,7 +304,7 @@ def test_the_panel_is_a_block_on_the_schema_and_its_relay_can_be_the_output_of_a
             await e.until(lambda: e.hub.links[pid].online)
             block = next(b for b in schema.view(model, e.engine.snapshot())["blocks"] if b["key"] == f"p:{pid}")
             assert block["kind"] == "panel" and block["page"] == "hal" and (block["x"], block["y"]) == (40, 60) and block["online"] and block["temperature"] == 24.7
-            assert [(g["label"], g["on"], g["relay"], g["touch"]) for g in block["gangs"]] == [("Relais 1", True, True, False), ("Relais 2", False, True, False)]
+            assert [(g["label"], g["on"], g["relay"], g["touch"]) for g in block["gangs"]] == [("Gang 1", True, True, True), ("Gang 2", False, True, True)]
             relay = block["gangs"][0]["entity"]
             assert relay == f"switch.kk_panel_{pid}_relay1"
             assert e.hub.discovery()[f"homeassistant/switch/kk_panel_{pid}_relay1/config"]["default_entity_id"] == relay, "dezelfde entiteit als in HA"
@@ -312,7 +312,12 @@ def test_the_panel_is_a_block_on_the_schema_and_its_relay_can_be_the_output_of_a
             schema.wire(model, e.engine, "g:hal", "out", {"entity": relay})
             lamp = next(b for b in schema.view(model, e.engine.snapshot())["blocks"] if b["key"] == "g:hal")
             out = next(c for c in lamp["outputs"] if c["ref"]["entity"] == relay)
-            assert out["sw"] == f"p:{pid}" and out["label"] == "Relais 1" and out["swName"] == "NSPanel 1"
+            assert out["sw"] == f"p:{pid}" and out["label"] == "Gang 1" and out["swName"] == "NSPanel 1"
+            touch = block["gangs"][1]["entity"]
+            schema.wire(model, e.engine, "g:hal", "in", {"entity": touch})
+            lamp = next(b for b in schema.view(model, e.engine.snapshot())["blocks"] if b["key"] == "g:hal")
+            inp = next(c for c in lamp["inputs"] if c["ref"]["entity"] == touch)
+            assert inp["sw"] == f"p:{pid}" and inp["label"] == "Gang 2", "de knop als ingang van een lamp"
             model.remove_panel(pid)
             assert f"p:{pid}" not in model.schema["blocks"], "weg van het schema"
 

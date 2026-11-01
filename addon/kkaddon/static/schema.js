@@ -255,7 +255,7 @@ function scPanelPanel(b, props) {
     ${b.error ? `<div class="sub">Config niet te gebruiken: ${esc(b.error)}</div>` : ''}
     <div class="row" style="margin-top:6px"><button class="btn small primary" type="button" data-sc="pnsave" data-id="${esc(b.id)}">Opslaan</button>${Object.keys(draft).length ? '<span class="sub">niet opgeslagen</span>' : ''}</div>
     <h2>Relais</h2><div class="row">${relays}</div>
-    <div class="sub">Sleep een relais naar de uitgang van een lamp, of gebruik <code>${esc(b.gangs[0].entity)}</code> in HA. De knoppen op de panel blijven ook zonder HA werken.</div>
+    <div class="sub">Sleep een <b>touch</b> (de knop op de panel) naar de ingang van een lamp, of een <b>relais</b> naar de uitgang. In HA heet het <code>${esc(b.gangs[0].entity)}</code>. Een knop schakelt altijd zijn eigen relais, ook zonder HA; staat de touch op een lamp, dan volgt dat relais ook die lamp.</div>
     <h2>Op de panel zetten</h2>
     <ol class="sub" style="padding-left:18px;margin:4px 0">
       <li>Zet de AppDaemon-app <code>nspanel-lovelace-ui</code> uit.</li>
