@@ -1,4 +1,4 @@
-﻿name: Huisconfig
+name: Huisconfig
 version: "0.10.4"
 slug: kruisschakelaars
 description: Configuratie van het huis in blokken (schakelaars en lampen over ESP-NOW en Home Assistant, timers, tijd- en logicamodules)
