@@ -192,7 +192,9 @@ class Panel:
         self.saver = Card.parse({k: v for k, v in sc.items() if k != "entities"}, False, 0)
         self.saver.uid = "uuid.saver"
         self.saver.items = [Item.parse(e) for e in sc.get("entities") or []]
-        self.by_uid = {c.uid: c for c in self.cards}
+        if sc.get("inNavigation", True) and (self.saver.items or sc.get("entity")):  # de screensaver als stap tussen de laatste en de eerste kaart
+            cards[0].prev = cards[-1].next = self.saver.uid
+        self.by_uid = {c.uid: c for c in [*self.cards, self.saver]}
         self.current = self.saver
         self.history: list[Card] = [self.default_card()]
         self._awake_since: datetime | None = None
@@ -644,11 +646,25 @@ class Panel:
         elif kind not in ("bExit",):
             log.info("knop %s van %s wordt (nog) niet ondersteund", kind, entity)
 
+    def _to_saver(self) -> None:
+        """Met een pijl naar de screensaver: helder, want je wilt hem zien. Hij heeft zelf geen pijlen: een tik gaat verder in dezelfde richting."""
+        top = [c for c in self.cards if not c.hidden]
+        here = self.current
+        after = top[0] if here is top[-1] and here.next == self.saver.uid else top[-1] if here is top[0] and here.prev == self.saver.uid else here
+        self.history = [after]
+        self._awake_since = self.env.now()
+        self.clock()
+        self.current = self.saver
+        self.render(self.saver)
+
     def _button(self, entity: str, domain: str) -> None:
         if domain == "navigate":
             target = self.find(entity)
             if target is None:
                 log.warning("pagina %s bestaat niet", entity)
+                return
+            if target is self.saver:
+                self._to_saver()
                 return
             if target.hidden:
                 self.history.append(self.current)

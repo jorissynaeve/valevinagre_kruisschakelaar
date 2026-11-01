@@ -122,7 +122,7 @@ def test_the_grid_card_has_arrows_round_the_deck_and_buttons_to_the_hidden_pages
     assert out == [
         "pageType~cardGrid",
         "timeout~20",
-        f"entityUpd~Light~{nav('uuid.c3', 'arrow-left-bold', 'Airco')}~{nav('uuid.c1', 'arrow-right-bold', 'Guest Wifi')}"
+        f"entityUpd~Light~{nav('uuid.saver', 'arrow-left-bold', 'screensaver')}~{nav('uuid.c1', 'arrow-right-bold', 'Guest Wifi')}"
         + sub("subMain", "Main room") + sub("subQPhil", "Quarto Philippe") + sub("subQVis", "Quarto Das Visitas")
         + sub("subOut", "Outside") + sub("subOth", "Other"),
     ]
@@ -320,3 +320,40 @@ def test_a_double_tap_goes_straight_to_the_pages_and_tap_to_wake_can_be_turned_o
     p.on_screen("event,startup,59,eu")
     p.on_screen("event,buttonPress2,screensaver,bExit,1")
     assert p.current is not p.saver
+
+
+def test_the_screensaver_is_a_step_in_the_arrows_and_a_tap_continues_in_the_same_direction(rig):
+    p, env, out = rig
+    wake(p, out)
+    p.on_screen("event,buttonPress2,navigate.uuid.c3,button,")  # naar Airco, de laatste kaart
+    assert "~button~navigate.uuid.saver~" in out[-1], "rechts van de laatste kaart"
+    out.clear()
+    p.on_screen("event,buttonPress2,navigate.uuid.saver,button,")
+    assert p.current is p.saver
+    assert out[:3] == ["time~23:25~", "dimmode~99~100~6371~~0", "pageType~screensaver"], "meteen helder"
+    assert any(m.startswith("weatherUpdate") for m in out)
+    out.clear()
+    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    assert any(m.startswith("entityUpd~Light~") for m in out), "verder naar rechts: de eerste kaart"
+    assert "dimmode~20~100~6371~~0" in out
+    out.clear()
+    p.on_screen("event,buttonPress2,navigate.uuid.saver,button,")  # links van de eerste kaart
+    out.clear()
+    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    assert any(m.startswith("entityUpd~Airco~") for m in out), "verder naar links: de laatste kaart"
+
+
+def test_after_the_arrow_the_dark_screensaver_first_wakes_again_and_it_can_stay_out_of_the_arrows(rig):
+    p, env, out = rig
+    wake(p, out)
+    p.on_screen("event,buttonPress2,navigate.uuid.saver,button,")
+    env.when = NOW_PLUS(30)
+    p.tick()
+    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    assert p.current is p.saver, "donker geworden: de tik maakt eerst weer helder"
+    p.on_screen("event,buttonPress2,screensaver,bExit,1")
+    assert p.current is not p.saver
+    off = Panel(YAML.replace("    screensaver:\n", "    screensaver:\n      inNavigation: false\n"), FakeEnv(), print)
+    assert off.cards[0].prev == "uuid.c3" and off.cards[3].next == "uuid.c0"
+    bare = Panel("cards:\n  - type: cardGrid\n    title: T\n    entities:\n      - entity: iText.x\n", FakeEnv(), print)
+    assert bare.cards[0].prev is None, "zonder weer of entiteiten is er niets om naartoe te gaan"
