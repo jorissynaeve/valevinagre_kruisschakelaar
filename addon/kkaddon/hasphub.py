@@ -163,6 +163,7 @@ class HaspHub:
             link.phase = "idle"
             return
         self._cmd(link, "page", "1")
+        self._cmd(link, "", "backlight on")  # `idle off` maakt een scherm dat met `backlight off` uitging niet wakker
         self._ready(link)
 
     def _ready(self, link: Link) -> None:

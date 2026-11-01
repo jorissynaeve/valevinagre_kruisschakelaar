@@ -498,7 +498,7 @@ Code: `hasp.py` (ontwerp en aanrakingen, puur), `hasphub.py` (MQTT, HA-standen, 
 - **Kleuren** gaan elke 120 s opnieuw, omdat de brug met QoS 0 publiceert.
 
 ### Niet getest / open
-- Getest: de hub tegen nagebootste schermberichten en een nagebootste HA, en de zijbalk in een browser. **Nog niet op een echt scherm of met een echte broker.**
-- Af te lezen uit de pyscript-code en bewezen op deze schermen: `jsonl`, `clearpage all`, `idle off`, `page`, `pXbY.bg_color`, `backlight off`, de events op `state/pXbY`, `LWT`, `sensors.uptime`.
-- Aannames, te controleren bij het overzetten van `scherm03`: antwoord op `p0b250.text` zonder inhoud, `hidden` op een label, `backlight on` als commando, antwoord op `backlight` zonder inhoud, en of de service-gebruiker van de add-on op de broker bij `hasp/#` mag.
+- Getest: de hub tegen nagebootste schermberichten en een nagebootste HA, en de zijbalk in een browser.
+- Gemeten op `scherm03` met de echte broker (0.9.0): het ontwerp komt aan en ziet er goed uit (screenshot), de add-on mag op `hasp/#`, `p0b250.text` en `.hidden` antwoorden, `backlight` zonder inhoud antwoordt, `backlight on` werkt en wordt gemeld, en de time-out stuurt op tijd `backlight off`. `idle off` maakt een scherm na `backlight off` niet wakker, daarom stuurt de hub na een ontwerp `backlight on`.
+- Nog niet gemeten: een echte aanraking (schakelen, kleur, wakker maken, de volgorde van `backlight` en `down`) en een herstart van de add-on zonder knipperen.
 - Niet ondersteund: de poort (komt als `script.*` of `button.*` in HA; het model en de hub kennen die domeinen, de keuzelijst nog niet), camera's, de Pool-pagina, dimmen.

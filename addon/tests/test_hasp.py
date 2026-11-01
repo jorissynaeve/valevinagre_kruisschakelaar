@@ -148,6 +148,18 @@ def test_another_marker_means_a_new_design_and_a_changed_config_is_sent_right_aw
     run(go())
 
 
+def test_a_new_design_lights_a_screen_that_was_dark():
+    """Gemeten op scherm03: `idle off` maakt een scherm dat met `backlight off` uitging niet wakker."""
+    async def go():
+        async with Env() as e:
+            sid = e.add()
+            await e.online(sid)
+            assert ("hasp/scherm01/command/", "backlight on") in e.sent
+            assert not e.hub.links[sid].screen.dark
+
+    run(go())
+
+
 def test_a_touch_toggles_in_ha_and_the_new_state_becomes_the_colour():
     async def go():
         async with Env() as e:
