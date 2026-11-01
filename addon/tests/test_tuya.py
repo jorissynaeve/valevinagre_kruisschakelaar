@@ -394,6 +394,16 @@ def test_nonsense_is_not_a_data_model(text):
         parse_model(text)
 
 
+def test_a_pasted_model_replaces_the_profile(tmp_path):
+    hub, did = hub_with(tmp_path, dps={"1": True})
+
+    async def go():
+        hub.update(did, {"model": json.dumps(MODEL)})
+        hub.close()
+    asyncio.run(go())
+    assert hub.devices[did]["profile"] == "" and "switch_1" in by_name(hub)
+
+
 def test_device_with_a_pasted_model_can_switch(tmp_path):
     hub, did = hub_with(tmp_path, {**CHARGER, "device_id": DEV[:-1] + "k", "profile": "", "model": json.dumps(MODEL)}, {"1": True, "9": 123})
     names = by_name(hub)

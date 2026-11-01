@@ -319,8 +319,8 @@ function scTuyaPanel(b, props) {
     <div class="sub">Uit de Tuya API Explorer (<code>local_key</code>). Blijft in de add-on en gaat niet mee in de export.</div>
     <label>Protocol</label><select data-tyfield="version">${opt('auto', b.version, 'automatisch zoeken')}${['3.5', '3.4', '3.3'].map((v) => opt(v, b.version, v)).join('')}</select>
     <label>Profiel</label><select data-tyfield="profile">${opt('', b.profile, b.has_model ? 'eigen datamodel' : 'geen')}${Object.keys(b.profiles).map((k) => opt(k, b.profile, b.profiles[k])).join('')}</select>
-    <label>Datamodel plakken</label><textarea rows="2" data-tyfield="model" placeholder="Antwoord van Query Things Data Model"></textarea>
-    <div class="sub">Zonder profiel of datamodel zijn de datapunten alleen te lezen. Veel toestellen laten maar één verbinding toe: haal het toestel eerst uit LocalTuya en sluit de SmartLife-app.</div>
+    <label>Datamodel plakken</label><textarea rows="8" style="flex:none;min-height:150px" spellcheck="false" data-tyfield="model" placeholder="Antwoord van Query Things Data Model uit de Tuya API Explorer"></textarea>
+    <div class="sub">Het datamodel zegt wat elk datapunt betekent en wat instelbaar is. Een profiel is hetzelfde, maar al ingebouwd en met nette namen. Zonder een van beide zijn de datapunten alleen te lezen, onder hun nummer. Veel toestellen laten maar één verbinding toe: haal het toestel eerst uit LocalTuya en sluit de SmartLife-app.</div>
     ${rows ? `<h2>Datapunten</h2><div class="scroll"><table><tbody>${rows}</tbody></table></div>` : ''}
     <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="deltuya" data-id="${esc(b.id)}">Toestel verwijderen</button></div>`;
 }

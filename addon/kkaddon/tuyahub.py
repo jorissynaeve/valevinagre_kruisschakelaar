@@ -169,6 +169,7 @@ class TuyaHub:
             new["key"] = str(b["key"])
         if b.get("model"):
             new["defs"] = parse_model(str(b["model"]))
+            new["profile"] = str(b.get("profile") or "")  # anders wint een eerder gekozen profiel van wat je net plakte
         return new
 
     def _unique(self, did: str, dev: dict) -> None:

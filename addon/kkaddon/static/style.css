@@ -64,7 +64,7 @@ dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--c
 dialog::backdrop { background: rgba(0, 0, 0, .45); }
 dialog h3 { margin: 0 0 6px; }
 label { display: block; margin: 10px 0 3px; color: var(--mute); font-size: 13px; }
-input[type=text], select { width: 100%; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); }
+input[type=text], input[type=password], select { width: 100%; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); }
 .pick { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .pick select { width: auto; }
 .empty { color: var(--mute); padding: 18px 4px; }
@@ -148,7 +148,7 @@ body.linking .sctab:not(.add) { color: var(--ink); outline: 1px dashed var(--acc
 .scc { display: flex; gap: 6px; justify-content: space-between; align-items: center; padding: 2px 0; font-size: 13.5px; }
 .scc code { word-break: break-all; font-size: 11.5px; }
 #scpanel a { color: var(--accent); text-decoration: none; }
-#scpanel select, #scpanel input[type=text] { margin-top: 3px; }
+#scpanel select, #scpanel input[type=text], #scpanel input[type=password] { margin-top: 3px; }
 #scpanel label { margin: 4px 0 0; }
 #scpanel .scc > div { min-width: 0; flex: 1; }
 
