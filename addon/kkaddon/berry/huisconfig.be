@@ -22,16 +22,25 @@ class Huisconfig : Driver
   var u, last_beat, booted, sent
 
   def init()
-    self.u = udp()
-    if !self.u.begin("", LISTEN_PORT)
-      print("HUC: UDP-poort " + str(LISTEN_PORT) + " niet beschikbaar")
-    end
+    self.u = nil # pas openen als de wifi er is: bij het opstarten is het netwerk er nog niet
     self.last_beat = 0
     self.booted = true
     self.sent = 0
   end
 
+  def start_udp()
+    var w = tasmota.wifi()
+    if w == nil || !w.find('up', false) return end
+    var u = udp()
+    if u.begin("", LISTEN_PORT)
+      self.u = u
+    else
+      print("HUC: UDP-poort " + str(LISTEN_PORT) + " niet beschikbaar")
+    end
+  end
+
   def to_hub(text)
+    if self.u == nil return end
     self.u.send(HUB_HOST, HUB_PORT, bytes().fromstring(text))
     self.sent += 1
   end
@@ -47,6 +56,7 @@ class Huisconfig : Driver
   end
 
   def beat()
+    if self.u == nil return end # ook een relais dat bij het opstarten schakelt komt hier
     var p = tasmota.get_power()
     var d = {}
     d['p1'] = (size(p) > 0 && p[0]) ? 1 : 0
@@ -82,6 +92,7 @@ class Huisconfig : Driver
   end
 
   def every_50ms()
+    if self.u == nil return end
     var n = 0
     while n < 8
       var p = self.u.read()
@@ -92,6 +103,10 @@ class Huisconfig : Driver
   end
 
   def every_second()
+    if self.u == nil
+      self.start_udp()
+      return
+    end
     if tasmota.millis() - self.last_beat >= BEAT
       self.beat()
     end
@@ -101,7 +116,7 @@ end
 # Opnieuw laden (bv. na een wijziging) ruimt de vorige koppeling eerst op.
 if global.contains('huisconfig') && global.huisconfig != nil
   tasmota.remove_driver(global.huisconfig)
-  global.huisconfig.u.close()
+  if global.huisconfig.u != nil global.huisconfig.u.close() end
 end
 
 var hc = Huisconfig()
