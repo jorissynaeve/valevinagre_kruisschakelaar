@@ -78,8 +78,6 @@ FEYREE = {
 }
 PROFILES = {"feyree": FEYREE}
 PROFILE_NAMES = {"feyree": "Feyree EV-lader"}
-PROFILE_MAIN = {"feyree": ("101", "124", "109", "115")}  # de rijen op het blok
-MAIN_ROWS = 4
 
 
 def parse_model(text: str) -> dict:
@@ -283,13 +281,15 @@ class TuyaHub:
             points = []
             for dp, v in sorted(self.values.get(did, {}).items(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
                 de = defs.get(dp) or {}
-                points.append({"dp": dp, "name": de.get("name") or f"Datapunt {dp}", "value": self._shown(de, v), "unit": de.get("unit", ""), "rw": de.get("access") == "rw", "hide": bool(de.get("hide"))})
-            wanted = PROFILE_MAIN.get(dev.get("profile") or "")
-            shown = [p for p in points if not p["hide"]]
-            main = [p for dp in wanted for p in shown if p["dp"] == dp] if wanted else shown[:MAIN_ROWS]
+                scale = de.get("scale") or 0
+                # instelbaar is alleen wat `convert` ook echt toelaat: raw of een getal zonder grenzen niet
+                rw = de.get("access") == "rw" and not de.get("hide") and (de.get("type") == "bool" or (de.get("type") == "enum" and bool(de.get("options"))) or (de.get("type") == "value" and de.get("min") is not None and de.get("max") is not None))
+                points.append({"dp": dp, "name": de.get("name") or f"Datapunt {dp}", "value": self._shown(de, v), "unit": de.get("unit", ""), "rw": rw, "hide": bool(de.get("hide")) or de.get("type") == "raw", "diag": bool(de.get("diag")),
+                               "type": de.get("type") or "", "options": de.get("options") or [],
+                               "min": de["min"] / 10 ** scale if rw and de.get("min") is not None else None, "max": de["max"] / 10 ** scale if rw and de.get("max") is not None else None, "step": 1 / 10 ** scale})
             out.append({"id": did, "name": dev["name"], "device_id": dev.get("device_id", ""), "host": dev.get("host", ""), "version": c.version if c else dev.get("version"), "profile": dev.get("profile", ""),
                         "has_key": bool(dev.get("key")), "configured": self._complete(dev), "has_model": bool(dev.get("defs")), "online": self._online(did), "error": c.last_error if c else "",
-                        "points": points, "main": main, "available": CRYPTO, "profiles": PROFILE_NAMES})
+                        "points": points, "available": CRYPTO, "profiles": PROFILE_NAMES})
         return out
 
     @staticmethod
@@ -385,19 +385,22 @@ class TuyaHub:
         m = SET_RE.match(topic)
         if not m:
             return False
-        did, dp = m.groups()
+        try:
+            self.set(*m.groups(), payload)
+        except ModelError as e:
+            log.warning("%s datapunt %s: %s", m.group(1), m.group(2), e)
+        return True
+
+    def set(self, did: str, dp: str, payload: str) -> None:
+        """Eén opdracht, uit HA of uit de zijbalk. De stand verandert pas als het toestel hem meldt."""
         if did not in self.devices:
-            log.warning("opdracht voor onbekend Tuya-toestel %s", did)
-            return True
-        de = self._defs(did).get(dp)
-        value = self.convert(de, payload)
+            raise ModelError("onbekend toestel")
+        value = self.convert(self._defs(did).get(dp), payload)
         if value is None:
-            log.warning("%s datapunt %s: opdracht %r geweigerd", did, dp, payload)
-            return True
+            raise ModelError(f"opdracht {payload!r} is niet toegestaan")
         c = self.clients.get(did)
         if not c or not c.set_dps({dp: value}):
-            log.warning("%s datapunt %s: niet verstuurd, geen verbinding", did, dp)
-        return True
+            raise ModelError("niet verstuurd: geen verbinding met het toestel")
 
     @staticmethod
     def convert(de: dict | None, payload: str):

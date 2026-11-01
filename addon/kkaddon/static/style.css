@@ -131,6 +131,8 @@ body.linking .sctab:not(.add) { color: var(--ink); outline: 1px dashed var(--acc
 .pt.ctl { fill: var(--c5); } .pt.ctl.on { fill: var(--on); }
 .pt.v-number { fill: var(--c2); } .pt.v-time { fill: var(--c4); } .pt.v-bool { fill: var(--c5); } .pt.v-bool.on { fill: var(--bad); }
 .pt.tou { fill: var(--c0); } .pt.rel { fill: var(--c1); }
+.ptv { stroke: var(--card); stroke-width: 2; } .ptv.tou { fill: var(--c0); } .ptv.rel { fill: var(--c1); }
+.tyv { font-weight: 600; }
 .pt.rel.on { fill: var(--on); stroke: var(--c1); }
 .pt.rel.unknown { fill: var(--chip); stroke: var(--c1); }
 .pt.free { fill-opacity: .25; stroke-dasharray: 2 2; stroke: var(--mute); }

@@ -162,12 +162,16 @@ def _screen_blocks(snap: dict) -> list[dict]:
 
 
 def _tuya_blocks(snap: dict) -> list[dict]:
-    """Een Tuya-toestel heeft geen poorten: zijn datapunten zijn gewone entiteiten in HA. Op het blok de belangrijkste waarden."""
+    """Elk toestel zijn eigen poorten, uit zijn datamodel: links wat je kunt instellen, rechts wat het alleen meldt. Diagnose staat alleen in de zijbalk."""
     out = []
     for t in snap.get("tuya", []):
-        rows = [f"{p['name']}: {p['value']}{' ' + p['unit'] if p['unit'] else ''}" for p in t["main"]] or ["Nog geen waarden" if t["configured"] else "Nog niet ingesteld"]
-        out.append({**t, "key": f"y:{t['id']}", "kind": "tuya", "source": "tuya", "tech": "Tuya", "alias": "", "room": "",
-                    "gangs": [{"i": i, "label": r, "entity": None, "touch": False, "relay": False, "on": None} for i, r in enumerate(rows)]})
+        shown = [p for p in t["points"] if not p["hide"] and not p["diag"]]
+        pin = [p for p in shown if p["rw"]]
+        pout = [p for p in shown if not p["rw"]]
+        rows = max(len(pin), len(pout), 1)
+        note = "" if shown else "Nog geen waarden" if t["configured"] else "Nog niet ingesteld"
+        out.append({**t, "key": f"y:{t['id']}", "kind": "tuya", "source": "tuya", "tech": "Tuya", "alias": "", "room": "", "pin": pin, "pout": pout, "note": note,
+                    "gangs": [{"i": i, "label": "", "entity": None, "touch": False, "relay": False, "on": None} for i in range(rows)]})
     return out
 
 

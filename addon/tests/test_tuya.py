@@ -286,6 +286,44 @@ def test_command_goes_to_the_device_and_a_refused_one_does_not(tmp_path):
     assert not hub.command("hasp/x/command", "1")
 
 
+def test_other_device_types_get_their_own_ports(tmp_path):
+    relay = {"services": [{"properties": [{"abilityId": 1, "code": "switch_1", "accessMode": "rw", "typeSpec": {"type": "bool"}}]}]}
+    meter = {"services": [{"properties": [{"abilityId": 9, "code": "power", "accessMode": "ro", "typeSpec": {"type": "value", "unit": "W", "scale": 0, "min": 0, "max": 9999}}]}]}
+
+    async def go():
+        r = Rig(tmp_path)
+        hub = TuyaHub(tmp_path, r.engine)
+        a = hub.add({"name": "Relais", "model": json.dumps(relay)})
+        b = hub.add({"name": "Meter", "model": json.dumps(meter)})
+        c = hub.add({"name": "Onbekend"})
+        hub._on_dps(a, {"1": True})
+        hub._on_dps(b, {"9": 120})
+        hub._on_dps(c, {"5": 1})
+        blocks = {x["key"]: x for x in schema.view(r.model, r.engine.snapshot())["blocks"]}
+        assert [p["name"] for p in blocks[f"y:{a}"]["pin"]] == ["switch_1"] and not blocks[f"y:{a}"]["pout"]
+        assert [p["name"] for p in blocks[f"y:{b}"]["pout"]] == ["power"] and not blocks[f"y:{b}"]["pin"]
+        assert [p["name"] for p in blocks[f"y:{c}"]["pout"]] == ["Datapunt 5"] and not blocks[f"y:{c}"]["pin"]  # zonder datamodel: alleen lezen
+    asyncio.run(go())
+
+
+def test_set_from_the_side_panel_refuses_what_it_should(tmp_path):
+    hub, did = hub_with(tmp_path)
+    with pytest.raises(ModelError, match="verbinding"):
+        hub.set(did, "115", "20")
+    with pytest.raises(ModelError, match="toegestaan"):
+        hub.set(did, "115", "99")
+    with pytest.raises(ModelError, match="toegestaan"):
+        hub.set(did, "102", "230")
+    with pytest.raises(ModelError, match="onbekend"):
+        hub.set("nope", "115", "20")
+
+
+def test_a_writable_point_without_limits_is_not_offered_as_control(tmp_path):
+    model = {"services": [{"properties": [{"abilityId": 3, "code": "x", "accessMode": "rw", "typeSpec": {"type": "value"}}]}]}
+    hub, did = hub_with(tmp_path, {**CHARGER, "profile": "", "model": json.dumps(model)}, {"3": 1})
+    assert not hub.status()[0]["points"][0]["rw"]
+
+
 def test_scaled_number_is_converted_back():
     assert TuyaHub.convert({"access": "rw", "type": "value", "scale": 1, "min": 0, "max": 1000}, "23.5") == 235
 
@@ -365,8 +403,11 @@ def test_block_on_the_schema_shows_the_main_values_and_no_key(tmp_path):
         view = schema.view(r.model, r.engine.snapshot())
         b = next(x for x in view["blocks"] if x["key"] == f"y:{did}")
         assert b["kind"] == "tuya" and b["page"] == "p1"
-        assert [g["label"] for g in b["gangs"]] == ["Status: connect", "Laden: WaitOperation", "Laadstroom: 16 A"]
-        assert not any(g["touch"] or g["relay"] for g in b["gangs"])
+        assert [p["name"] for p in b["pin"]] == ["Laadstroom", "RFID verplicht", "Laden"]  # links: instellen
+        assert [p["name"] for p in b["pout"]] == ["Energie laatste beurt", "Status", "Spanning L1", "Datapunt 999"]  # rechts: meldingen
+        assert b["pout"][2]["value"] == 236.3 and b["pout"][2]["unit"] == "V"
+        assert len(b["gangs"]) == 4 and not any(g["touch"] or g["relay"] for g in b["gangs"])  # zo hoog als de langste kant
+        assert "Softwareversie" not in [p["name"] for p in b["pout"]] and "Hardwareversie" not in [p["name"] for p in b["pout"]]  # diagnose: alleen de zijbalk
         assert KEY.decode() not in json.dumps(view) and KEY.decode() not in json.dumps(r.engine.snapshot())
         assert page["blocks"]
         assert hub.remove(did)

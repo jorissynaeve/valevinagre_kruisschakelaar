@@ -402,6 +402,12 @@ async def tuya_put(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def tuya_set(request: web.Request) -> web.Response:
+    b = await _body(request)
+    _tuya(request).set(request.match_info["did"], str(b.get("dp")), str(b.get("value")))
+    return web.json_response({"ok": True})
+
+
 async def tuya_delete(request: web.Request) -> web.Response:
     ok = _tuya(request).remove(request.match_info["did"])
     return web.json_response({"ok": ok}, status=200 if ok else 404)
@@ -627,6 +633,7 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/tuya", tuya_post)
     r.add_put("/api/tuya/{did}", tuya_put)
     r.add_delete("/api/tuya/{did}", tuya_delete)
+    r.add_post("/api/tuya/{did}/set", tuya_set)
     r.add_put("/api/schema/pages", schema_pages)
     r.add_post("/api/schema/wire", schema_wire)
     r.add_post("/api/schema/lamp", schema_lamp)

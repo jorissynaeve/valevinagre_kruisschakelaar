@@ -143,7 +143,7 @@ Zonder de add-on of HA doen de knoppen niets; de lampen zelf blijven werken. In 
 ## Tuya rechtstreeks (zonder HACS, LocalTuya of cloud)
 
 *+ Module → Tuya* op het schema zet een Tuya-blok op de pagina. Vul in de zijbalk device-id, IP-adres en local key in. Het protocol (3.3, 3.4 of 3.5) zoekt de add-on zelf. Het blok
-toont de belangrijkste waarden; de zijbalk alle datapunten. De
+toont per toesteltype zijn eigen poorten: links wat je kunt instellen, rechts wat het toestel meldt, met de huidige waarde. Bedienen doe je onder *Bedienen* in de zijbalk; aansluiten met draden kan nog niet. De
 entiteiten komen via MQTT in HA, dus de Mosquitto-broker en de MQTT-integratie zijn nodig.
 
 * **Local key**: Tuya IoT Platform → API Explorer → *Query Device Details* (`local_key`). Ze verandert als je het toestel opnieuw koppelt. Daarna is

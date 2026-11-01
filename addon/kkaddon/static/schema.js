@@ -16,7 +16,7 @@ const SC = {
   reveal: null, // blok dat bij de volgende tekening in beeld moet komen
 };
 const SC_HEAD = 42, SC_ROW = 24, SC_FOOT = 10; // dezelfde maten als de automatische indeling in schema.py
-const SW_W = 250, LAMP_W = 340;
+const SW_W = 250, LAMP_W = 340, TUYA_W = 420;
 const SC_GRID = 10;
 const clampN = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const SC_WIRES = false; // voorlopig geen lijnen: elke verbinding is een verwijzing, ook binnen een ruimte
@@ -24,7 +24,7 @@ const SC_MARGIN = 200; // links van x=0: de verwijzingen en draden aan de touch-
 
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
-const scW = (b) => (b.kind === 'lamp' ? LAMP_W : SW_W);
+const scW = (b) => (b.kind === 'lamp' ? LAMP_W : b.kind === 'tuya' ? TUYA_W : SW_W);
 const scRows = (b) => (b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
 const scH = (b) => SC_HEAD + scRows(b) * SC_ROW + SC_FOOT;
 const rowY = (b, i) => b.y + SC_HEAD + i * SC_ROW + SC_ROW / 2;
@@ -140,6 +140,24 @@ function scLamp(b) {
     <text class="bkbadge ${badge === 'actief' ? 'ok' : badge === 'geblokkeerd' ? 'bad' : ''}" x="${b.x + LAMP_W - 12}" y="${b.y + 18}" text-anchor="end">${badge}</text>
     ${b.inputs.map((c, i) => row(c, i, 'in')).join('')}${free('in', b.inputs.length)}
     ${b.outputs.map((c, i) => row(c, i, 'out')).join('')}${free('out', b.outputs.length)}${scCtlRow(b)}${disRow}</g>`;
+}
+
+const scTyValue = (p) => `${p.value === true ? 'aan' : p.value === false ? 'uit' : p.value}${p.unit ? ` ${p.unit}` : ''}`;
+
+function scTuya(b) { // links wat je kunt instellen, rechts wat het toestel meldt. Nog geen draden: de poorten tonen alleen wat er is
+  const row = (p, i, left) => {
+    const y = rowY(b, i), x = left ? b.x + 11 : b.x + TUYA_W - 11;
+    const tip = `${p.name}: ${scTyValue(p)}${left ? ' (instellen in de zijbalk)' : ''}`;
+    return `<circle class="ptv ${left ? 'tou' : 'rel'}" cx="${left ? b.x : b.x + TUYA_W}" cy="${y}" r="5"><title>${esc(tip)}</title></circle>
+      <text class="bkt" x="${x}" y="${y + 4}" ${left ? '' : 'text-anchor="end"'}><title>${esc(tip)}</title>${esc(scCut(p.name, left ? 17 : 21))} <tspan class="tyv">${esc(scCut(scTyValue(p), left ? 14 : 12))}</tspan></text>`;
+  };
+  return `<g class="bk ty t-tuya ${SC.sel === b.key ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
+    <rect class="bkbox" x="${b.x}" y="${b.y}" width="${TUYA_W}" height="${scH(b)}" rx="8"/>
+    <rect class="bkhead" x="${b.x}" y="${b.y}" width="${TUYA_W}" height="${SC_HEAD}" rx="8"/>
+    <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 44))}</text>
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">${esc(SC_TYPE_NL.tuya)}${b.online ? '' : ' · offline'}</text>
+    ${b.note ? `<text class="bkt" x="${b.x + TUYA_W / 2}" y="${rowY(b, 0) + 4}" text-anchor="middle">${esc(b.note)}</text>` : ''}
+    ${b.pin.map((p, i) => row(p, i, true)).join('')}${b.pout.map((p, i) => row(p, i, false)).join('')}</g>`;
 }
 
 function scTimer(b) {
@@ -310,9 +328,18 @@ function scTuyaState(b) {
 
 function scTuyaPanel(b, props) {
   const opt = (v, cur, text) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(text)}</option>`;
-  const rows = b.points.filter((p) => !p.hide).map((p) => `<tr><td>${esc(p.name)}${p.rw ? ' <span class="badge">instelbaar</span>' : ''}</td><td>${esc(p.value)}${p.unit ? ` ${esc(p.unit)}` : ''}</td><td class="sub">${esc(p.dp)}</td></tr>`).join('');
+  const rows = b.points.filter((p) => !p.hide && !p.rw).map((p) => `<tr><td>${esc(p.name)}</td><td>${esc(scTyValue(p))}</td><td class="sub">${esc(p.dp)}</td></tr>`).join('');
+  const control = (p) => {
+    const attr = `data-tyset="${esc(p.dp)}"`;
+    if (p.type === 'bool') return `<select ${attr}>${opt('ON', p.value ? 'ON' : 'OFF', 'aan')}${opt('OFF', p.value ? 'ON' : 'OFF', 'uit')}</select>`;
+    if (p.type === 'enum') return `<select ${attr}>${p.options.map((o) => opt(o, p.value, o)).join('')}</select>`;
+    return `<input type="number" ${attr} min="${p.min}" max="${p.max}" step="${p.step}" value="${esc(p.value)}">`;
+  };
+  const controls = b.points.filter((p) => p.rw && !p.hide).map((p) => `<label>${esc(p.name)}${p.unit ? ` (${esc(p.unit)})` : ''}</label>${control(p)}`).join('');
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scTuyaState(b))}</span></div>
     ${props}
+    ${controls ? `<h2>Bedienen</h2>${controls}<div class="sub">Een wijziging gaat meteen naar het toestel.</div>` : ''}
+    <h2>Toestel</h2>
     <label>Device-id</label><input type="text" maxlength="40" data-tyfield="device_id" spellcheck="false" autocomplete="off" value="${esc(b.device_id)}">
     <label>IP-adres</label><input type="text" maxlength="253" data-tyfield="host" spellcheck="false" autocomplete="off" placeholder="192.168.8.26" value="${esc(b.host)}">
     <label>Local key</label><input type="password" maxlength="16" data-tyfield="key" autocomplete="new-password" placeholder="${b.has_key ? 'ingesteld, leeg laten om te behouden' : '16 tekens'}">
@@ -321,7 +348,7 @@ function scTuyaPanel(b, props) {
     <label>Profiel</label><select data-tyfield="profile">${opt('', b.profile, b.has_model ? 'eigen datamodel' : 'geen')}${Object.keys(b.profiles).map((k) => opt(k, b.profile, b.profiles[k])).join('')}</select>
     <label>Datamodel plakken</label><textarea rows="8" style="flex:none;min-height:150px" spellcheck="false" data-tyfield="model" placeholder="Antwoord van Query Things Data Model uit de Tuya API Explorer"></textarea>
     <div class="sub">Het datamodel zegt wat elk datapunt betekent en wat instelbaar is. Een profiel is hetzelfde, maar al ingebouwd en met nette namen. Zonder een van beide zijn de datapunten alleen te lezen, onder hun nummer. Veel toestellen laten maar één verbinding toe: haal het toestel eerst uit LocalTuya en sluit de SmartLife-app.</div>
-    ${rows ? `<h2>Datapunten</h2><div class="scroll"><table><tbody>${rows}</tbody></table></div>` : ''}
+    ${rows ? `<h2>Waarden</h2><div class="scroll"><table><tbody>${rows}</tbody></table></div>` : ''}
     <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="deltuya" data-id="${esc(b.id)}">Toestel verwijderen</button></div>`;
 }
 
@@ -468,7 +495,7 @@ function scInner(list) {
   }
   const shown = new Set(list.map((b) => b.key));
   const wires = !SC_WIRES ? '' : conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
-  const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b) : scSwitch(b, tags))).join('');
+  const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b) : b.kind === 'tuya' ? scTuya(b) : scSwitch(b, tags))).join('');
   return `<g class="wires">${wires}</g>${blocks}<path id="sctemp" class="wire temp"/>`; // draden onder de blokken: anders liggen ze over de poorten
 }
 
@@ -1263,6 +1290,18 @@ document.addEventListener('change', (ev) => {
     } else patch = { [d.spfield]: d.spfield === 'enabled' ? t.checked : d.spfield === 'start' ? t.value : +t.value };
     t.blur();
     act(() => scSaveSprinkler(b, patch))();
+  }
+  if (t.dataset && t.dataset.tyset && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'tuya') {
+    const b = scBlock(SC.sel), dp = t.dataset.tyset, value = t.value;
+    t.blur();
+    act(async () => {
+      try {
+        await api('POST', `tuya/${b.id}/set`, { dp, value });
+      } finally {
+        SC.force = true;
+        await refresh();
+      }
+    })();
   }
   if (t.dataset && t.dataset.tyfield && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'tuya') {
     const b = scBlock(SC.sel);

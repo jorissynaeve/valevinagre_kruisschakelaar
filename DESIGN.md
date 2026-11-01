@@ -519,4 +519,4 @@ Code: `tuya.py` (protocol en verbinding), `tuyahub.py` (toestellen, profielen, e
 ### Niet getest / open
 - Getest tegen een nagebootst toestel voor 3.3, 3.4 en 3.5, en lezen tegen de echte lader (3.5). De paden voor 3.3 en 3.4, en het `data unvalid`-geval, zijn niet op een echt toestel geprobeerd. 3.1 wordt niet ondersteund.
 - Geen UDP-ontdekking en geen massa-import van sleutels: elk toestel wordt met de hand toegevoegd.
-- Het blok heeft geen poorten: de entiteiten zijn gewone HA-entiteiten en kunnen zo via een extern apparaat of kring meedoen (nog met de omweg via HA).
+- De poorten op het blok tonen alleen wat er is: links instelbaar, rechts meldingen, diagnose alleen in de zijbalk. Draden naar en van andere blokken kunnen nog niet: daarvoor ontbreekt een vergelijker (getal naar 0/1), en het sturen van een toestel vanuit logica heeft een eigen veiligheidsregeling nodig (een lader mag niet zomaar starten). De entiteiten kunnen wel via een extern apparaat of kring meedoen (met de omweg via HA).
