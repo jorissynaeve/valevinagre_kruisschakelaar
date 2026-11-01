@@ -483,3 +483,22 @@ Code: `panel.py` (configuratie en schermtaal, puur), `panelhub.py` (UDP, HA-stan
 - `default_entity_id` is niet getest tegen een echte HA: geeft die het relais een andere entiteit, dan werkt een draad naar een lamp niet (de panel en zijn eigen relaisknoppen wel).
 - Niet getest: de volledige keten op de echte panel met de echte TFT (of de pagina's er precies zo uitzien als via AppDaemon), `autoexec.be` na een herstart, en een lange periode met verloren pakketten.
 - Niet ondersteund: kaarttypes thermostaat/media/alarm/ontgrendelen/grafiek, detailpagina's (lange druk), `cover`-schuiven, dimmen van lichten, `service:`-items, de update van de TFT.
+
+## 27. Schermen met openHASP
+
+Code: `hasp.py` (ontwerp en aanrakingen, puur), `hasphub.py` (MQTT, HA-standen, status), `model.py` (`screens`), blok `h:<id>` (`schema.py`, `static/schema.js`).
+
+- **Wat blijft**: de openHASP-firmware op de ESP32-S3-schermen (4848S040) en Mosquitto. Niets opnieuw flashen; de add-on heeft de broker toch al nodig voor zijn entiteiten.
+- **Wat vervangt**: de pyscript-app `openhasp_vvscherm` met zijn module `openhasp`. Die zat niet in de officiële openHASP-integratie; `sensor.schermNN` kwam uit `state.set`.
+- **Eén eigenaar per scherm**: een scherm zonder blok raakt de hub niet aan, zodat pyscript en de add-on naast elkaar kunnen draaien tot een scherm wordt overgezet. Dezelfde firmwarenaam op twee blokken wordt geweigerd.
+- **Merkteken**: de LWT is retained, dus elke herstart van de add-on ziet "online". Wissen en opnieuw sturen zou dan alle schermen laten knipperen. Daarom staat als laatste object een verborgen label (`p0b250`) met de hash van de pagina's en `LAYOUT_VERSION`. Bij "online" vraagt de hub de tekst op: gelijk is klaar, anders (of geen antwoord binnen 3 s) wordt het ontwerp gestuurd. Faalt die vraag, dan knippert het scherm hooguit; het mist nooit zijn ontwerp. Wie de indeling in `hasp.py` wijzigt, hoogt `LAYOUT_VERSION` op.
+- **Status uit de LWT**: de broker meldt een weggevallen scherm. De oude koppeling telde op `sensor.time`, die in dit huis niet bestaat, en bleef daardoor altijd `up` zeggen.
+- **Navigatie via de hub**, net als de pyscript-app: dat werkt op deze schermen. `action` op het scherm zou de 12 firmwarepagina's rondgaan, ook de lege.
+- **Wakker maken**: de eerste aanraking op een donker scherm schakelt niets. De volgorde van `state/backlight` en het `down`-event is niet bekend, daarom ook een marge van 0,7 s na een melding "aan".
+- **Kleuren** gaan elke 120 s opnieuw, omdat de brug met QoS 0 publiceert.
+
+### Niet getest / open
+- Getest: de hub tegen nagebootste schermberichten en een nagebootste HA, en de zijbalk in een browser. **Nog niet op een echt scherm of met een echte broker.**
+- Af te lezen uit de pyscript-code en bewezen op deze schermen: `jsonl`, `clearpage all`, `idle off`, `page`, `pXbY.bg_color`, `backlight off`, de events op `state/pXbY`, `LWT`, `sensors.uptime`.
+- Aannames, te controleren bij het overzetten van `scherm03`: antwoord op `p0b250.text` zonder inhoud, `hidden` op een label, `backlight on` als commando, antwoord op `backlight` zonder inhoud, en of de service-gebruiker van de add-on op de broker bij `hasp/#` mag.
+- Niet ondersteund: de poort (komt als `script.*` of `button.*` in HA; het model en de hub kennen die domeinen, de keuzelijst nog niet), camera's, de Pool-pagina, dimmen.

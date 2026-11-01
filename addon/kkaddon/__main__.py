@@ -15,6 +15,7 @@ from aiohttp import web
 from . import __version__, settings as cfg
 from .engine import Engine
 from .habridge import HaBridge
+from .hasphub import HaspHub
 from .model import Model
 from .mqttbridge import MqttBridge
 from .panelhub import PanelHub
@@ -44,6 +45,10 @@ async def run() -> None:
     mqtt.extras.append(panels)
     panels.changed = mqtt.resync
     await panels.start()
+    screens = HaspHub(ha, engine)
+    mqtt.extras.append(screens)
+    screens.changed = mqtt.resync
+    screens.publish = mqtt.publish
     ctx = Ctx(s, engine, transport, mqtt, ha, panels)
     runner = web.AppRunner(make_app(ctx), access_log=None)
     await runner.setup()
@@ -63,12 +68,13 @@ async def run() -> None:
             engine.tick()
             await asyncio.sleep(0.01)
 
-    tasks = [asyncio.create_task(ticker()), asyncio.create_task(mqtt.run()), asyncio.create_task(ha.run()), asyncio.create_task(panels.run())]
+    tasks = [asyncio.create_task(ticker()), asyncio.create_task(mqtt.run()), asyncio.create_task(ha.run()), asyncio.create_task(panels.run()), asyncio.create_task(screens.run())]
     await stop.wait()
     log.info("afsluiten")
     for t in tasks:
         t.cancel()
     panels.close()
+    screens.close()
     engine.close()  # zet het leren uit en bewaart de staat
     await asyncio.sleep(0.2)  # laat de Learn(uit)-frames nog weggaan
     transport.close()

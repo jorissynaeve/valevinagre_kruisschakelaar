@@ -102,6 +102,19 @@ switch:
       - switch.turn_off: klep_1
 ```
 
+## Scherm (openHASP)
+
+*+ Module → Toestellen → Scherm* zet een aanraakscherm met openHASP-firmware als blok op het schema. De add-on maakt dan de pagina's en bedient de knoppen; pyscript en andere software op Home Assistant zijn er niet voor nodig. De firmware op het scherm blijft, en het scherm praat via de Mosquitto-broker die de add-on ook zelf gebruikt.
+
+* **Eén eigenaar**: haal een scherm eerst uit de pyscript-config (en herstart pyscript) voor je het hier koppelt, anders sturen beide tegelijk.
+* **Naam op de firmware**: bv. `scherm01`. Schermen die de broker kent, staan als suggestie in de lijst.
+* **Pagina's**: elke pagina heeft een titel en tot 4 knoppen die een entiteit uit HA bedienen. Met twee pagina's of meer komen er knoppen onderaan: vorige, eerste, volgende.
+* **Kleur**: geel is aan, lichtgrijs is uit en donkergrijs is een stand die niet bekend is. Knoppen naar een entiteit die HA niet kent, worden in de zijbalk opgesomd.
+* **Donker**: na de ingestelde tijd gaat het scherm uit. De eerste aanraking maakt het alleen wakker en schakelt niets.
+* **Wijzigen**: een andere indeling wist het scherm en stuurt het ontwerp opnieuw (ongeveer 5 seconden). Een herstart van de add-on laat het scherm met rust.
+
+Zonder de add-on of HA doen de knoppen niets; de lampen zelf blijven werken. In HA verschijnt per scherm een verbindingssensor.
+
 ## NSPanel
 
 *+ Module → Toestellen → NSPanel* zet het scherm met twee knoppen (Sonoff NSPanel) als blok op het schema. De panel praat dan rechtstreeks met deze add-on, zonder MQTT en zonder AppDaemon. De Tasmota-firmware en de TFT van nspanel-lovelace-ui blijven op de panel; alleen het brein verhuist. Alles staat in de zijbalk van het blok en zit in de back-up (*Exporteer configuratie*). Staat er een wachtwoord in je YAML, zoals bij een wifi-QR-code, dan staat dat dus ook in die export.

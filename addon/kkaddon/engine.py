@@ -169,6 +169,7 @@ class Engine:
         self._at(HOLD_EVERY, self._hold_tick)
         self.sprinklers = Sprinklers(self)
         self.panel_view: Callable[[], list[dict]] | None = None  # status van de panelen (panelhub.py)
+        self.screen_view: Callable[[], list[dict]] | None = None  # status van de schermen (hasphub.py)
         self._at(SPRINKLER_TICK, self._sprinkler_tick)
 
     # ------------------------------------------------------------ klok en timers
@@ -815,6 +816,8 @@ class Engine:
             "sprinklers": [{"id": k, **s, "status": self.sprinklers.status(k)} for k, s in self.model.sprinklers.items()],
             "panels": self.panel_view() if self.panel_view else [{"id": k, **p, "online": False, "error": "", "greeted": False, "last_seen": None, "relays": [None, None],
                                                                   "temperature": None, "rssi": None} for k, p in self.model.panels.items()],
+            "screens": self.screen_view() if self.screen_view else [{"id": k, **s, "online": False, "phase": "idle", "missing": [], "uptime": None, "received": 0, "plates": []}
+                                                                    for k, s in self.model.screens.items()],
             "clock": self._clock_view(),
             "stats": dict(self.stats),
         }

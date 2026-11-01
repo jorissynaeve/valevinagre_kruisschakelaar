@@ -71,6 +71,13 @@ class MqttBridge:
         """Voor andere onderdelen: er is iets nieuws om te publiceren."""
         self._resync.set()
 
+    def publish(self, topic: str, payload: str) -> bool:
+        """Voor andere onderdelen: een gewoon bericht. False zonder verbinding: dan is het niet verstuurd."""
+        if not self.connected:
+            return False
+        self._put(topic, payload, False)
+        return True
+
     def _put(self, topic: str, payload: str, retain: bool) -> None:
         try:
             self._queue.put_nowait((topic, payload, retain))

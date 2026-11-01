@@ -37,6 +37,9 @@ from typing import Callable
 
 from .logic import BOOL, MODULE_TYPES, NUMBER, SPRINKLER_INPUTS, TIME, disable_ref
 from .logic import minutes as _minutes
+from .hasp import DOMAINS as SCREEN_DOMAINS
+from .hasp import MAX_BUTTONS as HASP_MAX_BUTTONS
+from .hasp import MAX_PAGES as HASP_MAX_PAGES
 from .panel import PanelError
 from .panel import validate as _validate_panel
 from .proto import MAX_GANGS, MAX_IND, MAX_RELAYS, MAX_TRIG, MODE_BY_NAME, VIRTUAL_MAX, VIRTUAL_MIN, is_virtual
@@ -54,6 +57,12 @@ FORMAT_VERSION = 1
 MAX_PANELS = 8
 MAX_PANEL_YAML = 100_000
 PANEL_HOST_RE = re.compile(r"[A-Za-z0-9.\-]{1,253}")
+MAX_SCREENS = 8
+MAX_SCREEN_PAGES = HASP_MAX_PAGES
+MAX_SCREEN_BUTTONS = HASP_MAX_BUTTONS
+MAX_SCREEN_TIMEOUT = 3600
+SCREEN_PLATE_RE = re.compile(r"[A-Za-z0-9_\-]{1,32}")  # komt in een MQTT-topic: geen / + of #
+SCREEN_ENTITY_RE = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
 
 
 class ModelError(ValueError):
@@ -299,6 +308,49 @@ def _panels(raw, strict: bool) -> dict[str, dict]:
     return {k: _panel(k, v, strict) for k, v in raw.items()}
 
 
+def _screen(sid, v) -> dict:
+    if not isinstance(sid, str) or not re.fullmatch(r"[a-z0-9_]{1,40}", sid) or not isinstance(v, dict):
+        raise ModelError(f"scherm: ongeldig id {sid!r}")
+    plate = v.get("plate") or ""
+    if not isinstance(plate, str) or (plate.strip() and not SCREEN_PLATE_RE.fullmatch(plate.strip())):
+        raise ModelError("scherm: de naam op de firmware mag alleen letters, cijfers, - en _ bevatten")
+    pages = v.get("pages")
+    if not isinstance(pages, list) or not 1 <= len(pages) <= MAX_SCREEN_PAGES:
+        raise ModelError(f"scherm: 1 tot {MAX_SCREEN_PAGES} pagina's")
+    clean = []
+    for page in pages:
+        buttons = page.get("buttons") if isinstance(page, dict) else None
+        if not isinstance(buttons, list) or len(buttons) > MAX_SCREEN_BUTTONS:
+            raise ModelError(f"scherm: maximaal {MAX_SCREEN_BUTTONS} knoppen per pagina")
+        row = []
+        for b in buttons:
+            if not isinstance(b, dict):
+                raise ModelError("scherm: ongeldige knop")
+            ent = b.get("entity") or None
+            if ent is not None and (not isinstance(ent, str) or not SCREEN_ENTITY_RE.fullmatch(ent) or ent.split(".")[0] not in SCREEN_DOMAINS):
+                raise ModelError(f"scherm: een knop kan {ent!r} niet bedienen")
+            row.append({"label": _name(b.get("label"), "knop.label"), "entity": ent})
+        clean.append({"title": _name(page.get("title"), "pagina.title"), "buttons": row})
+    return {"name": _name(v.get("name"), "scherm.name") or sid, "plate": plate.strip(), "timeout": _int(v.get("timeout", 30), 0, MAX_SCREEN_TIMEOUT, "scherm.timeout"), "pages": clean}
+
+
+def _screens(raw) -> dict[str, dict]:
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict) or len(raw) > MAX_SCREENS:
+        raise ModelError(f"schermen: maximaal {MAX_SCREENS}")
+    out = {k: _screen(k, v) for k, v in raw.items()}
+    _unique_plates(out)
+    return out
+
+
+def _unique_plates(screens: dict[str, dict]) -> None:
+    plates = [s["plate"] for s in screens.values() if s["plate"]]
+    for p in plates:
+        if plates.count(p) > 1:
+            raise ModelError(f"scherm {p} staat al op een ander blok: een scherm heeft één eigenaar")
+
+
 def _sprinklers(raw) -> dict[str, dict]:
     if raw in (None, {}):
         return {}
@@ -392,7 +444,7 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]], sprinkle
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
 
 
 def _switch_gangs(raw) -> list[dict]:
@@ -563,6 +615,7 @@ class Model:
         self.modules: dict[str, dict] = {}  # tijd- en logicamodules: id -> {type, name, inputs, value}
         self.sprinklers: dict[str, dict] = {}  # sprinklers: id -> {name, enabled, start, cycles, wait, refresh, days, inputs, zones}
         self.panels: dict[str, dict] = {}  # NSPanels: id -> {name, host, yaml}
+        self.screens: dict[str, dict] = {}  # schermen met openHASP: id -> {name, plate, timeout, pages}
         self.rev = 0
         self._listeners: list[Callable[[], None]] = []
         if self.path and self.path.exists():
@@ -615,6 +668,8 @@ class Model:
             d["sprinklers"] = self.sprinklers
         if self.panels:
             d["panels"] = self.panels
+        if self.screens:
+            d["screens"] = self.screens
         if self.schema["pages"] or self.schema["switches"] or self.schema["names"]:
             d["schema"] = self.schema
         return d
@@ -658,6 +713,7 @@ class Model:
         modules = _modules(d.get("modules"))
         sprinklers = _sprinklers(d.get("sprinklers"))
         panels = _panels(d.get("panels"), strict=save)
+        screens = _screens(d.get("screens"))
         if save:  # bij het opstarten nooit weigeren, bij een import wel
             _conflicts(groups, virtual, sprinklers)
             _check_modules(modules, timers)
@@ -667,7 +723,7 @@ class Model:
                     if g.get(key, "").startswith("m:"):
                         _check_disable(g[key], modules, timers)
         self.nodes, self.lights, self.follow, self.virtual, self.plan, self.groups, self.schema, self.timers = nodes, lights, follow, virtual, plan, groups, schema, timers
-        self.modules, self.sprinklers, self.panels = modules, sprinklers, panels
+        self.modules, self.sprinklers, self.panels, self.screens = modules, sprinklers, panels, screens
         if save:
             self._changed()
 
@@ -832,6 +888,41 @@ class Model:
             return False
         self.panels = {k: v for k, v in self.panels.items() if k != pid}
         self.schema = {**self.schema, "blocks": {k: v for k, v in self.schema["blocks"].items() if k != f"p:{pid}"}}
+        self._changed()
+        return True
+
+    def add_screen(self, name=None, plate="") -> str:
+        if len(self.screens) >= MAX_SCREENS:
+            raise ModelError(f"schermen: maximaal {MAX_SCREENS}")
+        base = _name(name, "name") or "Scherm"
+        slug = re.sub(r"[^a-z0-9_]+", "_", base.lower()).strip("_")[:30] or "scherm"
+        sid, label, n = slug, base, 2
+        while sid in self.screens:
+            sid, label, n = f"{slug}_{n}", f"{base} {n}", n + 1
+        new = {**self.screens, sid: _screen(sid, {"name": label, "plate": plate, "pages": [{"title": label, "buttons": []}]})}
+        _unique_plates(new)
+        self.screens = new
+        self._changed()
+        return sid
+
+    def set_screen(self, sid: str, **fields) -> None:
+        """Alleen wat je meegeeft verandert."""
+        old = self.screens.get(sid)
+        if old is None:
+            raise ModelError("onbekend scherm")
+        unknown = set(fields) - {"name", "plate", "timeout", "pages"}
+        if unknown:
+            raise ModelError(f"scherm: onbekend veld {sorted(unknown)[0]}")
+        new = {**self.screens, sid: _screen(sid, {**old, **fields})}
+        _unique_plates(new)
+        self.screens = new
+        self._changed()
+
+    def remove_screen(self, sid: str) -> bool:
+        if sid not in self.screens:
+            return False
+        self.screens = {k: v for k, v in self.screens.items() if k != sid}
+        self.schema = {**self.schema, "blocks": {k: v for k, v in self.schema["blocks"].items() if k != f"h:{sid}"}}
         self._changed()
         return True
 

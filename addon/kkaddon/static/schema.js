@@ -49,13 +49,13 @@ function scType(b) { // bepaalt de kleur van het blok
   if (b.kind === 'lamp' || b.kind === 'timer') return b.kind;
   if (b.kind === 'module') return b.out === 'bool' ? 'logic' : 'time';
   if (b.kind === 'sprinkler') return 'spr';
-  if (b.kind === 'panel') return 'panel';
+  if (b.kind === 'panel' || b.kind === 'screen') return b.kind;
   if (b.source === 'node') return 'node';
   if (b.source === 'virtual') return 'ext';
   const conns = scConns().filter((x) => x.sw && x.sw.key === b.key);
   return conns.length && conns.every((x) => x.dir === 'out') ? 'box' : 'sw'; // alleen geschakeld, nooit bediend: een relaisbox
 }
-const SC_TYPE_NL = { panel: 'NSPanel', timer: 'Timer', node: 'Node', ext: 'Extern apparaat', box: 'Relaisbox · HA', sw: 'Schakelaar · HA' };
+const SC_TYPE_NL = { panel: 'NSPanel', screen: 'Scherm · openHASP', timer: 'Timer', node: 'Node', ext: 'Extern apparaat', box: 'Relaisbox · HA', sw: 'Schakelaar · HA' };
 const wireSel = (x) => SC.sel && SC.sel.lamp === x.lamp.key && SC.sel.dir === x.dir && SC.sel.i === x.i;
 
 function wirePath(x0, y0, dir0, x1, y1, dir1) { // dir: naar welke kant de poort kijkt (-1 links, 1 rechts)
@@ -267,6 +267,41 @@ function scPanelPanel(b, props) {
     <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="delpanel" data-id="${esc(b.id)}">Paneel verwijderen</button></div>`;
 }
 
+function scScreenState(b) {
+  if (!b.plate) return 'nog niet gekoppeld';
+  if (!b.online) return 'offline';
+  return { query: 'online, controleert ontwerp', push: 'online, stuurt ontwerp', ready: 'online' }[b.phase] || 'online';
+}
+
+function scScreenPanel(b, props) {
+  scLoadEnts();
+  const pages = b.pages.map((p, pi) => `<div class="tmd"><div class="row sp"><b>Pagina ${pi + 1}</b>
+      ${b.pages.length > 1 ? `<button class="btn small danger" type="button" data-sc="hsdelpage" data-k="${esc(b.key)}" data-p="${pi}" title="Pagina weghalen">✕</button>` : ''}</div>
+    <label>Titel</label><input type="text" maxlength="60" data-hstitle="${pi}" value="${esc(p.title)}">
+    ${p.buttons.map((x, i) => `<div class="row sp" style="margin-top:6px"><b>Knop ${i + 1}</b><button class="btn small danger" type="button" data-sc="hsdelbtn" data-k="${esc(b.key)}" data-p="${pi}" data-i="${i}" title="Knop weghalen">✕</button></div>
+      <label>Tekst</label><input type="text" maxlength="60" data-hslabel="${pi}" data-i="${i}" value="${esc(x.label)}">
+      <label>Bedient</label>${scEntSelect(`data-hsent="${pi}" data-i="${i}"`, x.entity, 'niets')}`).join('')}
+    ${p.buttons.length < 4 ? `<div class="row" style="margin-top:6px"><button class="btn small" type="button" data-sc="hsaddbtn" data-k="${esc(b.key)}" data-p="${pi}">+ Knop</button></div>` : ''}</div>`).join('');
+  return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scScreenState(b))}</span>${b.uptime ? `<span class="sub">aan sinds ${esc(b.uptime)}</span>` : ''}</div>
+    ${props}
+    <label>Naam op de firmware</label><input type="text" maxlength="32" data-hsfield="plate" list="hsplates" spellcheck="false" autocomplete="off" placeholder="bv. scherm01" value="${esc(b.plate)}">
+    <datalist id="hsplates">${b.plates.map((p) => `<option value="${esc(p)}"></option>`).join('')}</datalist>
+    <div class="sub">Een scherm heeft één eigenaar. Haal het eerst uit de pyscript-config, anders sturen beide tegelijk.</div>
+    <label>Scherm donker na (seconden, 0 = nooit)</label><input type="number" min="0" max="3600" step="1" data-hsfield="timeout" value="${b.timeout}">
+    ${b.missing.length ? `<div class="sub"><b>Niet in Home Assistant:</b> ${b.missing.map((e) => `<code>${esc(e)}</code>`).join(', ')}. Deze knoppen blijven grijs.</div>` : ''}
+    <h2>Pagina's</h2>${pages}
+    <div class="row" style="margin-top:6px">${b.pages.length < 12 ? `<button class="btn small" type="button" data-sc="hsaddpage" data-k="${esc(b.key)}">+ Pagina</button>` : ''}<button class="btn small danger" type="button" data-sc="delscreen" data-id="${esc(b.id)}">Scherm verwijderen</button></div>`;
+}
+
+async function scSaveScreen(b, patch) {
+  try {
+    await api('PUT', `screens/${b.id}`, patch);
+  } finally {
+    SC.force = true;
+    await refresh();
+  }
+}
+
 const SC_WEEK = ['ma', 'di', 'wo', 'do', 'vr', 'za', 'zo'];
 
 function scSprinklerPanel(b, props) {
@@ -359,7 +394,7 @@ function scModulePanel(b, props) {
 
 // Het menu "+ Module": alles wat je op een pagina kunt zetten, per soort
 const SC_MENU = [
-  ['Toestellen', [['lamp', 'Lamp', 'met touches en relais'], ['switch', 'Schakelaar', 'een toestel uit Home Assistant'], ['panel', 'NSPanel', 'scherm met twee relais']]],
+  ['Toestellen', [['lamp', 'Lamp', 'met touches en relais'], ['switch', 'Schakelaar', 'een toestel uit Home Assistant'], ['panel', 'NSPanel', 'scherm met twee relais'], ['screen', 'Scherm', 'aanraakscherm met openHASP']]],
   ['Tijd', [['timer', 'Timer', 'intervallen per dag, geeft 0 of 1'], ['sunrise', 'Zonsopgang', 'tijd van vandaag'], ['sunset', 'Zonsondergang', 'tijd van vandaag'], ['time', 'Vaste tijd', 'bv. 02:30']]],
   ['Waarden', [['number', 'Getal', 'bv. aantal cycli']]],
   ['Rekenen', [['add', 'Optellen', 'tijd + tijd'], ['sub', 'Aftrekken', 'tijd − tijd']]],
@@ -458,7 +493,7 @@ function scTray() {
     all.sort((a, b) => (!!a.page - !!b.page));
     return `<h2>${title}</h2>${all.map(item).join('') || '<div class="sub">Geen.</div>'}`;
   };
-  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Panelen', 'panel');
+  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Panelen', 'panel') + part('Schermen', 'screen');
 }
 
 function scPanel() {
@@ -471,7 +506,7 @@ function scPanel() {
   const pages = `<label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
   const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'switch' ? b.alias : b.name)}" placeholder="${esc(b.tech)}">
     <div class="sub">Technische naam: <code>${esc(b.tech)}</code></div>${pages}`;
-  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : scSwitchPanel(b, props);
+  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : scSwitchPanel(b, props);
 }
 
 function scConnRow(b, c, i, dir) {
@@ -789,6 +824,7 @@ const SC_ACTIONS = {
     if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
     const r = d.type === 'sprinkler' ? await api('POST', 'sprinklers', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'panel' ? await api('POST', 'panels', { page: SC.page, ...scFreeSpot('module') })
+      : d.type === 'screen' ? await api('POST', 'screens', { page: SC.page, ...scFreeSpot('module') })
       : await api('POST', 'modules', { type: d.type, page: SC.page, ...scFreeSpot('module') });
     SC.sel = SC.reveal = r.key;
     SC.force = true;
@@ -823,6 +859,28 @@ const SC_ACTIONS = {
     if (!confirm('Dit paneel verwijderen? Zijn relais en temperatuur verdwijnen ook uit Home Assistant.')) return;
     await api('DELETE', `panels/${d.id}`);
     delete SC.panelDraft[d.id];
+    SC.sel = null;
+    await refresh();
+  },
+  hsaddpage: (d) => {
+    const b = scBlock(d.k);
+    return scSaveScreen(b, { pages: [...b.pages, { title: `Pagina ${b.pages.length + 1}`, buttons: [] }] });
+  },
+  hsdelpage: (d) => {
+    const b = scBlock(d.k);
+    return scSaveScreen(b, { pages: b.pages.filter((_, i) => i !== +d.p) });
+  },
+  hsaddbtn: (d) => {
+    const b = scBlock(d.k);
+    return scSaveScreen(b, { pages: b.pages.map((p, i) => (i === +d.p ? { ...p, buttons: [...p.buttons, { label: '', entity: null }] } : p)) });
+  },
+  hsdelbtn: (d) => {
+    const b = scBlock(d.k);
+    return scSaveScreen(b, { pages: b.pages.map((p, i) => (i === +d.p ? { ...p, buttons: p.buttons.filter((_, j) => j !== +d.i) } : p)) });
+  },
+  delscreen: async (d) => {
+    if (!confirm('Dit scherm verwijderen? Op het scherm zelf blijft het ontwerp staan tot het opnieuw opstart.')) return;
+    await api('DELETE', `screens/${d.id}`);
     SC.sel = null;
     await refresh();
   },
@@ -1110,6 +1168,7 @@ document.addEventListener('change', (ev) => {
         else if (b.kind === 'module') await api('PUT', `modules/${b.id}`, { name });
         else if (b.kind === 'sprinkler') await api('PUT', `sprinklers/${b.id}`, { name });
         else if (b.kind === 'panel') await api('PUT', `panels/${b.id}`, { name });
+        else if (b.kind === 'screen') await api('PUT', `screens/${b.id}`, { name });
         else if (b.kind === 'timer') await api('PUT', `timers/${b.id}`, { name, days: b.days });
         else if (!name) throw new Error('Een lamp heeft een naam nodig');
         else if (b.source === 'ha') await api('PUT', `groups/${b.id}`, { name });
@@ -1164,6 +1223,21 @@ document.addEventListener('change', (ev) => {
     } else patch = { [d.spfield]: d.spfield === 'enabled' ? t.checked : d.spfield === 'start' ? t.value : +t.value };
     t.blur();
     act(() => scSaveSprinkler(b, patch))();
+  }
+  if (t.dataset && (t.dataset.hsfield || t.dataset.hstitle !== undefined || t.dataset.hslabel !== undefined || t.dataset.hsent !== undefined) && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'screen') {
+    const b = scBlock(SC.sel), d = t.dataset;
+    const button = (pi, patch) => b.pages.map((p, i) => (i === +pi ? { ...p, buttons: p.buttons.map((x, j) => (j === +d.i ? { ...x, ...patch(x) } : x)) } : p));
+    let patch;
+    if (d.hsfield) patch = { [d.hsfield]: d.hsfield === 'timeout' ? +t.value : t.value.trim() };
+    else if (d.hstitle !== undefined) patch = { pages: b.pages.map((p, i) => (i === +d.hstitle ? { ...p, title: t.value } : p)) };
+    else if (d.hslabel !== undefined) patch = { pages: button(d.hslabel, () => ({ label: t.value })) };
+    else {
+      const entity = t.value.trim() || null;
+      const known = (SC.haEnts || []).find((e) => e.entity_id === entity);
+      patch = { pages: button(d.hsent, (x) => ({ entity, label: x.label || (known ? known.name : '') })) }; // een lege knop krijgt de naam uit HA
+    }
+    t.blur();
+    act(() => scSaveScreen(b, patch))();
   }
   if (t.id === 'scctl') {
     const k = t.dataset.k, source = t.value || null;
