@@ -45,6 +45,7 @@ class MqttBridge:
         self._published: dict[str, str] = {}  # discovery-topic -> payload dat nu retained staat
         self._state_sent: dict[str, str] = {}
         self._resync = asyncio.Event()
+        self.extras: list = []  # andere onderdelen met eigen entiteiten (panelhub.py): discovery(), states(), filters, command()
         engine.subscribe(self._on_event)
 
     # ---- engine -> MQTT
@@ -66,6 +67,10 @@ class MqttBridge:
             if info:
                 self._state(d.t_cfg_problem(e["node"]), "ON" if info.cfg_status in d.CFG_PROBLEM else "OFF")
 
+    def resync(self) -> None:
+        """Voor andere onderdelen: er is iets nieuws om te publiceren."""
+        self._resync.set()
+
     def _put(self, topic: str, payload: str, retain: bool) -> None:
         try:
             self._queue.put_nowait((topic, payload, retain))
@@ -82,14 +87,20 @@ class MqttBridge:
         if force:
             self._published.clear()
             self._state_sent.clear()
-        want = {t: d.encode(c) for t, c in d.configs(self.engine).items()}
+        configs = d.configs(self.engine)
+        for x in self.extras:
+            configs.update(x.discovery())
+        want = {t: d.encode(c) for t, c in configs.items()}
         for t, payload in want.items():
             if self._published.get(t) != payload:
                 self._put(t, payload, True)
         for t in set(self._published) - set(want):
             self._put(t, "", True)  # lege retained payload verwijdert de entiteit in HA
         self._published = want
-        for t, (payload, _) in d.states(self.engine).items():
+        states = d.states(self.engine)
+        for x in self.extras:
+            states.update(x.states())
+        for t, (payload, _) in states.items():
             self._state(t, payload)
 
     # ---- verbinding
@@ -135,6 +146,9 @@ class MqttBridge:
         ) as client:
             await client.publish(d.BRIDGE_STATUS, "online", retain=True)
             await client.subscribe(d.LIGHT_SET_FILTER)
+            for x in self.extras:
+                for f in x.filters:
+                    await client.subscribe(f)
             await client.subscribe(f"{d.DISCOVERY}/status")
             while not self._queue.empty():
                 self._queue.get_nowait()
@@ -172,6 +186,8 @@ class MqttBridge:
                 if payload == "online":  # HA is herstart: alles opnieuw aanbieden
                     log.info("HA is online: discovery opnieuw publiceren")
                     self._sync_discovery(force=True)
+                continue
+            if any(x.command(topic, payload) for x in self.extras):
                 continue
             m = SET_RE.match(topic)
             if not m:

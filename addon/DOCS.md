@@ -101,6 +101,22 @@ switch:
       - switch.turn_off: klep_1
 ```
 
+## NSPanel
+
+Tabblad *Paneel*: het scherm met twee knoppen (Sonoff NSPanel) praat rechtstreeks met deze add-on, zonder MQTT en zonder AppDaemon. De Tasmota-firmware en de TFT van
+nspanel-lovelace-ui blijven op de panel; alleen het brein verhuist.
+
+* **Configuratie**: plak de YAML van `nspanel-lovelace-ui` (het hele `apps.yaml`-blok mag, of alleen `cards:` enzovoort) in het paneel en geef het IP-adres van de panel. Een fout in de YAML wordt bij het opslaan geweigerd, en de vorige config blijft.
+* **Ondersteund**: de kaarten `cardGrid`, `cardEntities`, `cardQR` en `cardPower`, verborgen kaarten (`hiddenCards`, `navigate.<key>`), `iText`, `delete`, de screensaver met weer en voorspelling (`weather.*` of een sensor met `forecast`), statuspictogrammen, tijd, datum en helderheid. Namen, kleuren en waarden mogen een Jinja-sjabloon zijn (`{{ ... }}`): de add-on laat HA ze uitrekenen en volgt de wijzigingen.
+  Schakelen: `switch`, `light`, `fan`, `input_boolean`, `automation` (aan/uit en wisselen), `scene`, `script`, `button`, `lock`, `number`. Een ander kaarttype (thermostaat, media, alarm, …), de detailpagina's en de lange druk worden nog niet ondersteund.
+* **Pictogrammen**: een selectie (±100) uit het lettertype van het scherm. Een onbekende naam geeft een uitroepteken. Extra namen kun je zetten in `panel_icons.json` in de datamap: `{"naam": ""}` (de tekens uit `icon_mapping.py` van nspanel-lovelace-ui).
+* **Relais en temperatuur** komen als apparaat in Home Assistant (via MQTT-discovery): *Relais 1*, *Relais 2*, *Temperatuur*, en een Wifi-signaal. De knoppen op de panel schakelen de relais zelf, ook als HA of de add-on weg is.
+  Let op: de entiteit van de temperatuur heet voortaan bv. `sensor.nspanel_1_temperatuur`. Zet die in je `screensaver`-config in plaats van `sensor.tasmota_analog_temperature1`.
+* **Op de panel zetten**: onderaan het tabblad staat hoe (script `huisconfig.be` met het adres van deze add-on, uploaden, één regel in `autoexec.be`). Zet de AppDaemon-app eerst uit.
+  Terugdraaien kan altijd: de regel weghalen en herstarten.
+* **Netwerk**: UDP, poort 47480 op de add-on en 47481 op de panel. Het verkeer is niet versleuteld en de add-on kijkt alleen naar het IP-adres van de panel; houd het op een vertrouwd LAN.
+  Een pakket kan verloren gaan: de add-on stuurt de huidige pagina daarom elke twee minuten opnieuw, en een stand die verandert meteen.
+
 ## Een licht instellen
 
 1. Tabblad *Schema* → klik op de node en kies bij een gang *Als lamp toevoegen*, met een naam.

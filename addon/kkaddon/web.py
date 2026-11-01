@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 
 from aiohttp import WSMsgType, web
@@ -20,15 +21,15 @@ STATIC = Path(__file__).parent / "static"
 CTX = web.AppKey("ctx", object)
 INGRESS_PROXY = {"172.30.32.2", "127.0.0.1", "::1"}
 # Events die de pagina moet kennen; de rest (bv. losse commando-statussen) is ruis.
-PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler"}
+PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel"}
 
 
 class Ctx:
     """Alles wat de handlers nodig hebben."""
 
-    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None) -> None:
+    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None) -> None:
         self.settings, self.engine, self.model = settings, engine, engine.model
-        self.transport, self.mqtt, self.ha = transport, mqtt, ha
+        self.transport, self.mqtt, self.ha, self.panels = transport, mqtt, ha, panels
         self.clients: set[web.WebSocketResponse] = set()
         engine.subscribe(self._on_event)
 
@@ -336,6 +337,61 @@ async def sprinkler_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
+def _panels(request: web.Request):
+    hub = request.app[CTX].panels
+    if hub is None:
+        raise ModelError("panelen zijn niet ingeschakeld")
+    return hub
+
+
+async def panels_get(request: web.Request) -> web.Response:
+    return web.json_response({"panels": _panels(request).status(), "udp_port": _panels(request).port})
+
+
+async def panel_post(request: web.Request) -> web.Response:
+    b = await _body(request)
+    try:
+        pid = _panels(request).create(str(b.get("name") or ""), str(b.get("host") or ""), str(b.get("yaml") or ""))
+    except ValueError as e:
+        raise ModelError(str(e))
+    return web.json_response({"ok": True, "id": pid})
+
+
+async def panel_put(request: web.Request) -> web.Response:
+    b = await _body(request)
+    try:
+        _panels(request).update(request.match_info["pid"], b.get("name"), b.get("host"), b.get("yaml"))
+    except KeyError:
+        raise ModelError("onbekend paneel")
+    except ValueError as e:
+        raise ModelError(str(e))
+    return web.json_response({"ok": True})
+
+
+async def panel_delete(request: web.Request) -> web.Response:
+    ok = _panels(request).remove(request.match_info["pid"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
+async def panel_relay(request: web.Request) -> web.Response:
+    b = await _body(request)
+    ok = _panels(request).set_relay(request.match_info["pid"], int(request.match_info["n"]), bool(b.get("on")))
+    if not ok:
+        raise ModelError("onbekend paneel of relais, of het paneel heeft nog geen IP-adres")
+    return web.json_response({"ok": True})
+
+
+async def panel_script(request: web.Request) -> web.Response:
+    """Het Berry-script voor de panel, met het adres van deze add-on erin."""
+    hub = _panels(request).port
+    host = request.query.get("hub", "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9.\-]{1,253}", host):
+        raise ModelError("geef het IP-adres van Home Assistant mee (?hub=192.168.x.y)")
+    text = (Path(__file__).parent / "berry" / "huisconfig.be").read_text(encoding="utf-8")
+    text = text.replace("@HUB_HOST@", host).replace("@HUB_PORT@", str(hub)).replace("@PANEL_PORT@", str(_panels(request).panel_port))
+    return web.Response(text=text, content_type="text/plain", headers={"Content-Disposition": 'attachment; filename="huisconfig.be"'})
+
+
 async def sprinkler_run(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     op = (await _body(request)).get("op")
@@ -485,7 +541,7 @@ def asset_version() -> str:
 async def index(request: web.Request) -> web.Response:
     v = asset_version()
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    for f in ("style.css", "groups.js", "schema.js", "app.js"):
+    for f in ("style.css", "groups.js", "schema.js", "app.js", "panel.js"):
         html = html.replace(f'static/{f}"', f'static/{f}?v={v}"')
     return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
@@ -526,6 +582,12 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/sprinklers/{sid}", sprinkler_put)
     r.add_delete("/api/sprinklers/{sid}", sprinkler_delete)
     r.add_post("/api/sprinklers/{sid}/run", sprinkler_run)
+    r.add_get("/api/panels", panels_get)
+    r.add_get("/api/panels/script", panel_script)
+    r.add_post("/api/panels", panel_post)
+    r.add_put("/api/panels/{pid}", panel_put)
+    r.add_delete("/api/panels/{pid}", panel_delete)
+    r.add_post("/api/panels/{pid}/relay/{n}", panel_relay)
     r.add_put("/api/schema/pages", schema_pages)
     r.add_post("/api/schema/wire", schema_wire)
     r.add_post("/api/schema/lamp", schema_lamp)

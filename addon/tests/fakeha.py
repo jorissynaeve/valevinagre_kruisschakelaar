@@ -25,17 +25,33 @@ class FakeHa:
         # {"devices": {id: {"name", "area", "platform", "entities": [id | (id, {registry-velden})]}}}
         self.registry = registry
         self.calls: list[tuple[str, str]] = []
+        self.attrs: dict[str, dict] = {}  # attributen per entiteit (naast friendly_name)
+        self.service_calls: list[tuple[str, str, dict]] = []  # (domein, service, data) van elke call_service
+        self.templates: dict[str, object] = {}  # sjabloon -> antwoord
+        self.forecasts: dict[str, list] = {}
+        self.tpl_subs: dict[str, tuple[web.WebSocketResponse, int]] = {}
         self.subs: dict[web.WebSocketResponse, int] = {}
         self.sockets: set[web.WebSocketResponse] = set()
         self.auth_ok = 0
 
     # ---- toestand
 
-    async def set_state(self, entity: str, state: str) -> None:
-        if self.states.get(entity) == state:
+    def _attrs(self, entity: str) -> dict:
+        return {"friendly_name": self.names.get(entity, entity), **self.attrs.get(entity, {})}
+
+    async def push_template(self, text: str, value: object) -> None:
+        self.templates[text] = value
+        sub = self.tpl_subs.get(text)
+        if sub and not sub[0].closed:
+            await sub[0].send_json({"id": sub[1], "type": "event", "event": {"result": value, "listeners": {}}})
+
+    async def set_state(self, entity: str, state: str, attrs: dict | None = None) -> None:
+        if attrs is not None:
+            self.attrs[entity] = attrs
+        elif self.states.get(entity) == state:
             return
         self.states[entity] = state
-        ev = {"event_type": "state_changed", "data": {"entity_id": entity, "new_state": {"entity_id": entity, "state": state, "attributes": {"friendly_name": self.names.get(entity, entity)}}}}
+        ev = {"event_type": "state_changed", "data": {"entity_id": entity, "new_state": {"entity_id": entity, "state": state, "attributes": self._attrs(entity)}}}
         for ws, sid in list(self.subs.items()):
             if not ws.closed:
                 await ws.send_json({"id": sid, "type": "event", "event": ev})
@@ -69,14 +85,30 @@ class FakeHa:
             elif t == "get_config":
                 await ws.send_json({"id": i, "type": "result", "success": True, "result": {"time_zone": "Europe/Lisbon", "latitude": 38.72, "longitude": -9.14}})
             elif t == "get_states":
-                res = [{"entity_id": e, "state": s, "attributes": {"friendly_name": self.names.get(e, e)}} for e, s in self.states.items()]
+                res = [{"entity_id": e, "state": s, "attributes": self._attrs(e)} for e, s in self.states.items()]
                 await ws.send_json({"id": i, "type": "result", "success": True, "result": res})
             elif t in ("config/entity_registry/list", "config/device_registry/list", "config/area_registry/list") and self.registry is not None:
                 await ws.send_json({"id": i, "type": "result", "success": True, "result": self._registry(t)})
+            elif t == "render_template":
+                self.tpl_subs[m["template"]] = (ws, i)
+                await ws.send_json({"id": i, "type": "result", "success": True, "result": None})
+                if m["template"] in self.templates:
+                    await ws.send_json({"id": i, "type": "event", "event": {"result": self.templates[m["template"]], "listeners": {}}})
+            elif t == "call_service" and m.get("service") == "get_forecasts":
+                ent = (m.get("target") or {}).get("entity_id")
+                await ws.send_json({"id": i, "type": "result", "success": True, "result": {"context": {}, "response": {ent: {"forecast": self.forecasts.get(ent, [])}}}})
+            elif t == "call_service" and m.get("domain") != "homeassistant":
+                data = m.get("service_data") or {}
+                self.service_calls.append((m["domain"], m["service"], data))
+                await ws.send_json({"id": i, "type": "result", "success": True, "result": {}})
+                ent = data.get("entity_id")
+                if m["service"] == "toggle" and ent in self.states and not self.ignore:
+                    asyncio.get_running_loop().create_task(self._later(ent, "off" if self.states[ent] == "on" else "on"))
             elif t == "call_service":
                 ent = (m.get("service_data") or {}).get("entity_id")
                 svc = m.get("service")
                 self.calls.append((ent, svc))
+                self.service_calls.append(("homeassistant", svc, m.get("service_data") or {}))
                 ok = ent in self.states and svc in ("turn_on", "turn_off")
                 await ws.send_json({"id": i, "type": "result", "success": ok, "result": {}, **({} if ok else {"error": {"code": "not_found", "message": "Entity not found"}})})
                 if ok and not self.ignore:

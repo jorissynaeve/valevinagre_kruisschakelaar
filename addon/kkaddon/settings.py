@@ -31,6 +31,8 @@ class Settings:
     mqtt_password: str = ""
     ha_url: str = ""  # websocket van HA; leeg + SUPERVISOR_TOKEN: de supervisor-proxy
     ha_token: str = ""
+    panel_port: int = 47480  # UDP: hier luistert de add-on naar de NSPanels
+    panel_remote_port: int = 47481  # UDP: hier luistert het Berry-script op de panel
     web_port: int = WEB_PORT
     dev_mode: bool = False  # web-UI ook buiten HA-ingress toegankelijk
     log_level: str = "info"
@@ -130,6 +132,8 @@ def load(env: dict | None = None) -> Settings:
         mqtt_password=str(get("mqtt_password", "")),
         ha_url=ha_url,
         ha_token=ha_token,
+        panel_port=int(get("panel_port", 47480)),
+        panel_remote_port=int(get("panel_remote_port", 47481)),
         web_port=int(get("web_port", WEB_PORT)),
         dev_mode=_bool(get("dev_mode", False)),
         log_level=str(get("log_level", "info")).lower(),

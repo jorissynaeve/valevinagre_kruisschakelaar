@@ -17,6 +17,7 @@ from .engine import Engine
 from .habridge import HaBridge
 from .model import Model
 from .mqttbridge import MqttBridge
+from .panelhub import PanelHub
 from .transport import UdpTransport
 from .web import Ctx, make_app
 
@@ -39,7 +40,11 @@ async def run() -> None:
 
     mqtt = MqttBridge(s, engine)
     ha = HaBridge(s.ha_url, s.ha_token, engine)
-    ctx = Ctx(s, engine, transport, mqtt, ha)
+    panels = PanelHub(s.data_dir / "panels.json", ha, engine, port=s.panel_port, panel_port=s.panel_remote_port)
+    mqtt.extras.append(panels)
+    panels.changed = mqtt.resync
+    await panels.start()
+    ctx = Ctx(s, engine, transport, mqtt, ha, panels)
     runner = web.AppRunner(make_app(ctx), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", s.web_port).start()
@@ -58,11 +63,12 @@ async def run() -> None:
             engine.tick()
             await asyncio.sleep(0.01)
 
-    tasks = [asyncio.create_task(ticker()), asyncio.create_task(mqtt.run()), asyncio.create_task(ha.run())]
+    tasks = [asyncio.create_task(ticker()), asyncio.create_task(mqtt.run()), asyncio.create_task(ha.run()), asyncio.create_task(panels.run())]
     await stop.wait()
     log.info("afsluiten")
     for t in tasks:
         t.cancel()
+    panels.close()
     engine.close()  # zet het leren uit en bewaart de staat
     await asyncio.sleep(0.2)  # laat de Learn(uit)-frames nog weggaan
     transport.close()

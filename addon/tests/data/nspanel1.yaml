@@ -1,0 +1,90 @@
+nspanel-1:
+  module: nspanel-lovelace-ui
+  class: NsPanelLovelaceUIManager
+  config:
+    panelRecvTopic: "tele/tasmota_FA6BE4/RESULT"
+    panelSendTopic: "cmnd/tasmota_FA6BE4/CustomSend"
+    model: eu
+    screensaver:
+      entities:
+        - entity: weather.forecast_thuis
+        - entity: sensor.weather_forecast_daily
+          type: 0
+        - entity: sensor.weather_forecast_daily
+          type: 1
+        - entity: sensor.weather_forecast_daily
+          type: 2
+        - entity: sensor.weather_forecast_daily
+          type: 3
+        - entity: sensor.tasmota_analog_temperature1
+          icon: mdi:home-thermometer-outline
+    cards:
+      - type: cardGrid
+        title: Light
+        entities:
+          - entity: navigate.subMain
+          - entity: navigate.subQPhil
+          - entity: navigate.subQVis
+          - entity: navigate.subOut
+          - entity: navigate.subOth
+      - type: cardQR
+        title: Guest Wifi
+        qrCode: "WIFI:S:ValeVinagreGuest;T:WPA;P:Vale2020;;"
+        entities:
+          - entity: iText.ValeVinagreGuest
+            name: SSID
+            icon: mdi:wifi
+          - entity: iText.Vale2020
+            name: Pass
+            icon: mdi:key
+      - type: cardPower
+        title: Power usage
+        entities:
+          - entity: sensor.power_usage
+            icon: mdi:home
+            name: power
+            color: '{{iif(states("sensor.power_usage") | float(1) < 0.3, "[0,255,0]", iif(states("sensor.power_usage") | float(1) < 0.4, "[255,165,0]", "[255,0,0]"))}}'
+          - entity: delete
+          - entity: sensor.current_energy_usage
+            icon: mdi:battery
+            speed: -20
+            name: usage
+      - type: cardGrid
+        title: Airco
+        entities:
+          - entity: switch.vvrelaisairco_vvrelaisairco_switch
+            name: Airco switch
+
+    hiddenCards:
+      - type: cardGrid
+        title: Main room
+        entities:
+          - entity: switch.dingtian_relay81038_r1_kitchen
+            name: Kitchen
+          - entity: switch.dingtian_relay81038_r3_eat_room
+            name: Eating table
+        key: subMain
+      - type: cardGrid
+        title: Quarto Philippe
+        entities:
+          - entity: switch.dingtian_relay81038_r7_master_sleeproo
+            name: Main light
+        key: subQPhil
+      - type: cardGrid
+        title: Quarto Das Visitas
+        entities:
+          - entity: switch.dingtian_relay81038_r11_guest_bedroom
+            name: Main light
+        key: subQVis
+      - type: cardGrid
+        title: Outside
+        entities:
+          - entity: switch.dingtian_relay81038_r15
+            name: Well
+        key: subOut
+      - type: cardGrid
+        title: Other
+        entities:
+          - entity: switch.dingtian_relay81038_r10_m_badkamer
+            name: Bathroom
+        key: subOth

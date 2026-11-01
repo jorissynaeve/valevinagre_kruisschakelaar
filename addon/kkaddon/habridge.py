@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any, Callable
 
 import aiohttp
 
@@ -39,6 +40,13 @@ class HaBridge:
         self._tasks: set[asyncio.Task] = set()
         self._cache: list[dict] = []
         self._refresh_pending = False
+        # voor de panelen (panelhub.py): alle standen met hun attributen, templates en voorspellingen
+        self.states: dict[str, tuple[str, dict]] = {}
+        self.templates: dict[str, Any] = {}
+        self.state_listeners: list[Callable[[str | None], None]] = []  # entiteit, of None: alles kan veranderd zijn
+        self.template_listeners: list[Callable[[str], None]] = []
+        self._tpl_ids: dict[int, str] = {}
+        self._tpl_wanted: set[str] = set()
         if self.enabled:
             engine.ha_call = self.call
             engine.subscribe(self._on_event)
@@ -72,6 +80,7 @@ class HaBridge:
             if not fut.done():
                 fut.set_exception(HaError("verbinding verbroken"))
         self._futures.clear()
+        self._tpl_ids.clear()
         self.engine.virt.set_link(False)
 
     async def _session(self, sess: aiohttp.ClientSession) -> None:
@@ -104,6 +113,8 @@ class HaBridge:
             await self._request({"type": "subscribe_events", "event_type": "state_changed"})
             self.engine.virt.set_link(True)
             await self._sync()
+            for text in sorted(self._tpl_wanted):
+                await self._subscribe_template(text)
             try:
                 cfg = (await self._request({"type": "get_config"}, timeout=10)).get("result", {})
                 self.engine.set_tz(cfg.get("time_zone"))
@@ -118,12 +129,14 @@ class HaBridge:
 
     # ------------------------------------------------------------ berichten
 
-    async def _request(self, payload: dict, timeout: float = 20.0) -> dict:
+    async def _request(self, payload: dict, timeout: float = 20.0, on_id: Callable[[int], None] | None = None) -> dict:
         ws = self._ws
         if ws is None or ws.closed:
             raise HaError("niet verbonden met HA")
         self._id += 1
         i = self._id
+        if on_id:
+            on_id(i)  # voor een abonnement: de gebeurtenissen kunnen vlak na het antwoord komen
         fut = asyncio.get_running_loop().create_future()
         self._futures[i] = fut
         await ws.send_json({"id": i, **payload})
@@ -143,17 +156,39 @@ class HaBridge:
                 fut.set_result(m)
         elif t == "event":
             ev = m.get("event") or {}
+            if m.get("id") in self._tpl_ids:
+                text = self._tpl_ids[m["id"]]
+                if "result" in ev:
+                    self.templates[text] = ev["result"]
+                    self._notify(self.template_listeners, text)
+                return
             if ev.get("event_type") != "state_changed":
                 return
             data = ev.get("data") or {}
             ent = data.get("entity_id")
+            new = data.get("new_state")
+            if ent:
+                if new:
+                    self.states[ent] = (str(new.get("state")), new.get("attributes") or {})
+                else:
+                    self.states.pop(ent, None)
+                self._notify(self.state_listeners, ent)
             if ent in self.engine.ha_entities():
-                new = data.get("new_state")
                 self.engine.ha_state(ent, new.get("state") if new else "unavailable")
+
+    @staticmethod
+    def _notify(listeners: list, arg) -> None:
+        for cb in list(listeners):
+            try:
+                cb(arg)
+            except Exception:  # een luisteraar mag de verbinding niet breken
+                log.exception("luisteraar faalde")
 
     async def _sync(self) -> list[dict]:
         res = await self._request({"type": "get_states"})
         states = {s["entity_id"]: s.get("state") for s in res.get("result") or [] if "entity_id" in s}
+        self.states = {s["entity_id"]: (str(s.get("state")), s.get("attributes") or {}) for s in res.get("result") or [] if "entity_id" in s}
+        self._notify(self.state_listeners, None)
         self._cache = [
             {"entity_id": s["entity_id"], "name": (s.get("attributes") or {}).get("friendly_name") or s["entity_id"], "state": s.get("state")}
             for s in res.get("result") or []
@@ -226,6 +261,43 @@ class HaBridge:
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
         return True
+
+    def call_service(self, domain: str, service: str, data: dict) -> bool:
+        """Een willekeurige service aanroepen, zonder op het antwoord te wachten (een druk op het paneel)."""
+        ws = self._ws
+        if ws is None or ws.closed or not self.connected:
+            return False
+        self._id += 1
+        msg = {"id": self._id, "type": "call_service", "domain": domain, "service": service, "service_data": data}
+        t = asyncio.get_running_loop().create_task(self._send(msg))
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
+        return True
+
+    async def forecast(self, entity: str, kind: str = "daily") -> list[dict]:
+        """De voorspelling van een weer-entiteit (`weather.get_forecasts`); leeg als HA ze niet geeft."""
+        try:
+            res = await self._request({"type": "call_service", "domain": "weather", "service": "get_forecasts", "service_data": {"type": kind},
+                                       "target": {"entity_id": entity}, "return_response": True})
+            return ((res.get("result") or {}).get("response") or {}).get(entity, {}).get("forecast") or []
+        except (HaError, asyncio.TimeoutError):
+            return []
+
+    def track_template(self, text: str) -> None:
+        """Abonneren op een Jinja-sjabloon: `templates[text]` volgt het antwoord van HA, `template_listeners` horen elke wijziging."""
+        if text in self._tpl_wanted:
+            return
+        self._tpl_wanted.add(text)
+        if self.connected:
+            t = asyncio.get_running_loop().create_task(self._subscribe_template(text))
+            self._tasks.add(t)
+            t.add_done_callback(self._tasks.discard)
+
+    async def _subscribe_template(self, text: str) -> None:
+        try:
+            await self._request({"type": "render_template", "template": text, "report_errors": False}, on_id=lambda i: self._tpl_ids.__setitem__(i, text))
+        except (HaError, asyncio.TimeoutError) as e:
+            log.warning("sjabloon niet te volgen: %s", e)
 
     async def _send(self, msg: dict) -> None:
         try:
