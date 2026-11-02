@@ -110,4 +110,7 @@ ICONS = {
     "solar-power": "\uea71",
     "transmission-tower": "\ued3d",
     "current-ac": "\uf47f",
+    # voor de laadpaalkaart; afgeleid uit het MDI-codepunt (teken = codepunt - 0xF0001 + 0xE000, zoals de rest van deze tabel), niet op de TFT gezien
+    "ev-station": "\ue5f0",
+    "currency-eur": "\ue1ac",
 }

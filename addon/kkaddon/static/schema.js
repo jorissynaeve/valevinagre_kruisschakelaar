@@ -26,7 +26,7 @@ const SC_GANGED = ['switch', 'panel', 'tuya']; // blokken met gangen: per gang e
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
 const scW = (b) => (b.kind === 'lamp' ? LAMP_W : b.kind === 'tuya' ? TUYA_W : SW_W);
-const scRows = (b) => (b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
+const scRows = (b) => (b.kind === 'card' ? b.rows : b.kind === 'panel' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
 const scH = (b) => SC_HEAD + scRows(b) * SC_ROW + SC_FOOT;
 const rowY = (b, i) => b.y + SC_HEAD + i * SC_ROW + SC_ROW / 2;
 const scPageName = (id) => (S.schema.pages.find((p) => p.id === id) || {}).name || '';
@@ -50,7 +50,7 @@ function scType(b) { // bepaalt de kleur van het blok
   if (b.kind === 'lamp' || b.kind === 'timer') return b.kind;
   if (b.kind === 'module') return b.out === 'bool' ? 'logic' : 'time';
   if (b.kind === 'sprinkler') return 'spr';
-  if (b.kind === 'panel' || b.kind === 'screen' || b.kind === 'tuya') return b.kind;
+  if (b.kind === 'panel' || b.kind === 'screen' || b.kind === 'tuya' || b.kind === 'card') return b.kind;
   if (b.source === 'node') return 'node';
   if (b.source === 'virtual') return 'ext';
   const conns = scConns().filter((x) => x.sw && x.sw.key === b.key);
@@ -90,6 +90,49 @@ function scSwitch(b, tags) {
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 28))}</text>
     <text class="bks" x="${b.x + 12}" y="${b.y + 34}">${b.alias ? `${esc(scCut(b.tech, 20))} · ` : ''}${sub}${b.kind === 'panel' && b.online && b.temperature != null ? ` · ${b.temperature.toFixed(1)} °C` : ''}${b.online ? '' : ' · offline'}</text>${rows}</g>`;
+}
+
+const scPageNo = (b, n) => b.cards.slice(0, n).filter((c) => c.type !== 'saver').length + 1; // de screensaver is geen pagina
+
+function scPanelBlock(b, tags) { // de relais zoals bij een schakelaar, daaronder de kaarten in volgorde
+  const rows = b.cards.map((c, n) => {
+    const y = rowY(b, b.gangs.length + n);
+    return `<line class="bkrule" x1="${b.x}" x2="${b.x + SW_W}" y1="${y - SC_ROW / 2}" y2="${y - SC_ROW / 2}"/>
+      <circle class="pt crd" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="pcard" data-i="${n}"><title>Sleep hier een andere kaart op om ze ervoor te zetten</title></circle>
+      <text class="bkt away" x="${b.x + 11}" y="${y + 4}" data-sc="go" data-k="${esc(c.key)}">${c.type === 'saver' ? '◐' : `${scPageNo(b, n)}.`} ${esc(scCut(c.name, 26))}<title>${c.type === 'saver' ? 'Screensaver: het startscherm' : `Pagina ${scPageNo(b, n)}`}</title></text>`;
+  }).join('');
+  const y = rowY(b, b.gangs.length + b.cards.length);
+  const free = `<line class="bkrule" x1="${b.x}" x2="${b.x + SW_W}" y1="${y - SC_ROW / 2}" y2="${y - SC_ROW / 2}"/>
+    <circle class="pt crd free" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="pcard" data-i="new"><title>Sleep hierheen vanaf de uitgang van een kaart</title></circle>
+    <text class="ptl" x="${b.x + 11}" y="${y + 4}">+ kaart</text>`;
+  return scSwitch(b, tags).replace(/<\/g>$/, `${rows}${free}</g>`);
+}
+
+const SC_CARD_NL = { grid: 'Knoppen', charger: 'Laadpaal', saver: 'Screensaver', power: 'Energie', qr: 'Wifi (QR)' };
+
+function scCardLines(b) { // wat een kaart zonder knoppen op haar blok laat zien
+  if (b.type === 'charger') return [b.device ? `Lader: ${b.device.name}${b.device.online ? '' : ' (offline)'}` : 'Nog geen lader gekozen', `€ ${b.price} per kWh${b.price_entity ? ' of uit HA' : ''}`];
+  if (b.type === 'saver') return [b.weather ? `Weer: ${b.weather}` : 'Geen weer', b.temperature ? `Binnen: ${b.temperature}` : 'Geen temperatuur', [b.status1, b.status2].filter(Boolean).length ? `${[b.status1, b.status2].filter(Boolean).length} statuspictogram(men)` : 'Klok en datum'];
+  if (b.type === 'power') return b.items.length ? b.items.map((it) => it.entity ? (it.name || it.entity) : 'leeg') : ['Nog geen rijen'];
+  return [b.ssid ? `Netwerk: ${b.ssid}` : 'Nog geen netwerk', b.security === 'nopass' ? 'zonder wachtwoord' : 'met wachtwoord'];
+}
+
+function scCard(b) {
+  const y0 = rowY(b, 0);
+  const rows = b.type !== 'grid' ? scCardLines(b).map((t, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}">${esc(scCut(t, 26))}</text>`).join('')
+    : b.items.map((it, i) => {
+      const y = rowY(b, i), go = it.target && scBlock(it.target);
+      return `<circle class="pt crd ${it.ref || it.entity ? '' : 'free'}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="citem" data-i="${i}"><title>Knop ${i + 1}: sleep hierheen vanaf een lamp, een gang van een schakelaar of de uitgang van een kaart</title></circle>
+        <text class="bkt ${go ? 'away' : ''}" x="${b.x + 11}" y="${y + 4}" ${go ? `data-sc="go" data-k="${esc(go.key)}"` : ''}>${i + 1}. ${esc(scCut(it.label, 24))}<title>${esc(it.label)}</title></text>`;
+    }).join('') + (b.rows > b.items.length ? `<circle class="pt crd free" cx="${b.x}" cy="${rowY(b, b.items.length)}" r="6" data-b="${esc(b.key)}" data-role="citem" data-i="new"><title>Sleep hierheen vanaf een lamp of de uitgang van een kaart</title></circle>
+        <text class="ptl" x="${b.x + 11}" y="${rowY(b, b.items.length) + 4}">+ knop</text>` : '');
+  return `<g class="bk crdb t-card ${SC.sel === b.key ? 'sel' : ''}" data-block="${esc(b.key)}">
+    <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
+    <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
+    <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 28))}</text>
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Kaart · ${SC_CARD_NL[b.type]}${b.type === 'grid' && b.layout === 'list' ? ' (lijst)' : ''}</text>${rows}
+    <circle class="pt crd ${b.users.length ? '' : 'free'}" cx="${b.x + SW_W}" cy="${y0}" r="6" data-b="${esc(b.key)}" data-role="cout" data-g="0"><title>Uitgang: sleep naar een paneel (pagina) of naar een knop van een rasterkaart (subpagina)</title></circle>
+    ${b.users.map((u, n) => `<text class="stub" x="${b.x + SW_W + 11}" y="${y0 + 4 + n * 13}" data-sc="go" data-k="${esc(u.key)}">→ ${esc(scCut(u.name, 22))} ${u.as === 'page' ? `(${b.type === 'saver' ? 'start' : `pagina ${u.i + 1}`})` : '(sub)'}<title>${esc(u.name)}</title></text>`).join('')}</g>`;
 }
 
 function scRowText(c, name) { // de gang is het belangrijkste: inkorten gaat ten koste van de toestelnaam
@@ -277,12 +320,31 @@ function scPanelPanel(b, props) {
   const draft = SC.panelDraft[b.id] || {};
   const hub = location.hostname;
   const relays = b.gangs.map((g) => `<button class="btn small" type="button" data-sc="pnrelay" data-id="${esc(b.id)}" data-n="${g.i + 1}" data-on="${g.on ? 0 : 1}" ${g.on === null ? 'disabled' : ''}>${esc(g.label)}: ${g.on === null ? '?' : g.on ? 'aan' : 'uit'}</button>`).join('');
+  const have = new Set(b.cards.map((c) => c.id));
+  const free = scBlocks().filter((c) => c.kind === 'card' && !have.has(c.id) && !(c.type === 'saver' && b.cards.some((x) => x.type === 'saver')));
+  const page = (c) => c && c.type !== 'saver';
+  const list = b.cards.map((c, n) => `<div class="scc"><a href="#" data-sc="go" data-k="${esc(c.key)}">${c.type === 'saver' ? 'Startscherm:' : `${scPageNo(b, n)}.`} ${esc(c.name)}</a><span class="row">
+      ${page(c) && page(b.cards[n - 1]) ? `<button class="btn small" type="button" data-sc="pncard" data-id="${esc(b.id)}" data-n="${n}" data-op="up" title="Naar voren">↑</button>` : ''}
+      ${page(c) && page(b.cards[n + 1]) ? `<button class="btn small" type="button" data-sc="pncard" data-id="${esc(b.id)}" data-n="${n}" data-op="down" title="Naar achter">↓</button>` : ''}
+      <button class="btn small danger" type="button" data-sc="pncard" data-id="${esc(b.id)}" data-n="${n}" data-op="del" title="Van dit paneel halen (de kaart blijft bestaan)">✕</button></span></div>`).join('');
+  const num = (f, lo, hi, label) => `<label>${label}</label><input type="number" min="${lo}" max="${hi}" step="1" data-pnset="${f}" data-id="${esc(b.id)}" value="${esc(b[f])}">`;
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scPanelState(b))}</span>${b.rssi != null ? `<span class="sub">${b.rssi} dBm</span>` : ''}</div>
     ${props}
     <label>IP-adres van de panel</label><input type="text" data-pnfield="host" data-id="${esc(b.id)}" placeholder="192.168.0.105" value="${esc(draft.host ?? b.host)}">
-    <label>Configuratie (YAML van nspanel-lovelace-ui)</label><textarea rows="14" style="flex:none;min-height:260px" spellcheck="false" data-pnfield="yaml" data-id="${esc(b.id)}" placeholder="cards:&#10;  - type: cardGrid&#10;    title: Licht&#10;    entities: ...">${esc(draft.yaml ?? b.yaml)}</textarea>
-    ${b.error ? `<div class="sub">Config niet te gebruiken: ${esc(b.error)}</div>` : ''}
     <div class="row" style="margin-top:6px"><button class="btn small primary" type="button" data-sc="pnsave" data-id="${esc(b.id)}">Opslaan</button>${Object.keys(draft).length ? '<span class="sub">niet opgeslagen</span>' : ''}</div>
+    ${b.notes.length ? `<h2>Omgezet uit de YAML</h2><ul class="sub" style="padding-left:18px;margin:4px 0">${b.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+      <div class="row"><button class="btn small" type="button" data-sc="pnnotes" data-id="${esc(b.id)}">Gelezen</button></div>` : ''}
+    <h2>Kaarten</h2>${list || '<div class="sub">Nog geen kaarten.</div>'}
+    ${free.length ? `<select data-pnadd="${esc(b.id)}"><option value="">+ kaart toevoegen…</option>${free.map((c) => `<option value="${esc(c.id)}">${esc(c.name)} (${esc(SC_CARD_NL[c.type])})</option>`).join('')}</select>` : ''}
+    ${b.error ? `<div class="sub" style="color:var(--warn)">${esc(b.error)}</div>` : ''}
+    <div class="sub">Of sleep de uitgang van een kaart naar <b>+ kaart</b> op het blok. Een screensaver is het startscherm; de andere kaarten zijn de pagina's, in deze volgorde. Een kaart aan een knop van een rasterkaart wordt daar een subpagina. Nieuwe kaarten: <b>+ Module → NSPanel-kaarten</b>.</div>
+    <h2>Scherm</h2>
+    <label>Taal</label><select data-pnset="locale" data-id="${esc(b.id)}"><option value="nl" ${b.locale === 'nl' ? 'selected' : ''}>Nederlands</option><option value="en" ${b.locale === 'en' ? 'selected' : ''}>Engels</option></select>
+    ${num('timeout', 0, 3600, 'Terug naar de screensaver na (seconden, 0 = nooit)')}${num('bright', 0, 100, 'Helderheid (0–100)')}${num('dim', 0, 100, 'Helderheid van de screensaver (0–100)')}
+    <details><summary class="sub">YAML van nspanel-lovelace-ui omzetten</summary>
+      <textarea id="pnyaml" rows="8" style="flex:none;min-height:150px;width:100%" spellcheck="false" placeholder="cards:&#10;  - type: cardGrid&#10;    title: Licht&#10;    entities: ..."></textarea>
+      <div class="row"><button class="btn small" type="button" data-sc="pnyaml" data-id="${esc(b.id)}">Omzetten naar kaarten</button></div>
+      <div class="sub">Maakt kaarten en hangt ze achteraan aan dit paneel. De YAML zelf wordt niet bewaard.</div></details>
     <h2>Relais</h2><div class="row">${relays}</div>
     <div class="sub">Sleep een <b>touch</b> (de knop op de panel) naar de ingang van een lamp, of een <b>relais</b> naar de uitgang. In HA heet het <code>${esc(b.gangs[0].entity)}</code>. Een knop schakelt altijd zijn eigen relais, ook zonder HA; staat de touch op een lamp, dan volgt dat relais ook die lamp.</div>
     <h2>Op de panel zetten</h2>
@@ -294,6 +356,87 @@ function scPanelPanel(b, props) {
     </ol>
     <div class="sub">Terugdraaien: die regel weghalen, herstarten en AppDaemon weer aanzetten.</div>
     <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="delpanel" data-id="${esc(b.id)}">Paneel verwijderen</button></div>`;
+}
+
+const SC_CARD_HELP = {
+  grid: 'Tot 8 knoppen (een lijst: 4). Een knop bedient een lamp, een entiteit uit HA, of opent een subpagina.',
+  charger: 'Start/stop, de stand, de laadtijd, de geladen kWh en de prijs, rechtstreeks van de Tuya-lader (ook zonder HA).',
+  saver: 'Het startscherm: klok, datum, het weer met 4 dagen voorspelling en een temperatuur binnen.',
+  power: 'Het energieschema van nspanel-lovelace-ui: tot 6 rijen, elk een sensor uit HA.',
+  qr: 'Een QR-code waarmee een gast op de wifi komt, met de naam en het wachtwoord ernaast.',
+};
+
+function scCardPanel(b, props) {
+  const tx = (f, label, ph = '') => `<label>${label}</label><input type="text" maxlength="255" spellcheck="false" autocomplete="off" data-cdfield="${f}" placeholder="${esc(ph)}" value="${esc(b[f] ?? '')}">`;
+  const opt = (v, cur, t) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(t)}</option>`;
+  const users = b.users.map((u) => `<div class="sub"><a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.name)}</a> · ${u.as === 'page' ? (b.type === 'saver' ? 'startscherm' : `pagina ${u.i + 1}`) : `subpagina via knop ${u.i + 1}`}</div>`).join('');
+  let body = '';
+  if (b.type === 'grid') {
+    scLoadEnts();
+    const max = b.layout === 'list' ? 4 : 8;
+    const items = b.items.map((it, i) => {
+      const go = it.target && scBlock(it.target);
+      const what = it.ref ? (go ? `<a href="#" data-sc="go" data-k="${esc(go.key)}">${esc(it.ref.startsWith('c:') ? `subpagina ${go.name}` : `lamp ${go.name}`)}</a>` : esc(it.label)) : it.entity ? `<code>${esc(it.entity)}</code>` : 'leeg';
+      return `<div class="tmd"><div class="row sp"><b>Knop ${i + 1}</b><span class="row">
+          ${i ? `<button class="btn small" type="button" data-sc="cditem" data-k="${esc(b.key)}" data-i="${i}" data-op="up" title="Naar voren">↑</button>` : ''}
+          ${i < b.items.length - 1 ? `<button class="btn small" type="button" data-sc="cditem" data-k="${esc(b.key)}" data-i="${i}" data-op="down" title="Naar achter">↓</button>` : ''}
+          <button class="btn small danger" type="button" data-sc="cditem" data-k="${esc(b.key)}" data-i="${i}" data-op="del" title="Knop weghalen">✕</button></span></div>
+        <div class="sub" style="overflow-wrap:anywhere">${what}</div>
+        <label>Naam op het scherm</label><input type="text" maxlength="60" data-cditem="name" data-i="${i}" placeholder="${esc(it.ref || it.entity ? 'naam van de lamp of entiteit' : '')}" value="${esc(it.name)}">
+        <label>Pictogram</label><input type="text" maxlength="64" spellcheck="false" data-cditem="icon" data-i="${i}" placeholder="${it.ref && !it.ref.startsWith('c:') ? 'lightbulb' : 'standaard'}" value="${esc(it.icon)}">
+        <label>Of een entiteit uit Home Assistant</label>${scEntSelect(`data-cditem="entity" data-i="${i}"`, it.entity, it.ref ? 'zoals hierboven' : 'niets')}</div>`;
+    }).join('');
+    body = `<label>Weergave</label><select data-cdfield="layout">${opt('grid', b.layout, 'Raster (tot 8 knoppen)')}${opt('list', b.layout, 'Lijst (tot 4 rijen)')}</select>
+      <h2>Knoppen</h2>${items || '<div class="sub">Nog geen knoppen.</div>'}
+      ${b.items.length < max ? `<div class="row" style="margin-top:6px"><button class="btn small" type="button" data-sc="cditem" data-k="${esc(b.key)}" data-op="add">+ Knop</button></div>` : ''}
+      <div class="sub">Sleep naar een knop (links op het blok) vanaf een <b>lamp</b>, een <b>gang</b> van een schakelaar, of de <b>uitgang</b> van een andere kaart (dan wordt het een subpagina). Pictogrammen: de MDI-naam, bv. <code>ceiling-light</code>; wat het scherm niet kent wordt een uitroepteken.</div>`;
+  } else if (b.type === 'charger') {
+    const tuyas = scBlocks().filter((t) => t.kind === 'tuya');
+    body = `<label>Lader (Tuya-blok)</label><select data-cdfield="tuya"><option value="">kies een lader…</option>${tuyas.map((t) => opt(t.id, b.tuya, `${t.name}${t.online ? '' : ' (offline)'}`)).join('')}</select>
+      ${b.device ? `<div class="sub"><a href="#" data-sc="go" data-k="${esc(b.device.key)}">↗ ${esc(b.device.name)}</a></div>` : ''}
+      <label>Prijs per kWh (€)</label><input type="number" min="0" max="100" step="0.01" data-cdfield="price" value="${esc(b.price)}">
+      ${tx('price_entity', 'Of de prijs uit een entiteit van HA (wint als ze een getal geeft)', 'bv. sensor.stroomprijs')}
+      <div class="sub">De knop start of stopt het laden (datapunt 124). De stand komt uit datapunt 101; alleen <code>connect</code> is op de lader gemeten, een stand die de add-on niet kent staat er zoals de lader ze meldt.</div>`;
+  } else if (b.type === 'saver') {
+    body = `${tx('weather', 'Weer', 'weather.forecast_thuis')}${tx('forecast', 'Voorspelling uit (leeg: uit het weer)', 'sensor.weather_forecast_daily')}${tx('temperature', 'Temperatuur binnen', 'sensor.temperatuur_hal')}
+      ${tx('status1', 'Statuspictogram 1', 'bv. binary_sensor.voordeur')}${tx('status2', 'Statuspictogram 2', '')}`;
+  } else if (b.type === 'power') {
+    const rows = b.items.map((it, i) => `<div class="tmd"><div class="row sp"><b>Rij ${i + 1}</b><button class="btn small danger" type="button" data-sc="cdpow" data-k="${esc(b.key)}" data-i="${i}" data-op="del" title="Rij weghalen">✕</button></div>
+        <label>Sensor (leeg: een open plek)</label><input type="text" spellcheck="false" data-cdpow="entity" data-i="${i}" placeholder="sensor.verbruik" value="${esc(it.entity || '')}">
+        <label>Naam</label><input type="text" maxlength="60" data-cdpow="name" data-i="${i}" value="${esc(it.name)}">
+        <label>Pictogram</label><input type="text" maxlength="64" data-cdpow="icon" data-i="${i}" placeholder="flash" value="${esc(it.icon)}">
+        <label>Snelheid van de pijl (−120 tot 120)</label><input type="number" min="-120" max="120" step="1" data-cdpow="speed" data-i="${i}" value="${it.speed}">
+        <label>Kleur: groen onder, oranje onder (leeg: geen kleur)</label><div class="row"><input type="number" step="any" data-cdpow="lo" data-i="${i}" value="${it.levels ? it.levels[0] : ''}"><input type="number" step="any" data-cdpow="hi" data-i="${i}" value="${it.levels ? it.levels[1] : ''}"></div></div>`).join('');
+    body = `${rows}${b.items.length < 6 ? `<div class="row" style="margin-top:6px"><button class="btn small" type="button" data-sc="cdpow" data-k="${esc(b.key)}" data-op="add">+ Rij</button></div>` : ''}`;
+  } else {
+    body = `${tx('ssid', 'Netwerknaam (SSID)')}<label>Beveiliging</label><select data-cdfield="security">${opt('WPA', b.security, 'WPA/WPA2')}${opt('WEP', b.security, 'WEP')}${opt('nopass', b.security, 'Open')}</select>
+      ${b.security === 'nopass' ? '' : tx('password', 'Wachtwoord')}<div class="sub">Het wachtwoord staat leesbaar op het scherm, net als in de QR-code.</div>`;
+  }
+  return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge">Kaart · ${esc(SC_CARD_NL[b.type])}</span></div><div class="sub">${esc(SC_CARD_HELP[b.type])}</div>
+    ${props}<h2>Hangt aan</h2>${users || '<div class="sub">Nog nergens: sleep de uitgang (rechts) naar <b>+ kaart</b> op een paneel.</div>'}
+    ${body}
+    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="delcard" data-id="${esc(b.id)}">Kaart verwijderen</button></div>`;
+}
+
+const scItems = (b) => b.items.map(({ ref, entity, name, icon }) => ({ ref, entity, name, icon }));
+const scPowItems = (b) => b.items.map(({ entity, name, icon, speed, levels }) => ({ entity, name, icon, speed, levels }));
+
+async function scSaveCard(b, patch) {
+  try {
+    await api('PUT', `cards/${b.id}`, patch);
+  } finally {
+    SC.force = true;
+    await refresh();
+  }
+}
+
+async function scSavePanel(id, patch) {
+  try {
+    await api('PUT', `panels/${id}`, patch);
+  } finally {
+    SC.force = true;
+    await refresh();
+  }
 }
 
 function scScreenState(b) {
@@ -484,6 +627,8 @@ const SC_MENU = [
   ['Vergelijken', [['between', 'Tussen', '1 tussen twee tijden'], ['after', 'Na', '1 na een tijd'], ['before', 'Voor', '1 voor een tijd']]],
   ['Logica', [['and', 'En', '1 als beide 1 zijn'], ['or', 'Of', '1 als een van beide 1 is']]],
   ['Routines', [['sprinkler', 'Sprinkler', 'zones na elkaar, in cycli']]],
+  ['NSPanel-kaarten', [['card-grid', 'Knoppen', 'lampen, schakelaars, subpagina\'s'], ['card-charger', 'Laadpaal', 'start/stop, kWh en prijs'], ['card-saver', 'Screensaver', 'klok en weer'],
+    ['card-power', 'Energie', 'verbruik en opbrengst'], ['card-qr', 'Wifi (QR)', 'gastnetwerk']]],
 ];
 
 function scMenu() {
@@ -519,7 +664,8 @@ function scInner(list) {
   }
   const shown = new Set(list.map((b) => b.key));
   const wires = !SC_WIRES ? '' : conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
-  const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b) : b.kind === 'tuya' ? scTuya(b, tags) : scSwitch(b, tags))).join('');
+  const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b)
+    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'card' ? scCard(b) : b.kind === 'panel' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
   return `<g class="wires">${wires}</g>${blocks}<path id="sctemp" class="wire temp"/>`; // draden onder de blokken: anders liggen ze over de poorten
 }
 
@@ -552,6 +698,8 @@ function scPortPos(p) {
   if (b.kind === 'timer') return [b.x + SW_W, rowY(b, 0)];
   if (b.kind === 'sprinkler') return p.role === 'min' ? [b.x, rowY(b, +p.i)] : [b.x + SW_W, rowY(b, +p.i)];
   if (b.kind === 'module') return p.role === 'min' ? [b.x, rowY(b, +p.i)] : [b.x + SW_W, rowY(b, 0)];
+  if (b.kind === 'card') return p.role === 'cout' ? [b.x + SW_W, rowY(b, 0)] : [b.x, rowY(b, p.i === 'new' ? b.items.length : +p.i)];
+  if (b.kind === 'panel' && p.role === 'pcard') return [b.x, rowY(b, b.gangs.length + (p.i === 'new' ? b.cards.length : +p.i))];
   if (p.role === 'disable') return [b.x, rowY(b, scRows(b) - 1)];
   if (p.role === 'control') return [b.x, rowY(b, scRows(b) - 2)];
   if (SC_GANGED.includes(b.kind)) return [p.role === 'relay' ? b.x + scW(b) : b.x, rowY(b, +p.g)];
@@ -576,7 +724,8 @@ function scTray() {
     all.sort((a, b) => (!!a.page - !!b.page));
     return `<h2>${title}</h2>${all.map(item).join('') || '<div class="sub">Geen.</div>'}`;
   };
-  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Panelen', 'panel') + part('Schermen', 'screen') + part('Tuya', 'tuya');
+  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Panelen', 'panel')
+    + part('NSPanel-kaarten', 'card') + part('Schermen', 'screen') + part('Tuya', 'tuya');
 }
 
 function scPanel() {
@@ -589,7 +738,7 @@ function scPanel() {
   const pages = `<label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
   const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'switch' ? b.alias : b.name)}" placeholder="${esc(b.tech)}">
     <div class="sub">Technische naam: <code>${esc(b.tech)}</code></div>${pages}`;
-  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : b.kind === 'tuya' ? scTuyaPanel(b, props) : scSwitchPanel(b, props);
+  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : b.kind === 'tuya' ? scTuyaPanel(b, props) : b.kind === 'card' ? scCardPanel(b, props) : scSwitchPanel(b, props);
 }
 
 function scConnRow(b, c, i, dir) {
@@ -804,7 +953,8 @@ function schemaUpdate() {
 function scFreeSpot(kind, page = SC.page) {
   const list = scBlocks().filter((b) => b.page === page);
   const col = kind === 'lamp' ? 460 : 40;
-  const y = Math.max(30, ...list.filter((b) => Math.abs(b.x - col) < 200).map((b) => b.y + scH(b) + 24));
+  const w = kind === 'lamp' ? LAMP_W : SW_W;
+  const y = Math.max(30, ...list.filter((b) => b.x < col + w + 20 && b.x + scW(b) + 20 > col).map((b) => b.y + scH(b) + 24)); // alles wat de kolom raakt
   return { x: col, y: Math.ceil(y / SC_GRID) * SC_GRID };
 }
 
@@ -846,10 +996,48 @@ async function scWireZone(a, b) { // van een zone van een sprinkler naar een rel
 }
 
 const SC_LOGIC_ROLES = ['tout', 'mout', 'min', 'disable', 'control'];
+const SC_CARD_ROLES = ['cout', 'pcard', 'citem'];
 const SC_HELD = 'Deze lamp wordt vastgehouden door zijn aan/uit-ingang.';
+
+async function scSetItem(card, i, patch) { // één knop van een rasterkaart; 'new' zet er een achteraan
+  const items = scItems(card);
+  if (i === 'new' || i === undefined || +i >= items.length) items.push({ ref: null, entity: null, name: '', icon: '', ...patch });
+  else items[+i] = { ...items[+i], ...patch };
+  await api('PUT', `cards/${card.id}`, { items });
+}
+
+async function scWireCard(a, b) { // de uitgang van een kaart naar een paneel of een knop; of een knop naar een lamp of een gang
+  const out = [a, b].find((p) => p.role === 'cout');
+  let sel;
+  if (out) {
+    const sink = out === a ? b : a, card = scBlock(out.b), to = scBlock(sink.b);
+    if (sink.role === 'pcard') {
+      const list = to.cards.map((c) => c.id).filter((id) => id !== card.id);
+      list.splice(sink.i === 'new' ? list.length : Math.min(+sink.i, list.length), 0, card.id);
+      await api('PUT', `panels/${to.id}`, { cards: list });
+    } else if (sink.role === 'citem') {
+      await scSetItem(to, sink.i, { ref: card.key, entity: null });
+    } else throw new Error('Een kaart hang je aan een paneel (links, onder de relais) of aan een knop van een rasterkaart.');
+    sel = to.key;
+  } else {
+    const item = [a, b].find((p) => p.role === 'citem');
+    if (!item) throw new Error('Trek de draad vanaf de uitgang van een kaart, of vanaf een knop van een rasterkaart.');
+    const other = item === a ? b : a, card = scBlock(item.b), src = scBlock(other.b);
+    const gang = SC_GANGED.includes(src.kind) && other.g !== undefined ? src.gangs[+other.g] : null;
+    if (src.kind === 'lamp') await scSetItem(card, item.i, { ref: src.key, entity: null });
+    else if (gang && gang.entity) await scSetItem(card, item.i, { ref: null, entity: gang.entity });
+    else if (gang) throw new Error('Deze gang loopt niet via Home Assistant. Sluit de knop aan op de lamp die hij schakelt.');
+    else throw new Error('Een knop sluit je aan op een lamp, op een gang van een schakelaar, of op de uitgang van een kaart.');
+    sel = card.key;
+  }
+  SC.sel = sel;
+  SC.force = true;
+  await refresh();
+}
 
 async function scWireUp(a, b) { // a en b zijn poorten; één hoort bij een lamp, de ander bij een schakelaar, of het zijn modules
   const pa = scBlock(a.b), pb = scBlock(b.b);
+  if (SC_CARD_ROLES.includes(a.role) || SC_CARD_ROLES.includes(b.role)) return scWireCard(a, b);
   if (a.role === 'zout' || b.role === 'zout') return scWireZone(a, b);
   if (SC_LOGIC_ROLES.includes(a.role) || SC_LOGIC_ROLES.includes(b.role)) return scWireLogic(a, b);
   if (pa.kind === pb.kind) throw new Error(pa.kind === 'lamp' ? 'Een draad loopt tussen een schakelaar en een lamp, niet tussen twee lampen.' : 'Een draad loopt tussen een schakelaar en een lamp, niet tussen twee schakelaars.');
@@ -909,7 +1097,8 @@ const SC_ACTIONS = {
     if (d.type === 'switch') return SC_ACTIONS.newswitch();
     if (d.type === 'timer') return SC_ACTIONS.newtimer();
     if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
-    const r = d.type === 'sprinkler' ? await api('POST', 'sprinklers', { page: SC.page, ...scFreeSpot('module') })
+    const r = d.type.startsWith('card-') ? await api('POST', 'cards', { type: d.type.slice(5), page: SC.page, ...scFreeSpot('module') })
+      : d.type === 'sprinkler' ? await api('POST', 'sprinklers', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'panel' ? await api('POST', 'panels', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'screen' ? await api('POST', 'screens', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'tuya' ? await api('POST', 'tuya', { page: SC.page, ...scFreeSpot('module') })
@@ -942,6 +1131,48 @@ const SC_ACTIONS = {
   },
   pnrelay: async (d) => {
     await api('POST', `panels/${d.id}/relay/${d.n}`, { on: d.on === '1' });
+  },
+  pncard: (d) => {
+    const b = scBlock(`p:${d.id}`), list = b.cards.map((c) => c.id), n = +d.n;
+    if (d.op === 'del') list.splice(n, 1);
+    else {
+      const to = d.op === 'up' ? n - 1 : n + 1;
+      [list[n], list[to]] = [list[to], list[n]];
+    }
+    return scSavePanel(d.id, { cards: list });
+  },
+  pnnotes: (d) => scSavePanel(d.id, { notes: [] }),
+  pnyaml: async (d) => {
+    const yaml = $('#pnyaml').value;
+    if (!yaml.trim()) throw new Error('Plak eerst de YAML.');
+    const r = await api('POST', `panels/${d.id}/yaml`, { yaml });
+    SC.force = true;
+    await refresh();
+    const head = `${r.cards.length} ${r.cards.length === 1 ? 'kaart' : 'kaarten'} gemaakt en aan het paneel gehangen.`;
+    if (!r.notes.length) { toast(head); return; }
+    smallDialog(`<h3>YAML omgezet</h3><p class="sub">${esc(head)} Dit is niet meegekomen:</p><ul class="sub" style="padding-left:18px">${r.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`, async () => {});
+  },
+  cditem: (d) => {
+    const b = scBlock(d.k), items = scItems(b), i = +d.i;
+    if (d.op === 'add') items.push({ ref: null, entity: null, name: '', icon: '' });
+    else if (d.op === 'del') items.splice(i, 1);
+    else {
+      const to = d.op === 'up' ? i - 1 : i + 1;
+      [items[i], items[to]] = [items[to], items[i]];
+    }
+    return scSaveCard(b, { items });
+  },
+  cdpow: (d) => {
+    const b = scBlock(d.k), items = scPowItems(b);
+    if (d.op === 'add') items.push({ entity: null, name: '', icon: '', speed: 0, levels: null });
+    else items.splice(+d.i, 1);
+    return scSaveCard(b, { items });
+  },
+  delcard: async (d) => {
+    if (!confirm('Deze kaart verwijderen? Ze verdwijnt van de panelen en de knoppen die erheen gingen verdwijnen ook.')) return;
+    await api('DELETE', `cards/${d.id}`);
+    SC.sel = null;
+    await refresh();
   },
   delpanel: async (d) => {
     if (!confirm('Dit paneel verwijderen? Zijn relais en temperatuur verdwijnen ook uit Home Assistant.')) return;
@@ -1138,8 +1369,11 @@ function scFinish(target) {
   if (toPort) {
     const p = scPortOf(toPort);
     dest = { b: p.b, lampRole: p.role, swRole: p.swRole, g: p.g, i: p.i };
-  } else if (toBlock && toBlock.dataset.block !== from.b && scBlock(toBlock.dataset.block).kind === 'lamp') {
-    dest = { b: toBlock.dataset.block, lampRole: null }; // losgelaten op de lamp zelf: de poort waar je begon beslist
+  } else if (toBlock && toBlock.dataset.block !== from.b) {
+    const tb = scBlock(toBlock.dataset.block);
+    if (tb.kind === 'lamp') dest = { b: tb.key, lampRole: null }; // losgelaten op de lamp zelf: de poort waar je begon beslist
+    else if (tb.kind === 'panel' && from.swRole === 'cout') dest = { b: tb.key, swRole: 'pcard', i: 'new' }; // een kaart op een paneel: achteraan
+    else if (tb.kind === 'card' && tb.type === 'grid' && from.swRole !== 'citem') dest = { b: tb.key, swRole: 'citem', i: 'new' };
   }
   if (dest && dest.b === from.b && dest.g === from.g && dest.i === from.i && dest.swRole === from.swRole) dest = null;
   if (!dest) { // nergens op beland: de draad blijft wachten, zodat je nog naar een andere ruimte kunt
@@ -1272,6 +1506,7 @@ document.addEventListener('change', (ev) => {
         else if (b.kind === 'panel') await api('PUT', `panels/${b.id}`, { name });
         else if (b.kind === 'screen') await api('PUT', `screens/${b.id}`, { name });
         else if (b.kind === 'tuya') await api('PUT', `tuya/${b.id}`, { name });
+        else if (b.kind === 'card') await api('PUT', `cards/${b.id}`, { name });
         else if (b.kind === 'timer') await api('PUT', `timers/${b.id}`, { name, days: b.days });
         else if (!name) throw new Error('Een lamp heeft een naam nodig');
         else if (b.source === 'ha') await api('PUT', `groups/${b.id}`, { name });
@@ -1326,6 +1561,47 @@ document.addEventListener('change', (ev) => {
     } else patch = { [d.spfield]: d.spfield === 'enabled' ? t.checked : d.spfield === 'start' ? t.value : +t.value };
     t.blur();
     act(() => scSaveSprinkler(b, patch))();
+  }
+  const card = SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'card' ? scBlock(SC.sel) : null;
+  if (t.dataset && t.dataset.cdfield && card) {
+    const f = t.dataset.cdfield, raw = t.value.trim();
+    const value = f === 'price' ? (raw === '' ? 0 : +raw) : ['weather', 'forecast', 'temperature', 'status1', 'status2', 'price_entity'].includes(f) ? (raw || null) : f === 'password' ? t.value : raw;
+    t.blur();
+    act(() => scSaveCard(card, { [f]: value }))();
+  }
+  if (t.dataset && t.dataset.cditem && card) {
+    const f = t.dataset.cditem, i = +t.dataset.i, items = scItems(card);
+    if (f === 'entity') {
+      const entity = t.value.trim() || null;
+      if (!entity && items[i].ref) return; // "zoals hierboven": de lamp of subpagina blijft
+      const known = (SC.haEnts || []).find((e) => e.entity_id === entity);
+      items[i] = { ...items[i], entity, ref: null, name: items[i].name || (known ? known.name.slice(0, 60) : '') };
+    } else items[i] = { ...items[i], [f]: t.value.trim() };
+    t.blur();
+    act(() => scSaveCard(card, { items }))();
+  }
+  if (t.dataset && t.dataset.cdpow && card) {
+    const f = t.dataset.cdpow, i = +t.dataset.i, items = scPowItems(card), it = { ...items[i] };
+    if (f === 'lo' || f === 'hi') {
+      const box = t.closest('.row'), lo = box.querySelector('[data-cdpow=lo]').value, hi = box.querySelector('[data-cdpow=hi]').value;
+      if ((lo === '') !== (hi === '')) return; // wacht op de tweede grens
+      it.levels = lo === '' ? null : [+lo, +hi];
+    } else if (f === 'speed') it.speed = +t.value || 0;
+    else if (f === 'entity') it.entity = t.value.trim() || null;
+    else it[f] = t.value.trim();
+    items[i] = it;
+    t.blur();
+    act(() => scSaveCard(card, { items }))();
+  }
+  if (t.dataset && t.dataset.pnset) {
+    const f = t.dataset.pnset, value = f === 'locale' ? t.value : +t.value;
+    t.blur();
+    act(() => scSavePanel(t.dataset.id, { [f]: value }))();
+  }
+  if (t.dataset && t.dataset.pnadd && t.value) {
+    const b = scBlock(`p:${t.dataset.pnadd}`), cid = t.value;
+    t.blur();
+    act(() => scSavePanel(b.id, { cards: [...b.cards.map((c) => c.id), cid] }))();
   }
   if (t.dataset && t.dataset.tyset && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'tuya') {
     const b = scBlock(SC.sel), dp = t.dataset.tyset, value = t.value;

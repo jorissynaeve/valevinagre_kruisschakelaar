@@ -467,7 +467,7 @@ Code: `sprinkler.py` (plan en aansturen, elke seconde), `model.py` (`sprinklers`
 
 ## 26. NSPanel
 
-Code: `panel.py` (configuratie en schermtaal, puur), `panelhub.py` (UDP, HA-standen, relais), `habridge.py` (alle standen, sjablonen, voorspellingen, algemene service-aanroepen), `berry/huisconfig.be` (op de panel), `model.py` (`panels`), blok `p:<id>` (`schema.py`, `static/schema.js`).
+Code: `panel.py` (configuratie en schermtaal, puur), `cards.py` (kaarten, zie onder), `panelhub.py` (UDP, HA-standen, relais), `habridge.py` (alle standen, sjablonen, voorspellingen, algemene service-aanroepen), `berry/huisconfig.be` (op de panel), `model.py` (`panels`), blok `p:<id>` (`schema.py`, `static/schema.js`).
 
 - **Wat blijft**: Tasmota op de ESP32 en de Nextion-TFT van nspanel-lovelace-ui. Het scherm is een domme renderer die tekstregels krijgt (`pageType~`, `entityUpd~`, `weatherUpdate~`, ...) en aanrakingen terugmeldt (`event,buttonPress2,...`). We schrijven dus geen schermsoftware en flashen de ESP32 niet (er is geen seriële noodweg).
 - **Wat vervangt**: AppDaemon (de pagina's maken) en MQTT (het transport). De driver in `autoexec.be` legt `CustomSend` en `CustomRecv` al bloot; ons Berry-script hangt daar een UDP-brug aan: `D|tekst` naar het scherm, `S|tekst` van het scherm, hartslag `H|{relais, temperatuur, rssi}`.
@@ -478,11 +478,23 @@ Code: `panel.py` (configuratie en schermtaal, puur), `panelhub.py` (UDP, HA-stan
 - **Verloren pakketten**: UDP, geen bevestiging. De add-on spaart de ontvangstbuffer van de ESP32 (30 ms tussen pakketten, hartslag-poll als de panel stil is) en stuurt de huidige pagina elke 2 minuten opnieuw.
 - **Starten**: de hub wacht tot de panel zich meldt en HA verbonden is, en stuurt dan klok, helderheid en screensaver. Zegt het scherm zelf `event,startup` (herstart), dan begint de hub opnieuw.
 
+### Kaarten in plaats van YAML (0.11)
+
+Code: `cards.py` (puur: configuratie, live standen, omzetten), `model.py` (`cards`, `panels.<id>.cards`), blok `c:<id>` (`schema.py`, `static/schema.js`).
+
+- **Kaarten zijn blokken**: `cards: {id: {type, name, ...}}` met de types `grid` (raster of lijst), `charger`, `saver`, `power`, `qr`. Een paneel heeft een geordende lijst `cards`; een screensaver-kaart daarin is het startscherm (één per paneel, altijd vooraan), de rest zijn de pagina's. Een rasterknop `{"ref": "c:<id>"}` maakt van een kaart een subpagina; `pages_of` zoekt alle subpagina's (ook dieper, een lus hangt niet).
+- **Eén renderer**: `cards.config` maakt de configuratie die `panel.Panel` al kende (het formaat van nspanel-lovelace-ui). Het protocol, de navigatie en de screensaver blijven dus de geteste code. `test_cards.py` loopt de config van dit huis door, zowel uit de YAML als uit de omgezette kaarten, en vergelijkt wat het scherm krijgt: alleen de id's van de subpagina's en de labels van de QR-kaart verschillen.
+- **Standen uit de add-on**: een rij `kk.<kaart>__<deel>` vraagt haar stand aan `Env.dynamic` en haar druk aan `Env.press` (`cards.Live`). Zo lopen een lamp van het schema (een kring via `groups.command`, een licht op het netwerk via `command_light`) en de laadpaal (TuyaHub `read`/`set`) niet via een HA-entiteit, waarvan de naam niet vaststaat en die bij een toestel van een andere installatie (stap 2) niet bestaat. De hub ververst een paneel met zulke rijen elke tik; `Panel.refresh` stuurt alleen wat veranderd is. Een lamp met een aan/uit-ingang negeert een druk op het paneel, zoals in de UI.
+- **Laadpaal**: knop = datapunt 124 (`OpenCharging`/`CloseCharging`), laden = 124 op `OpenCharging` of 101 op `charing`/`charging`. Laadtijd 120, kWh 25, prijs = kWh × tarief (een HA-entiteit wint als ze een getal geeft). Offline: geen bevel.
+- **Omzetten**: een paneel met `yaml` en zonder `cards` wordt bij het laden kaarten (`from_yaml`), de YAML gaat naar `panel-<id>.yaml.overgenomen`, de kaarten komen links naast het paneel en wat niet mee kon staat in `notes`. Een kleur in drie stappen (`iif(... < a, groen, iif(... < b, oranje, rood))`) wordt twee grenzen; een ander sjabloon gaat niet mee. Zonder `locale` blijft het scherm Engels, zoals het was.
+- **Pictogrammen**: `ev-station` en `currency-eur` zijn toegevoegd door het MDI-codepunt om te rekenen (zoals de rest van de tabel klopt), niet op de TFT gezien.
+
 ### Niet getest / open
 - Getest: de schermtaal tegen de config van dit huis (`tests/data/nspanel1.yaml`), de hub met echte UDP naar een nepl panel en een nagebootste HA, en het Berry-script los op de echte panel (laden, hartslag, `Q|`, een scherm-event; de relais en het schermcommando zijn daarbij niet bediend).
+- Kaarten (0.11): getest met unit-tests (`test_cards.py`, `test_panelhub.py`: lamp en laadpaal van druk tot scherm, tegen een nagebootste lader) en de pagina in een browser (omzetten van de YAML van dit huis, kaart toevoegen, draad naar het paneel en naar een lamp, volgorde). Niet op de echte panel en niet tegen de echte lader: welke waarden 101 en 120 echt geven, en of 124 het laden start en stopt.
 - `default_entity_id` is niet getest tegen een echte HA: geeft die het relais een andere entiteit, dan werkt een draad naar een lamp niet (de panel en zijn eigen relaisknoppen wel).
 - Niet getest: de volledige keten op de echte panel met de echte TFT (of de pagina's er precies zo uitzien als via AppDaemon), `autoexec.be` na een herstart, en een lange periode met verloren pakketten.
-- Niet ondersteund: kaarttypes thermostaat/media/alarm/ontgrendelen/grafiek, detailpagina's (lange druk), `cover`-schuiven, dimmen van lichten, `service:`-items, de update van de TFT.
+- Niet ondersteund: kaarttypes thermostaat/media/alarm/ontgrendelen/grafiek, detailpagina's (lange druk), `cover`-schuiven, dimmen van lichten, `service:`-items, de update van de TFT. Op een kaart niet meer: sjablonen in namen, voorwaarden (`state:`), de opties van de screensaver (`tapToWake`, `inNavigation`, `theme`, `defaultCard`).
 
 ## 27. Schermen met openHASP
 

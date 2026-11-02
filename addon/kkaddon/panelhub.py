@@ -22,10 +22,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from . import cards as _cards
 from . import discovery as d
 from .engine import Engine
 from .habridge import HaBridge
-from .model import ModelError, _panel, panel_relay_entity
+from .model import MAX_CARDS, ModelError, _yaml_panel, panel_relay_entity
 from .panel import Panel, PanelError
 
 log = logging.getLogger("kk.panelhub")
@@ -65,7 +66,7 @@ class Link:
     id: str
     name: str
     host: str
-    yaml: str
+    sig: str = ""  # de configuratie als tekst: verandert ze, dan wordt het scherm opnieuw opgebouwd
     panel: Panel | None = None
     error: str = ""
     last_seen: float = 0.0
@@ -104,11 +105,23 @@ class _Env:
         if not self.hub.ha.call_service(domain, service, data):
             log.warning("%s.%s niet verstuurd: geen verbinding met HA", domain, service)
 
+    def _live(self) -> _cards.Live:
+        h = self.hub
+        return _cards.Live(h.engine.model, h.engine, h.tuya, h.ha.states.get)
+
+    def dynamic(self, entity: str, lang: str):
+        return self._live().value(entity, lang)
+
+    def press(self, entity: str, kind: str, value: str | None) -> None:
+        if not self._live().press(entity, kind, value):
+            log.info("druk op %s (%s) deed niets", entity, kind)
+
 
 class PanelHub(asyncio.DatagramProtocol):
     def __init__(self, data_dir: Path, ha: HaBridge, engine: Engine, port: int = HUB_PORT, panel_port: int = PANEL_PORT,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic, tuya=None) -> None:
         self.data_dir, self.ha, self.engine = data_dir, ha, engine
+        self.tuya = tuya  # TuyaHub, voor de laadpaalkaart; kan later gezet worden
         self.port, self.panel_port, self._clock = port, panel_port, clock
         self.links: dict[str, Link] = {}
         self.forecasts: dict[str, list[dict]] = {}
@@ -154,15 +167,28 @@ class PanelHub(asyncio.DatagramProtocol):
         for pid, v in (raw.get("panels") or {}).items():
             if pid not in model.panels:
                 try:
-                    model.panels = {**model.panels, pid: _panel(pid, v, strict=False)}
+                    p, new, text = _yaml_panel(pid, v, model.cards)
+                    if len(model.cards) + len(new) > MAX_CARDS:
+                        raise ModelError(f"kaarten: maximaal {MAX_CARDS}")
+                    model.cards = {**model.cards, **new}
+                    model.panels = {**model.panels, pid: p}
+                    if text is not None:
+                        model._keep_yaml({pid: text})
                 except ModelError as e:
                     log.error("paneel %s niet overgenomen: %s", pid, e)
         model.save()
         os.replace(old, old.with_suffix(".json.overgenomen"))
         log.info("panelen overgenomen uit panels.json in het model")
 
+    def _config(self, pid: str) -> tuple[dict | None, str]:
+        """(configuratie, fout) uit de kaarten van het model."""
+        try:
+            return _cards.config(self.engine.model, pid), ""
+        except PanelError as e:
+            return None, str(e)
+
     def _sync(self) -> None:
-        """Volgt het model: panelen erbij, eraf, of met een ander adres of andere YAML."""
+        """Volgt het model: panelen erbij, eraf, met een ander adres, of met andere kaarten."""
         panels = self.engine.model.panels
         changed = False
         for pid in [p for p in self.links if p not in panels]:
@@ -171,27 +197,29 @@ class PanelHub(asyncio.DatagramProtocol):
                 link.sender.cancel()
             changed = True
         for pid, p in panels.items():
+            cfg, err = self._config(pid)
+            sig = json.dumps(cfg, sort_keys=True, ensure_ascii=False) if cfg else f"!{err}"
             link = self.links.get(pid)
             if link is None:
-                self.links[pid] = self._build(Link(pid, p["name"], p["host"], p["yaml"]))
+                self.links[pid] = self._build(Link(pid, p["name"], p["host"]), cfg, err, sig)
                 changed = True
                 continue
             if link.name != p["name"]:
                 link.name, changed = p["name"], True
-            if (link.host, link.yaml) != (p["host"], p["yaml"]):
+            if (link.host, link.sig) != (p["host"], sig):
                 if link.host != p["host"]:
                     link.online = False  # een ander adres: wie daar zit moet zich eerst melden
-                link.host, link.yaml = p["host"], p["yaml"]
-                self._build(link)
+                link.host = p["host"]
+                self._build(link, cfg, err, sig)
                 changed = True
         if changed:
             self._poke()
 
-    def _build(self, link: Link) -> Link:
-        link.panel, link.error = None, ""
-        if link.yaml.strip():
+    def _build(self, link: Link, cfg: dict | None, err: str, sig: str) -> Link:
+        link.panel, link.error, link.sig = None, err, sig
+        if cfg:
             try:
-                link.panel = Panel(link.yaml, self._env, lambda text, l=link: self._send(l, b"D|" + text.encode("utf-8")), self.icons)
+                link.panel = Panel(cfg, self._env, lambda text, l=link: self._send(l, b"D|" + text.encode("utf-8")), self.icons)
             except PanelError as e:
                 link.error = str(e)
         link.greeted = False
@@ -209,8 +237,9 @@ class PanelHub(asyncio.DatagramProtocol):
         return True
 
     def status(self) -> list[dict]:
+        panels = self.engine.model.panels
         return [{
-            "id": l.id, "name": l.name, "host": l.host, "yaml": l.yaml, "online": l.online, "error": l.error, "greeted": l.greeted,
+            **panels.get(l.id, {}), "id": l.id, "name": l.name, "host": l.host, "online": l.online, "error": l.error, "greeted": l.greeted,
             "last_seen": round(self._clock() - l.last_seen) if l.last_seen else None, "relays": l.relays, "temperature": l.temp,
             "rssi": l.rssi, "sent": l.sent, "received": l.received,
         } for l in self.links.values()]
@@ -351,6 +380,8 @@ class PanelHub(asyncio.DatagramProtocol):
                 if now - l.last_resend > RESEND:
                     l.last_resend = now
                     l.panel.refresh(force=True)
+                elif l.panel.dynamic:
+                    l.panel.refresh()  # lampen en laadpaal uit de add-on: alleen wat veranderd is gaat naar het scherm
         if changed:
             self._poke()
         if self.ha.connected and now >= self._forecast_at and any(l.panel for l in self.links.values()):

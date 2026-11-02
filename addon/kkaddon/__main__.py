@@ -51,6 +51,7 @@ async def run() -> None:
     screens.changed = mqtt.resync
     screens.publish = mqtt.publish
     tuya = TuyaHub(s.data_dir, engine)
+    panels.tuya = tuya  # de laadpaalkaart leest en stuurt de lader rechtstreeks
     mqtt.extras.append(tuya)
     tuya.changed = mqtt.resync
     tuya.start()

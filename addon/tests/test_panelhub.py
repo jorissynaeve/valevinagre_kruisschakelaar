@@ -8,7 +8,7 @@ import pytest
 from aiohttp.test_utils import TestServer
 
 from fakeha import FakeHa
-from kkaddon import panelhub, schema
+from kkaddon import cards, panelhub, schema
 from kkaddon.engine import Engine
 from kkaddon.habridge import HaBridge
 from kkaddon.model import Model, ModelError
@@ -27,7 +27,7 @@ cards:
     entities:
       - entity: sensor.power
         name: power
-        color: '{{{{ states("sensor.power") }}}}'
+        color: '{{{{iif(states("sensor.power") | float(1) < 0.3, "[0,255,0]", iif(states("sensor.power") | float(1) < 0.4, "[255,165,0]", "[255,0,0]"))}}}}'
 hiddenCards:
   - type: cardGrid
     title: Main
@@ -43,7 +43,7 @@ screensaver:
     - entity: weather.thuis
       type: 0
 """
-TEMPLATE = '{{ states("sensor.power") }}'
+TEMPLATE = cards._power_item({"entity": "sensor.power", "levels": [0.3, 0.4]})["color"]  # zo wordt de kleur van de YAML hierboven omgezet
 
 
 class FakePanel(asyncio.DatagramProtocol):
@@ -122,8 +122,13 @@ class Env:
     def touch(self, text):
         self.fake.to_hub(self.port, "S|" + text)
 
-    def add(self):
-        return self.engine.model.add_panel("NSPanel 1", "127.0.0.1", YAML)
+    def add(self, host="127.0.0.1"):
+        """Een paneel met de kaarten uit de YAML, zoals een paneel uit 0.10 na het omzetten (Engelse dagen: die YAML had geen locale)."""
+        model = self.engine.model
+        pid = model.add_panel("NSPanel 1", host)
+        model.import_panel_yaml(pid, YAML)
+        model.set_panel(pid, locale="en")
+        return pid
 
 
 def run(coro):
@@ -145,7 +150,7 @@ def test_a_panel_that_reports_in_gets_its_screensaver_and_a_touch_opens_a_page(t
             assert "~Sun~12°C" in weather, "de voorspelling komt uit weather.get_forecasts"
             e.fake.got.clear()
             e.touch("event,buttonPress2,screensaver,bExit,2")
-            e.touch("event,buttonPress2,navigate.sub,button,")
+            e.touch("event,buttonPress2,navigate.main,button,")
             await e.until(lambda: any(s.startswith("entityUpd~Main~") for s in e.fake.screen()), what="verborgen pagina")
             page = next(s for s in e.fake.screen() if s.startswith("entityUpd~Main~"))
             assert "~switch~switch.keuken~" in page and "~Kitchen~1" in page and "~Eating~0" in page
@@ -161,7 +166,7 @@ def test_pressing_a_switch_goes_to_ha_and_the_new_state_comes_back_on_the_page(t
             e.beat()
             await e.until(lambda: any(s.startswith("weatherUpdate") for s in e.fake.screen()))
             e.touch("event,buttonPress2,screensaver,bExit,2")
-            e.touch("event,buttonPress2,navigate.sub,button,")
+            e.touch("event,buttonPress2,navigate.main,button,")
             await e.until(lambda: any(s.startswith("entityUpd~Main~") for s in e.fake.screen()))
             e.fake.got.clear()
             e.touch(f"event,buttonPress2,{EAT},OnOff,1")
@@ -219,7 +224,7 @@ def test_the_relays_are_set_and_reported_and_show_up_as_objects_for_ha(tmp_path)
 def test_packets_from_other_addresses_are_ignored_and_a_silent_panel_goes_offline(tmp_path):
     async def go():
         async with Env(tmp_path) as e:
-            pid = e.engine.model.add_panel("NSPanel 1", "10.9.9.9", YAML)  # niet het adres van onze nepl panel
+            pid = e.add("10.9.9.9")  # niet het adres van onze nepl panel
             e.beat()
             await asyncio.sleep(0.2)
             assert not e.hub.links[pid].online
@@ -245,40 +250,51 @@ def test_an_offline_panel_is_asked_for_a_heartbeat(tmp_path):
     run(go())
 
 
-def test_a_bad_yaml_is_refused_and_the_old_config_stays_and_the_config_is_part_of_the_model(tmp_path):
+def test_the_cards_are_part_of_the_model_and_a_panel_without_pages_shows_why(tmp_path):
     async def go():
         async with Env(tmp_path) as e:
             pid = e.add()
             model = e.engine.model
-            with pytest.raises(ModelError, match="cardThermo"):
-                model.set_panel(pid, yaml="cards:\n  - type: cardThermo\n    title: X\n")
-            assert e.hub.links[pid].yaml == YAML and e.hub.links[pid].panel is not None
+            assert e.hub.links[pid].panel is not None
             with pytest.raises(ModelError, match="geldig"):
                 model.set_panel(pid, host="1.2.3.4; rm -rf")
+            with pytest.raises(ModelError, match="onbekende kaart"):
+                model.set_panel(pid, cards=["bestaat_niet"])
             model.set_panel(pid, name="Gang")
             assert e.hub.links[pid].name == "Gang"
-            exported = model.to_dict()["panels"]
-            assert exported == {pid: {"name": "Gang", "host": "127.0.0.1", "yaml": YAML}}, "het paneel zit in de back-up"
+            exported = model.to_dict()
+            assert exported["panels"][pid]["cards"] == ["screensaver", "light", "power"] and set(exported["cards"]) == {"screensaver", "light", "power", "main"}
             other = Model()
-            other.load_dict(model.to_dict())
-            assert other.panels == model.panels
+            other.load_dict(exported)
+            assert other.panels == model.panels and other.cards == model.cards, "paneel en kaarten zitten in de back-up"
+            model.set_panel(pid, cards=["screensaver"])
+            assert e.hub.links[pid].panel is None and "minstens één kaart" in e.hub.links[pid].error
+            model.set_panel(pid, cards=["main"])
+            assert e.hub.links[pid].panel is not None, "een subpagina kan ook een hoofdpagina zijn"
+            assert model.remove_card("main") is True and model.panels[pid]["cards"] == [] and model.cards["light"]["items"] == []
             assert model.remove_panel(pid) is True and model.remove_panel(pid) is False
             assert e.hub.links == {}, "de hub volgt het model"
 
     run(go())
 
 
-def test_a_config_that_no_longer_validates_still_loads_at_startup_and_shows_its_error(tmp_path):
+def test_an_old_yaml_becomes_cards_at_startup_and_what_cannot_is_noted(tmp_path):
     async def go():
         async with Env(tmp_path) as e:
             model = e.engine.model
             d = model.to_dict()
-            d["panels"] = {"oud": {"name": "Oud", "host": "127.0.0.1", "yaml": "cards:\n  - type: cardThermo\n    title: X\n"}}
-            with pytest.raises(ModelError):
-                model.load_dict(d)  # een import weigert
-            model.load_dict(d, save=False)  # opstarten niet
+            d["panels"] = {"oud": {"name": "Oud", "host": "127.0.0.1", "yaml": YAML.replace("cards:\n", "cards:\n  - type: cardThermo\n    title: Thermo\n", 1)}}
+            model.load_dict(d, save=False)
             e.hub._sync()
-            assert e.hub.links["oud"].panel is None and "cardThermo" in e.hub.links["oud"].error
+            p = model.panels["oud"]
+            assert p["cards"] == ["screensaver", "light", "power"] and p["locale"] == "en" and "yaml" not in p
+            assert any("Thermo" in n and "cardThermo" in n for n in p["notes"]), p["notes"]
+            assert model.cards["power"]["items"][0]["levels"] == [0.3, 0.4], "de kleur in drie stappen gaat mee als twee grenzen"
+            assert e.hub.links["oud"].panel is not None and e.hub.links["oud"].error == ""
+            d["panels"] = {"stuk": {"name": "Stuk", "host": "127.0.0.1", "yaml": "a: ["}}
+            d.pop("cards", None)
+            model.load_dict(d, save=False)
+            assert model.panels["stuk"]["cards"] == [] and "niet worden omgezet" in model.panels["stuk"]["notes"][0]
 
     run(go())
 
@@ -287,8 +303,70 @@ def test_panels_json_of_version_0_8_is_taken_over_once(tmp_path):
     async def go():
         (tmp_path / "panels.json").write_text(json.dumps({"panels": {"nspanel_1": {"name": "NSPanel 1", "host": "127.0.0.1", "yaml": YAML}}}), encoding="utf-8")
         async with Env(tmp_path) as e:
-            assert e.engine.model.panels["nspanel_1"]["yaml"] == YAML and e.hub.links["nspanel_1"].panel is not None
+            assert e.engine.model.panels["nspanel_1"]["cards"] == ["screensaver", "light", "power"] and e.hub.links["nspanel_1"].panel is not None
             assert not (tmp_path / "panels.json").exists() and (tmp_path / "panels.json.overgenomen").exists()
+
+    run(go())
+
+
+class FakeTuya:
+    """Wat de laadpaalkaart van de TuyaHub gebruikt."""
+
+    def __init__(self):
+        self.devices = {"lader": {}}
+        self.values = {"101": "connect", "124": "CloseCharging", "25": 3.5, "120": "01:02:03"}
+        self.online = True
+        self.sent = []
+
+    def read(self, did):
+        return dict(self.values) if did in self.devices else None
+
+    def is_online(self, did):
+        return self.online
+
+    def set(self, did, dp, value):
+        self.sent.append((did, dp, value))
+        self.values[dp] = value
+
+
+def test_a_lamp_of_the_addon_and_the_charger_are_shown_and_operated_from_the_panel(tmp_path):
+    async def go():
+        async with Env(tmp_path) as e:
+            model = e.engine.model
+            e.hub.tuya = FakeTuya()
+            model.set_groups([{"id": "hal", "name": "Hal", "entities": [EAT, KITCHEN]}])
+            model.set_group("hal", enabled=True, lamp=[KITCHEN])
+            pid = model.add_panel("Gang", "127.0.0.1")
+            model.add_card("grid", "Licht")
+            model.set_card("licht", items=[{"ref": "g:hal"}])
+            model.add_card("charger", "Laadpaal")
+            model.set_card("laadpaal", tuya="lader", price=0.25)
+            model.set_panel(pid, cards=["licht", "laadpaal"])
+            await e.until(lambda: e.bridge.connected)
+            await e.until(lambda: e.engine.groups.members["hal"][1].known is not None, what="stand van de kring")
+            e.beat()
+            await e.until(lambda: any(s.startswith("pageType~screensaver") for s in e.fake.screen()))
+            e.touch("event,buttonPress2,screensaver,bExit,2")
+            await e.until(lambda: any(s.startswith("entityUpd~Licht~") for s in e.fake.screen()), what="eerste pagina")
+            page = next(s for s in e.fake.screen() if s.startswith("entityUpd~Licht~"))
+            assert "~switch~kk.licht__0~" in page and "~Hal~1" in page, "de lamp heet zoals de kring en staat aan zoals haar lamp-relais"
+            e.touch("event,buttonPress2,kk.licht__0,OnOff,0")
+            await e.until(lambda: (KITCHEN, "turn_off") in e.ha.calls, what="de kring gaat uit")
+            await e.until(lambda: any("~Hal~0" in s for s in e.fake.screen()), what="nieuwe stand op het scherm")
+            e.fake.got.clear()
+            e.touch("event,buttonPress2,navigate.uuid.c1,button,")
+            await e.until(lambda: any(s.startswith("entityUpd~Laadpaal~") for s in e.fake.screen()), what="laadpaal")
+            page = next(s for s in e.fake.screen() if s.startswith("entityUpd~Laadpaal~"))
+            assert "~button~kk.laadpaal__run~" in page and "~Aangesloten~Start" in page
+            assert "~Laadtijd~01:02:03" in page and "~Geladen~3.50 kWh" in page and "~Prijs~€ 0.88" in page
+            e.touch("event,buttonPress2,kk.laadpaal__run,button")
+            await e.until(lambda: e.hub.tuya.sent == [("lader", "124", "OpenCharging")], what="starten")
+            await e.until(lambda: any("~Aangesloten~Stop" in s for s in e.fake.screen()), what="knop wordt Stop")
+            e.hub.tuya.online = False
+            await e.until(lambda: any("~Lader offline~" in s for s in e.fake.screen()), what="offline")
+            e.touch("event,buttonPress2,kk.laadpaal__run,button")
+            await asyncio.sleep(0.1)
+            assert len(e.hub.tuya.sent) == 1, "een lader die weg is krijgt geen bevel"
 
     run(go())
 
@@ -343,9 +421,29 @@ def test_the_web_api_adds_edits_and_removes_panels_and_serves_the_script(tmp_pat
                 assert r.status == 200 and j["key"] == "p:nspanel"
                 st = await (await c.get("/api/state")).json()
                 assert next(b for b in st["schema"]["blocks"] if b["key"] == j["key"])["page"] == "hal"
-                assert (await c.put(f"/api/panels/{pid}", json={"host": "127.0.0.1", "yaml": YAML})).status == 200
-                bad = await c.put(f"/api/panels/{pid}", json={"yaml": "cards:\n  - type: cardThermo\n    title: X\n"})
-                assert bad.status == 400 and "cardThermo" in (await bad.json())["error"]
+                assert (await c.put(f"/api/panels/{pid}", json={"host": "127.0.0.1"})).status == 200
+                assert (await c.put(f"/api/panels/{pid}", json={"yaml": YAML})).status == 400, "een YAML zetten kan niet meer: alleen omzetten"
+                r = await c.post(f"/api/panels/{pid}/yaml", json={"yaml": YAML})
+                j = await r.json()
+                assert r.status == 200 and set(j["cards"]) == {"screensaver", "light", "power", "main"} and j["notes"] == []
+                st = await (await c.get("/api/state")).json()
+                blocks = {b["key"]: b for b in st["schema"]["blocks"]}
+                assert blocks["c:light"]["page"] == "hal" and blocks["c:main"]["page"] == "hal", "de kaarten staan bij het paneel"
+                assert [x["key"] for x in blocks[f"p:{pid}"]["cards"]] == ["c:screensaver", "c:light", "c:power"]
+                assert blocks["c:main"]["users"] == [{"key": "c:light", "name": "Light", "i": 0, "as": "sub"}]
+                assert blocks["c:light"]["items"][0]["target"] == "c:main" and blocks["c:light"]["items"][0]["label"] == "→ Main"
+                assert (await c.post(f"/api/panels/{pid}/yaml", json={"yaml": "a: ["})).status == 400
+                r = await c.post("/api/cards", json={"type": "charger", "page": "hal", "x": 0, "y": 400})
+                assert r.status == 200 and (await r.json())["key"] == "c:laadpaal"
+                assert (await c.put("/api/cards/laadpaal", json={"price": 0.31, "tuya": "lader"})).status == 200
+                assert (await c.put("/api/cards/laadpaal", json={"price": -1})).status == 400
+                assert (await c.put("/api/cards/laadpaal", json={"items": []})).status == 400, "een laadpaal heeft geen knoppen"
+                assert (await c.put("/api/cards/light", json={"items": [{"ref": "c:screensaver"}]})).status == 400, "een screensaver is geen subpagina"
+                assert (await c.put("/api/cards/light", json={"items": [{"name": "a~b"}]})).status == 400, "een ~ breekt het scherm"
+                assert (await c.put(f"/api/panels/{pid}", json={"cards": ["screensaver", "laadpaal", "light"]})).status == 200
+                assert (await c.post("/api/cards", json={"type": "saver"})).status == 200
+                assert (await c.put(f"/api/panels/{pid}", json={"cards": ["screensaver", "screensaver_2"]})).status == 400, "één screensaver"
+                assert (await c.delete("/api/cards/laadpaal")).status == 200 and e.engine.model.panels[pid]["cards"] == ["screensaver", "light"]
                 assert (await c.put("/api/panels/nergens", json={"name": "x"})).status == 400
                 assert (await c.put(f"/api/panels/{pid}", json={"onzin": 1})).status == 400
                 assert (await c.post(f"/api/panels/{pid}/relay/1", json={"on": True})).status == 200

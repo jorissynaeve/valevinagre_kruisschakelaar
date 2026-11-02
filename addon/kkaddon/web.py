@@ -347,10 +347,41 @@ def _panels(request: web.Request):
 async def panel_post(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     b = await _body(request)
-    pid = ctx.model.add_panel(b.get("name"), b.get("host") or "", b.get("yaml") or "")
+    pid = ctx.model.add_panel(b.get("name"), b.get("host") or "")
     if b.get("page"):
         schema.place(ctx.model, ctx.engine.snapshot(), f"p:{pid}", b["page"], b.get("x", 0), b.get("y", 0))
     return web.json_response({"ok": True, "id": pid, "key": f"p:{pid}"})
+
+
+async def panel_yaml(request: web.Request) -> web.Response:
+    """Een YAML van nspanel-lovelace-ui omzetten naar kaarten aan dit paneel. De kaarten komen op de ruimte van het paneel."""
+    ctx: Ctx = request.app[CTX]
+    pid = request.match_info["pid"]
+    before = set(ctx.model.cards)
+    notes = ctx.model.import_panel_yaml(pid, (await _body(request)).get("yaml"))
+    new = [c for c in ctx.model.cards if c not in before]
+    ctx.model.place_cards_near(pid, new)
+    ctx.model.save()
+    return web.json_response({"ok": True, "notes": notes, "cards": new})
+
+
+async def card_post(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    cid = ctx.model.add_card(b.get("type"), b.get("name"))
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"c:{cid}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "id": cid, "key": f"c:{cid}"})
+
+
+async def card_put(request: web.Request) -> web.Response:
+    request.app[CTX].model.set_card(request.match_info["cid"], **await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def card_delete(request: web.Request) -> web.Response:
+    ok = request.app[CTX].model.remove_card(request.match_info["cid"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
 async def panel_put(request: web.Request) -> web.Response:
@@ -644,6 +675,10 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/panels/{pid}", panel_put)
     r.add_delete("/api/panels/{pid}", panel_delete)
     r.add_post("/api/panels/{pid}/relay/{n}", panel_relay)
+    r.add_post("/api/panels/{pid}/yaml", panel_yaml)
+    r.add_post("/api/cards", card_post)
+    r.add_put("/api/cards/{cid}", card_put)
+    r.add_delete("/api/cards/{cid}", card_delete)
     r.add_post("/api/screens", screen_post)
     r.add_put("/api/screens/{sid}", screen_put)
     r.add_delete("/api/screens/{sid}", screen_delete)

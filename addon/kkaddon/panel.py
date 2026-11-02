@@ -45,6 +45,12 @@ class Env(Protocol):
     def forecast(self, entity: str) -> list[dict]: ...
     def now(self) -> datetime: ...
     def call(self, domain: str, service: str, data: dict) -> None: ...
+    # Optioneel, voor rijen `kk.<...>` (kaarten uit de add-on, zie cards.py): hun stand en wat een druk doet
+    # def dynamic(self, entity: str, lang: str) -> dict | None: ...   {kind, value, name, icon, color}
+    # def press(self, entity: str, kind: str, value: str | None) -> None: ...
+
+
+DYN = "kk"
 
 
 # ---------------------------------------------------------------- teksten
@@ -202,6 +208,8 @@ class Panel:
         self._last_saver: list[str] = []
         self._last_clock: tuple = ()
         self._seen_startup = False
+        # rijen waarvan de stand uit de add-on komt: de hub ververst dan elke tik (alleen wat veranderd is gaat naar het scherm)
+        self.dynamic = any(it.entity.startswith(f"{DYN}.") for c in self.cards for it in c.items)
 
     # ------------------------------------------------------------ wat volgen we
 
@@ -223,7 +231,7 @@ class Panel:
         for k in ("sleepBrightness", "screenBrightness"):
             if isinstance(self.cfg[k], str):
                 out.add(self.cfg[k])
-        return {e for e in out if "." in e and e.split(".")[0] not in ("navigate", "iText", "delete", "service")}
+        return {e for e in out if "." in e and e.split(".")[0] not in ("navigate", "iText", "delete", "service", DYN)}
 
     def forecast_entities(self) -> set[str]:
         """Echte weer-entiteiten waar een voorspelling voor nodig is (een sensor met een `forecast`-attribuut heeft dat al)."""
@@ -355,8 +363,10 @@ class Panel:
             else:
                 icon, color = self.ha_icon(entity, None, it.icon), self.color(None, None, it.color)
             return f"~button~{entity}~{icon}~{color}~{name if name is not None else target.title}~{self.word('press')}"
+        if domain == DYN:
+            return self._dynamic(it, entity, name)
         if domain == "iText":
-            value = entity.split(".", 2)[1] if entity.count(".") else ""
+            value = entity.split(".", 1)[1] if entity.count(".") else ""  # alles na de eerste punt: een wachtwoord mag een punt hebben
             color = rgb565(it.color) if isinstance(it.color, list) else DEFAULT_COLOR
             return f"~text~{entity}~{self.icon(it.icon) if it.icon else self.icon('alert-circle-outline')}~{color}~{name if name is not None else 'conf name missing'}~{value}"
         if st is None:
@@ -400,6 +410,20 @@ class Panel:
         if mask:
             kind, entity = "", ""
         return f"~{kind}~{entity}~{icon}~{color}~{name}~{value}"
+
+    def _dynamic(self, it: Item, entity: str, name: str | None) -> str:
+        fn = getattr(self.env, "dynamic", None)
+        d = fn(entity, self.lang) if fn else None
+        if d is None:
+            return f"~text~{entity}~{self.icon('alert-circle-outline')}~{DEFAULT_COLOR}~{name if name is not None else self.word('missing')}~"
+        color = d.get("color", DEFAULT_COLOR)
+        if it.color is not None:
+            color = self._rgb(it.color)
+        elif isinstance(color, (list, tuple)):
+            color = rgb565(color)
+        icon = self.icon(it.icon if it.icon is not None else d.get("icon") or "alert-circle-outline")
+        shown = name if name is not None else d.get("name", "")
+        return f"~{d.get('kind', 'text')}~{entity}~{icon}~{color}~{str(shown).replace('~', '-')}~{str(d.get('value', '')).replace('~', '-')}"
 
     @staticmethod
     def _short(state: str) -> str:
@@ -634,6 +658,12 @@ class Panel:
             return
         if kind == "bExit":
             self.render(self.current)
+            return
+        if domain == DYN:
+            fn = getattr(self.env, "press", None)
+            if fn:
+                fn(entity, kind, value)
+            self.refresh()  # de nieuwe stand meteen tonen zodra de add-on hem kent
             return
         if kind == "OnOff":
             self.env.call("homeassistant", "turn_on" if value == "1" else "turn_off", {"entity_id": entity})

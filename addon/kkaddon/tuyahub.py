@@ -418,6 +418,16 @@ class TuyaHub:
         c = self.clients.get(did)
         return bool(c and c.connected)
 
+    def is_online(self, did: str) -> bool:
+        return did in self.devices and self._online(did)
+
+    def read(self, did: str) -> dict | None:
+        """De gemelde waarden per datapunt, met de schaal toegepast (zoals in de zijbalk). Voor de kaarten van een NSPanel."""
+        if did not in self.devices:
+            return None
+        defs = self._defs(did)
+        return {dp: self._shown(defs.get(dp) or {}, v) for dp, v in self.values.get(did, {}).items()}
+
     # ------------------------------------------------------------ voor de pagina: nooit de sleutel
 
     def status(self) -> list[dict]:

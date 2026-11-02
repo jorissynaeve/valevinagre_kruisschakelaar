@@ -28,6 +28,7 @@ Bestandsformaat (network.json, ook voor export/import):
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import tempfile
@@ -35,14 +36,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from . import cards as _cards
 from .logic import BOOL, MODULE_TYPES, NUMBER, SPRINKLER_INPUTS, TIME, disable_ref
 from .logic import minutes as _minutes
 from .hasp import DOMAINS as SCREEN_DOMAINS
 from .hasp import MAX_BUTTONS as HASP_MAX_BUTTONS
 from .hasp import MAX_PAGES as HASP_MAX_PAGES
 from .panel import PanelError
-from .panel import validate as _validate_panel
 from .proto import MAX_GANGS, MAX_IND, MAX_RELAYS, MAX_TRIG, MODE_BY_NAME, VIRTUAL_MAX, VIRTUAL_MIN, is_virtual
+
+log = logging.getLogger("kk.model")
 
 MAX_NAME = 60
 MAX_FLOORS, MAX_ROOMS, MAX_ITEMS, PLAN_MAX = 8, 80, 400, 4000
@@ -56,7 +59,14 @@ DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 FORMAT_VERSION = 1
 MAX_PANELS = 8
 MAX_PANEL_YAML = 100_000
+MAX_PANEL_CARDS = 16
+MAX_CARDS = 100
+MAX_NOTES, MAX_NOTE = 60, 300
 PANEL_HOST_RE = re.compile(r"[A-Za-z0-9.\-]{1,253}")
+CARD_ID_RE = re.compile(r"[a-z0-9_]{1,40}")
+ICON_RE = re.compile(r"[a-z0-9-]{1,60}")
+TUYA_ID_RE = re.compile(r"[a-z0-9_]{1,80}")
+WIFI_SECURITY = ("WPA", "WEP", "nopass")
 MAX_SCREENS = 8
 MAX_SCREEN_PAGES = HASP_MAX_PAGES
 MAX_SCREEN_BUTTONS = HASP_MAX_BUTTONS
@@ -282,30 +292,180 @@ def panel_relay_entity(pid: str, n: int) -> str:
     return f"switch.kk_panel_{pid}_relay{n}"
 
 
-def _panel(pid, v, strict: bool) -> dict:
-    """`strict`: een YAML die niet te gebruiken is weigeren. Bij het opstarten niet: de hub toont dan de fout."""
+def _panel(pid, v) -> dict:
+    """Een paneel: adres, de kaarten in volgorde (een screensaver-kaart is het startscherm) en de instellingen van het scherm.
+    `notes` zijn meldingen van het omzetten van een oude YAML, tot iemand ze wegklikt."""
     if not isinstance(pid, str) or not re.fullmatch(r"[a-z0-9_]{1,40}", pid) or not isinstance(v, dict):
         raise ModelError(f"paneel: ongeldig id {pid!r}")
     name = _name(v.get("name"), "paneel.name") or pid
-    host, text = v.get("host") or "", v.get("yaml") or ""
+    host = v.get("host") or ""
     if not isinstance(host, str) or (host.strip() and not PANEL_HOST_RE.fullmatch(host.strip())):
         raise ModelError("paneel: geen geldig IP-adres of hostnaam")
-    if not isinstance(text, str) or len(text) > MAX_PANEL_YAML:
-        raise ModelError(f"paneel: YAML van maximaal {MAX_PANEL_YAML} tekens verwacht")
-    if strict and text.strip():
-        try:
-            _validate_panel(text)
-        except PanelError as e:
-            raise ModelError(str(e)) from e
-    return {"name": name, "host": host.strip(), "yaml": text}
+    raw = v.get("cards") or []
+    if not isinstance(raw, list) or len(raw) > MAX_PANEL_CARDS or any(not isinstance(c, str) or not CARD_ID_RE.fullmatch(c) for c in raw):
+        raise ModelError(f"paneel: maximaal {MAX_PANEL_CARDS} kaarten")
+    if len(set(raw)) != len(raw):
+        raise ModelError("paneel: een kaart staat er twee keer op")
+    locale = v.get("locale", "nl")
+    if locale not in ("nl", "en"):
+        raise ModelError("paneel: taal nl of en")
+    notes = v.get("notes") or []
+    if not isinstance(notes, list) or len(notes) > MAX_NOTES or any(not isinstance(n, str) for n in notes):
+        raise ModelError("paneel: ongeldige meldingen")
+    return {"name": name, "host": host.strip(), "cards": list(raw), "locale": locale, "timeout": _int(v.get("timeout", 20), 0, 3600, "paneel.timeout"),
+            "bright": _int(v.get("bright", 100), 0, 100, "paneel.bright"), "dim": _int(v.get("dim", 20), 0, 100, "paneel.dim"), "notes": [n[:MAX_NOTE] for n in notes]}
 
 
-def _panels(raw, strict: bool) -> dict[str, dict]:
-    if raw is None:
+def _yaml_panel(pid, v, cards: dict[str, dict]) -> tuple[dict, dict[str, dict], str | None]:
+    """Tot 0.11 had een paneel een YAML van nspanel-lovelace-ui. Die wordt eenmalig kaarten. Geeft (paneel, nieuwe kaarten, de oude YAML of None)."""
+    text = v.get("yaml") if isinstance(v, dict) else None
+    if not isinstance(text, str) or not text.strip() or v.get("cards"):
+        return _panel(pid, {k: x for k, x in (v or {}).items() if k != "yaml"} if isinstance(v, dict) else v), {}, None
+    base = {"name": v.get("name"), "host": v.get("host"), "locale": "en"}  # zonder locale was het scherm Engels: zo blijft het
+    try:
+        new, fields, notes = _cards.from_yaml(text, set(cards))
+        new = {k: _card(k, c) for k, c in new.items()}
+        msgs = ["Omgezet uit de YAML van nspanel-lovelace-ui; de oude YAML staat in de datamap.", *notes]
+    except (PanelError, ModelError) as e:
+        new, fields, msgs = {}, {}, [f"De YAML kon niet worden omgezet ({e}). Ze staat in de datamap; hang de kaarten met de hand aan het paneel."]
+    return _panel(pid, {**base, **fields, "notes": msgs[:MAX_NOTES]}), new, text
+
+
+def _check_panels(panels: dict[str, dict], cards: dict[str, dict]) -> None:
+    for p in panels.values():
+        missing = [c for c in p["cards"] if c not in cards]
+        if missing:
+            raise ModelError(f"paneel {p['name']}: onbekende kaart {missing[0]}")
+        if sum(1 for c in p["cards"] if cards[c]["type"] == "saver") > 1:
+            raise ModelError(f"paneel {p['name']}: één screensaver per paneel")
+
+
+def _num(v, lo, hi, what) -> float:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+        raise ModelError(f"{what}: verwacht een getal tussen {lo} en {hi}, kreeg {v!r}")
+    return v
+
+
+def _opt_entity(v, what) -> str | None:
+    if v in (None, ""):
+        return None
+    if not isinstance(v, str) or not ENTITY_RE.match(v):
+        raise ModelError(f"{what}: ongeldige entiteit {v!r}")
+    return v
+
+
+def _icon_name(v) -> str:
+    if v in (None, ""):
+        return ""
+    v = v.removeprefix("mdi:") if isinstance(v, str) else v
+    if not isinstance(v, str) or not ICON_RE.fullmatch(v):
+        raise ModelError(f"pictogram: verwacht een MDI-naam zoals lightbulb, kreeg {v!r}")
+    return v
+
+
+def _plain(v, what, n: int = MAX_NAME) -> str:
+    """Tekst die op het scherm komt: een ~ scheidt daar de velden."""
+    if v is None:
+        return ""
+    if not isinstance(v, str) or len(v) > n or "~" in v:
+        raise ModelError(f"{what}: tekst van maximaal {n} tekens zonder ~ verwacht")
+    return v
+
+
+def _card(cid, v) -> dict:
+    """Een kaart voor een NSPanel (zie cards.py)."""
+    if not isinstance(cid, str) or not CARD_ID_RE.fullmatch(cid) or not isinstance(v, dict):
+        raise ModelError(f"kaart: ongeldig id {cid!r}")
+    t = v.get("type")
+    if t not in _cards.TYPES:
+        raise ModelError(f"kaart: onbekend type {t!r}")
+    out: dict = {"type": t, "name": _plain(_name(v.get("name"), "kaart.name"), "kaart.name") or _cards.TYPES[t]}
+    if t == "grid":
+        layout = v.get("layout", "grid")
+        if layout not in _cards.LAYOUTS:
+            raise ModelError("kaart: weergave raster of lijst")
+        items = v.get("items") or []
+        if not isinstance(items, list) or len(items) > _cards.MAX_ITEMS[layout]:
+            raise ModelError(f"kaart {out['name']}: maximaal {_cards.MAX_ITEMS[layout]} knoppen")
+        clean = []
+        for it in items:
+            if not isinstance(it, dict):
+                raise ModelError("kaart: ongeldige knop")
+            ref, ent = it.get("ref") or None, _opt_entity(it.get("entity"), "knop")
+            if ref is not None and (not isinstance(ref, str) or not (_cards.LAMP_REF.match(ref) or _cards.CARD_REF.match(ref))):
+                raise ModelError(f"kaart: een knop kan niet naar {ref!r} wijzen")
+            if ref and ent:
+                raise ModelError("kaart: een knop bedient een lamp óf een entiteit")
+            if ref == f"c:{cid}":
+                raise ModelError("kaart: een knop kan niet naar zijn eigen kaart gaan")
+            clean.append({"ref": ref, "entity": ent, "name": _plain(_name(it.get("name"), "knop.name"), "knop.name"), "icon": _icon_name(it.get("icon"))})
+        out.update(layout=layout, items=clean)
+    elif t == "charger":
+        did = v.get("tuya") or ""
+        if not isinstance(did, str) or (did and not TUYA_ID_RE.fullmatch(did)):
+            raise ModelError("laadpaal: ongeldig Tuya-toestel")
+        out.update(tuya=did, price=_num(v.get("price", 0.30), 0, 100, "prijs per kWh"), price_entity=_opt_entity(v.get("price_entity"), "prijs"))
+    elif t == "saver":
+        out.update({k: _opt_entity(v.get(k), k) for k in ("weather", "forecast", "temperature", "status1", "status2")})
+    elif t == "power":
+        items = v.get("items") or []
+        if not isinstance(items, list) or len(items) > _cards.MAX_POWER:
+            raise ModelError(f"energie: maximaal {_cards.MAX_POWER} rijen")
+        clean = []
+        for it in items:
+            if not isinstance(it, dict):
+                raise ModelError("energie: ongeldige rij")
+            lv = it.get("levels")
+            if lv is not None and (not isinstance(lv, list) or len(lv) != 2 or _num(lv[0], 0, MAX_NUMBER, "grens") >= _num(lv[1], 0, MAX_NUMBER, "grens")):
+                raise ModelError("energie: twee oplopende grenzen voor de kleur")
+            clean.append({"entity": _opt_entity(it.get("entity"), "energie"), "name": _plain(_name(it.get("name"), "rij.name"), "rij.name"), "icon": _icon_name(it.get("icon")),
+                          "speed": _int(it.get("speed", 0), -120, 120, "snelheid"), "levels": lv})
+        out["items"] = clean
+    elif t == "qr":
+        sec = v.get("security", "WPA")
+        if sec not in WIFI_SECURITY:
+            raise ModelError("wifi: beveiliging WPA, WEP of nopass")
+        out.update(ssid=_plain(v.get("ssid") or "", "netwerknaam", 32), password=_plain(v.get("password") or "", "wachtwoord", 63), security=sec)
+    return out
+
+
+def _check_cards(cards: dict[str, dict]) -> None:
+    """Een knop naar een subpagina wijst naar een kaart die bestaat en geen screensaver is."""
+    for c in cards.values():
+        for it in c.get("items", []) if c["type"] == "grid" else []:
+            ref = it.get("ref") or ""
+            if ref.startswith("c:"):
+                sub = cards.get(ref[2:])
+                if sub is None:
+                    raise ModelError(f"kaart {c['name']}: de subpagina bestaat niet")
+                if sub["type"] == "saver":
+                    raise ModelError(f"kaart {c['name']}: een screensaver kan geen subpagina zijn")
+
+
+def _load_cards(raw) -> dict[str, dict]:
+    if raw in (None, {}):
         return {}
+    if not isinstance(raw, dict) or len(raw) > MAX_CARDS:
+        raise ModelError(f"kaarten: maximaal {MAX_CARDS}")
+    return {k: _card(k, v) for k, v in raw.items()}
+
+
+def _panels(raw, cards: dict[str, dict]) -> tuple[dict[str, dict], dict[str, dict], dict[str, str]]:
+    """(panelen, alle kaarten, oude YAML's per paneel om te bewaren)."""
+    if raw is None:
+        return {}, cards, {}
     if not isinstance(raw, dict) or len(raw) > MAX_PANELS:
         raise ModelError(f"panelen: maximaal {MAX_PANELS}")
-    return {k: _panel(k, v, strict) for k, v in raw.items()}
+    out, cards, old = {}, dict(cards), {}
+    for k, v in raw.items():
+        p, new, text = _yaml_panel(k, v, cards)
+        if len(cards) + len(new) > MAX_CARDS:
+            raise ModelError(f"kaarten: maximaal {MAX_CARDS}")
+        cards.update(new)
+        out[k] = p
+        if text is not None:
+            old[k] = text
+    return out, cards, old
 
 
 def _screen(sid, v) -> dict:
@@ -444,7 +604,7 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]], sprinkle
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|c:[a-z0-9_]{1,40}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
 
 
 def _switch_gangs(raw) -> list[dict]:
@@ -614,7 +774,8 @@ class Model:
         self.timers: dict[str, dict] = {}  # timer-modules: id -> {name, days}
         self.modules: dict[str, dict] = {}  # tijd- en logicamodules: id -> {type, name, inputs, value}
         self.sprinklers: dict[str, dict] = {}  # sprinklers: id -> {name, enabled, start, cycles, wait, refresh, days, inputs, zones}
-        self.panels: dict[str, dict] = {}  # NSPanels: id -> {name, host, yaml}
+        self.panels: dict[str, dict] = {}  # NSPanels: id -> {name, host, cards, locale, timeout, bright, dim, notes}
+        self.cards: dict[str, dict] = {}  # kaarten voor de NSPanels: id -> {type, name, ...} (zie cards.py)
         self.screens: dict[str, dict] = {}  # schermen met openHASP: id -> {name, plate, timeout, pages}
         self.rev = 0
         self._listeners: list[Callable[[], None]] = []
@@ -668,6 +829,8 @@ class Model:
             d["sprinklers"] = self.sprinklers
         if self.panels:
             d["panels"] = self.panels
+        if self.cards:
+            d["cards"] = self.cards
         if self.screens:
             d["screens"] = self.screens
         if self.schema["pages"] or self.schema["switches"] or self.schema["names"]:
@@ -712,20 +875,61 @@ class Model:
         timers = _timers(d.get("timers"))
         modules = _modules(d.get("modules"))
         sprinklers = _sprinklers(d.get("sprinklers"))
-        panels = _panels(d.get("panels"), strict=save)
+        panels, cards, old_yaml = _panels(d.get("panels"), _load_cards(d.get("cards")))
         screens = _screens(d.get("screens"))
         if save:  # bij het opstarten nooit weigeren, bij een import wel
             _conflicts(groups, virtual, sprinklers)
             _check_modules(modules, timers)
             _check_sprinklers(sprinklers, modules, timers)
+            _check_cards(cards)
+            _check_panels(panels, cards)
             for g in groups.values():
                 for key in ("disable", "control"):
                     if g.get(key, "").startswith("m:"):
                         _check_disable(g[key], modules, timers)
+        else:  # wat niet (meer) klopt valt weg in plaats van het opstarten te breken
+            panels = {k: {**p, "cards": [c for c in p["cards"] if c in cards]} for k, p in panels.items()}
+            for c in cards.values():
+                if c["type"] == "grid":
+                    c["items"] = [it for it in c["items"] if not (it["ref"] or "").startswith("c:") or (it["ref"][2:] in cards and cards[it["ref"][2:]]["type"] != "saver")]
         self.nodes, self.lights, self.follow, self.virtual, self.plan, self.groups, self.schema, self.timers = nodes, lights, follow, virtual, plan, groups, schema, timers
-        self.modules, self.sprinklers, self.panels, self.screens = modules, sprinklers, panels, screens
+        self.modules, self.sprinklers, self.panels, self.cards, self.screens = modules, sprinklers, panels, cards, screens
+        if old_yaml:
+            self._keep_yaml(old_yaml)
+            for pid in old_yaml:
+                self.place_cards_near(pid, [c for c in cards if c not in (d.get("cards") or {})])
         if save:
             self._changed()
+        elif old_yaml:
+            self.save()  # de omzetting meteen bewaren: anders gebeurt ze bij elke start opnieuw
+
+    def place_cards_near(self, pid: str, cids: list[str]) -> None:
+        """Nieuwe kaarten in een kolom links van het paneel, als dat op het schema staat. Alleen weergave."""
+        pos = self.schema["blocks"].get(f"p:{pid}")
+        todo = [c for c in cids if f"c:{c}" not in self.schema["blocks"]]
+        if not pos or not todo:
+            return
+        blocks = dict(self.schema["blocks"])
+        y = pos["y"]
+        for c in todo:  # de hoogtes zoals schema.py en schema.js ze tekenen (42 kop, 24 per rij, 10 voet), met 24 ertussen
+            card = self.cards[c]
+            rows = (len(card["items"]) + 1 if card["type"] == "grid" else max(len(card["items"]), 1) if card["type"] == "power" else 3 if card["type"] == "saver" else 2)
+            blocks[f"c:{c}"] = {"page": pos["page"], "x": max(0, pos["x"] - 460), "y": min(SCHEMA_MAX, y)}  # rechts ervan plaats voor de verwijzingen
+            y += 42 + rows * 24 + 10 + 24
+        self.schema = {**self.schema, "blocks": dict(sorted(blocks.items()))}
+
+    def _keep_yaml(self, old: dict[str, str]) -> None:
+        """De oude YAML naast network.json bewaren: het omzetten laat dingen weg die je misschien nog wilt nakijken."""
+        if not self.path:
+            return
+        for pid, text in old.items():
+            target = self.path.parent / f"panel-{pid}.yaml.overgenomen"
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding="utf-8")
+                log.info("paneel %s: YAML omgezet naar kaarten, de oude staat in %s", pid, target)
+            except OSError as e:
+                log.error("paneel %s: oude YAML niet bewaard in %s: %s", pid, target, e)
 
     def set_groups(self, items) -> list[str]:
         """Import van kringen (nieuw of bijgewerkt). Een nieuwe kring staat **uit**; een bestaande houdt haar aan/uit."""
@@ -860,7 +1064,7 @@ class Model:
         self._changed()
         return True
 
-    def add_panel(self, name=None, host="", yaml="") -> str:
+    def add_panel(self, name=None, host="") -> str:
         if len(self.panels) >= MAX_PANELS:
             raise ModelError(f"panelen: maximaal {MAX_PANELS}")
         base = _name(name, "name") or "NSPanel"
@@ -868,20 +1072,89 @@ class Model:
         pid, label, n = slug, base, 2
         while pid in self.panels:
             pid, label, n = f"{slug}_{n}", f"{base} {n}", n + 1
-        self.panels = {**self.panels, pid: _panel(pid, {"name": label, "host": host, "yaml": yaml}, strict=True)}
+        self.panels = {**self.panels, pid: _panel(pid, {"name": label, "host": host})}
         self._changed()
         return pid
 
     def set_panel(self, pid: str, **fields) -> None:
-        """Alleen wat je meegeeft verandert. Een YAML die niet klopt wordt geweigerd; de vorige blijft."""
+        """Alleen wat je meegeeft verandert. `cards` is de hele lijst in volgorde."""
         old = self.panels.get(pid)
         if old is None:
             raise ModelError("onbekend paneel")
-        unknown = set(fields) - {"name", "host", "yaml"}
+        unknown = set(fields) - {"name", "host", "cards", "locale", "timeout", "bright", "dim", "notes"}
         if unknown:
             raise ModelError(f"paneel: onbekend veld {sorted(unknown)[0]}")
-        self.panels = {**self.panels, pid: _panel(pid, {**old, **fields}, strict=True)}
+        if isinstance(fields.get("cards"), list):  # de screensaver vooraan: hij is geen pagina, dus de volgorde van de pagina's blijft
+            fields["cards"] = sorted(fields["cards"], key=lambda c: not (isinstance(c, str) and self.cards.get(c, {}).get("type") == "saver"))
+        panels = {**self.panels, pid: _panel(pid, {**old, **fields})}
+        _check_panels(panels, self.cards)
+        self.panels = panels
         self._changed()
+
+    def import_panel_yaml(self, pid: str, text) -> list[str]:
+        """Een YAML van nspanel-lovelace-ui omzetten naar kaarten en achteraan aan dit paneel hangen. Geeft de meldingen terug."""
+        old = self.panels.get(pid)
+        if old is None:
+            raise ModelError("onbekend paneel")
+        if not isinstance(text, str) or not text.strip() or len(text) > MAX_PANEL_YAML:
+            raise ModelError(f"plak een YAML van maximaal {MAX_PANEL_YAML} tekens")
+        try:
+            new, fields, notes = _cards.from_yaml(text, set(self.cards))
+        except PanelError as e:
+            raise ModelError(str(e)) from e
+        new = {k: _card(k, c) for k, c in new.items()}
+        if len(self.cards) + len(new) > MAX_CARDS:
+            raise ModelError(f"kaarten: maximaal {MAX_CARDS}")
+        cards = {**self.cards, **new}
+        order = [c for c in old["cards"] if not (cards[c]["type"] == "saver" and any(cards[x]["type"] == "saver" for x in fields["cards"]))]  # de nieuwe screensaver wint
+        merged = sorted(order + fields["cards"], key=lambda c: cards[c]["type"] != "saver")
+        panel = _panel(pid, {**old, **{k: v for k, v in fields.items() if k != "cards"}, "cards": merged})
+        _check_cards(cards)
+        panels = {**self.panels, pid: panel}
+        _check_panels(panels, cards)
+        self.cards, self.panels = cards, panels
+        self._changed()
+        return notes
+
+    def add_card(self, kind, name=None) -> str:
+        if kind not in _cards.TYPES:
+            raise ModelError(f"onbekende kaart {kind!r}")
+        if len(self.cards) >= MAX_CARDS:
+            raise ModelError(f"kaarten: maximaal {MAX_CARDS}")
+        base = _name(name, "name") or _cards.TYPES[kind]
+        slug = re.sub(r"[^a-z0-9_]+", "_", base.lower()).strip("_")[:30] or "kaart"
+        cid, label, n = slug, base, 2
+        names = {c["name"] for c in self.cards.values()}
+        while cid in self.cards or (not name and label in names):
+            cid, label, n = f"{slug}_{n}", f"{base} {n}", n + 1
+        self.cards = {**self.cards, cid: _card(cid, {"type": kind, "name": label})}
+        self._changed()
+        return cid
+
+    def set_card(self, cid: str, **fields) -> None:
+        """Alleen wat je meegeeft verandert; `items` is de hele lijst."""
+        old = self.cards.get(cid)
+        if old is None:
+            raise ModelError("onbekende kaart")
+        unknown = set(fields) - (set(old) - {"type"})
+        if unknown:
+            raise ModelError(f"kaart: onbekend veld {sorted(unknown)[0]}")
+        cards = {**self.cards, cid: _card(cid, {**old, **fields})}
+        _check_cards(cards)
+        _check_panels(self.panels, cards)  # bv. een tweede screensaver kan niet: maar het type verandert hier nooit
+        self.cards = cards
+        self._changed()
+
+    def remove_card(self, cid: str) -> bool:
+        """Ook weg van de panelen, en de knoppen die erheen gingen verdwijnen."""
+        if cid not in self.cards:
+            return False
+        ref = f"c:{cid}"
+        self.cards = {k: ({**c, "items": [it for it in c["items"] if it.get("ref") != ref]} if c["type"] == "grid" else c) for k, c in self.cards.items() if k != cid}
+        self.panels = {k: {**p, "cards": [c for c in p["cards"] if c != cid]} for k, p in self.panels.items()}
+        self.schema = {**self.schema, "blocks": {k: v for k, v in self.schema["blocks"].items() if k != ref}}
+        self._changed()
+        return True
 
     def remove_panel(self, pid: str) -> bool:
         if pid not in self.panels:

@@ -117,16 +117,32 @@ Zonder de add-on of HA doen de knoppen niets; de lampen zelf blijven werken. In 
 
 ## NSPanel
 
-*+ Module → Toestellen → NSPanel* zet het scherm met twee knoppen (Sonoff NSPanel) als blok op het schema. De panel praat dan rechtstreeks met deze add-on, zonder MQTT en zonder AppDaemon. De Tasmota-firmware en de TFT van nspanel-lovelace-ui blijven op de panel; alleen het brein verhuist. Alles staat in de zijbalk van het blok en zit in de back-up (*Exporteer configuratie*). Staat er een wachtwoord in je YAML, zoals bij een wifi-QR-code, dan staat dat dus ook in die export.
+*+ Module → Toestellen → NSPanel* zet het scherm met twee knoppen (Sonoff NSPanel) als blok op het schema. De panel praat dan rechtstreeks met deze add-on, zonder MQTT en zonder AppDaemon. De Tasmota-firmware en de TFT van nspanel-lovelace-ui blijven op de panel; alleen het brein verhuist. Alles staat in de zijbalk van het blok en zit in de back-up (*Exporteer configuratie*). Staat er een wifi-wachtwoord op een QR-kaart, dan staat dat dus ook in die export.
 
-* **Configuratie**: plak de YAML van `nspanel-lovelace-ui` (het hele `apps.yaml`-blok mag, of alleen `cards:` enzovoort), geef het IP-adres van de panel en kies *Opslaan*. Een fout in de YAML wordt geweigerd: de vorige config blijft gelden en wat je typte blijft staan.
-* **Ondersteund**: de kaarten `cardGrid`, `cardEntities`, `cardQR` en `cardPower`, verborgen kaarten (`hiddenCards`, `navigate.<key>`), `iText`, `delete`, de screensaver met weer en voorspelling (`weather.*` of een sensor met `forecast`), statuspictogrammen, tijd, datum en helderheid. Namen, kleuren en waarden mogen een Jinja-sjabloon zijn (`{{ ... }}`): de add-on laat HA ze uitrekenen en volgt de wijzigingen.
-  Schakelen: `switch`, `light`, `fan`, `input_boolean`, `automation` (aan/uit en wisselen), `scene`, `script`, `button`, `lock`, `number`. Een ander kaarttype (thermostaat, media, alarm, ...), de detailpagina's en de lange druk worden nog niet ondersteund.
-* **Screensaver**: de eerste tik maakt de screensaver helder, zodat je het weer en de temperatuur goed ziet. De volgende tik, of meteen een dubbele tik, opent de pagina's. Zonder verdere tik wordt hij na `sleepTimeout` seconden weer donker. Wil je direct naar de pagina's, zet dan `tapToWake: false` onder `screensaver:`.
-* **Screensaver in de pijlen**: rechts van de laatste kaart en links van de eerste staat de screensaver, meteen helder. Op die pagina zelf staan geen pijlen, want het scherm heeft ze daar niet: een tik gaat verder in dezelfde richting. Niet in de pijlen hebben: `inNavigation: false` onder `screensaver:`. Heeft de screensaver geen `entity` of `entities`, dan staat hij er niet tussen.
-* **Pictogrammen**: een selectie (ongeveer 100) uit het lettertype van het scherm. Een onbekende naam geeft een uitroepteken. Extra namen kun je zetten in `panel_icons.json` in de datamap: `{"naam": "\\ue334"}` (de tekens uit `icon_mapping.py` van nspanel-lovelace-ui).
+### Kaarten
+
+Wat er op het scherm staat, bouw je uit **kaarten**: eigen blokken op het schema (*+ Module → NSPanel-kaarten*), die je met een draad aan het paneel hangt. Sleep de **uitgang** van een kaart (rechts) naar **+ kaart** op het paneel. De volgorde op het paneel is de volgorde van de pagina's; in de zijbalk van het paneel kun je ze verschuiven (↑ ↓) of weghalen. Eén kaart mag aan meerdere panelen hangen.
+
+| Kaart | Wat ze toont |
+|---|---|
+| **Knoppen** | Een raster tot 8 knoppen (of een lijst tot 4). Een knop bedient een **lamp** van het schema, een **entiteit** uit HA, of opent een **subpagina**. |
+| **Laadpaal** | Start/stop, de stand, de laadtijd, de geladen kWh en de prijs (vast tarief per kWh, of een entiteit uit HA die wint als ze een getal geeft). |
+| **Screensaver** | Het startscherm: klok, datum, weer met 4 dagen voorspelling, een temperatuur binnen en tot 2 statuspictogrammen. Eén per paneel; ze is geen pagina. |
+| **Energie** | Het energieschema, tot 6 sensoren, met per sensor eventueel twee grenzen voor de kleur (groen, oranje, rood). |
+| **Wifi (QR)** | Een QR-code voor het gastnetwerk, met de naam en het wachtwoord ernaast. |
+
+* **Een knop aansluiten**: sleep van een knop (links op een rasterkaart) naar een lamp, naar een gang van een schakelaar, of naar de uitgang van een andere kaart. Die laatste wordt een **subpagina**, met een pijl terug. Een entiteit uit HA kies je in de zijbalk.
+* **Lampen en de laadpaal lezen hun stand uit de add-on**, niet via HA: een lamp van het schema (een kring of een licht op het netwerk) en de Tuya-lader werken op het paneel ook als hun naam in HA anders is. De laadpaal start en stopt via datapunt 124. Is de lader offline, dan staat dat op het scherm en gaat er geen bevel.
+* **Pictogrammen**: de MDI-naam, bv. `ceiling-light`. Het scherm kent een selectie (ongeveer 100). Een onbekende naam geeft een uitroepteken. Extra namen kun je zetten in `panel_icons.json` in de datamap: `{"naam": "\\ue334"}` (de tekens uit `icon_mapping.py` van nspanel-lovelace-ui).
+* **Scherm**: taal (Nederlands of Engels), na hoeveel seconden het terug naar de screensaver gaat, en de helderheid.
+* **Screensaver**: de eerste tik maakt de screensaver helder, zodat je het weer en de temperatuur goed ziet. De volgende tik, of meteen een dubbele tik, opent de pagina's. Zonder verdere tik wordt hij weer donker. Rechts van de laatste pagina en links van de eerste staat de screensaver, meteen helder.
+
+### Van YAML naar kaarten
+
+Tot versie 0.10 had elk paneel een YAML van `nspanel-lovelace-ui`. Bij het starten van 0.11 wordt die **eenmalig omgezet naar kaarten**, die naast het paneel op het schema komen. De oude YAML staat daarna in de datamap als `panel-<paneel>.yaml.overgenomen`. Wat niet mee kon (een sjabloon in een naam, een voorwaarde zoals `state:`, een ander kaarttype, opties van de screensaver zoals `tapToWake`) staat in de zijbalk van het paneel onder *Omgezet uit de YAML*, tot je op *Gelezen* klikt.
+Een andere YAML (bv. van een tweede panel onder AppDaemon) zet je om via *YAML van nspanel-lovelace-ui omzetten* onderaan de zijbalk van het paneel. De kaarten komen dan achteraan.
 * **Touches en relais**: het blok werkt als een schakelaar met twee gangen. Sleep een touch (de knop op de panel) naar de ingang van een lamp, of een relais naar de uitgang van een lamp of een zone van een sprinkler. Dat loopt via hun entiteit in HA (`switch.kk_panel_<paneel>_relay1` en `_relay2`), dus alleen als HA en de add-on draaien. Een knop schakelt altijd zijn eigen relais, ook zonder HA: de lamp ziet die wissel als een druk, en het relais volgt daarna de lamp. Een knop gebruiken zonder dat zijn relais mee schakelt kan nog niet.
-* **In Home Assistant** (via MQTT-discovery): *Relais 1*, *Relais 2*, *Temperatuur* (`sensor.kk_panel_<paneel>_temp`) en een Wifi-signaal. Zet die temperatuur in je `screensaver`-config in plaats van `sensor.tasmota_analog_temperature1`.
+* **In Home Assistant** (via MQTT-discovery): *Relais 1*, *Relais 2*, *Temperatuur* (`sensor.kk_panel_<paneel>_temp`) en een Wifi-signaal. Zet die temperatuur op de screensaver-kaart in plaats van `sensor.tasmota_analog_temperature1`.
 * **Op de panel zetten**: de stappen staan in de zijbalk (script `huisconfig.be` met het adres van deze add-on, uploaden, een regel in `autoexec.be`). Zet de AppDaemon-app eerst uit.
   Terugdraaien kan altijd: de regel weghalen en herstarten.
 * **Netwerk**: UDP, poort 47480 op de add-on en 47481 op de panel. Het verkeer is niet versleuteld en de add-on kijkt alleen naar het IP-adres van de panel; houd het op een vertrouwd LAN.
