@@ -137,6 +137,8 @@ Wat er op het scherm staat, bouw je uit **kaarten**: eigen blokken op het schema
 * **Scherm**: taal (Nederlands of Engels), na hoeveel seconden het terug naar de screensaver gaat, en de helderheid.
 * **Screensaver**: de eerste tik maakt de screensaver helder, zodat je het weer en de temperatuur goed ziet. De volgende tik, of meteen een dubbele tik, opent de pagina's. Zonder verdere tik wordt hij weer donker. Rechts van de laatste pagina en links van de eerste staat de screensaver, meteen helder.
 
+* **Waarden van een Tuya-toestel**: een knop van een kaart (best in de lijstweergave) kan een datapunt tonen, bv. het vermogen van een stroommeter, en een rij van de Energie-kaart kan een datapunt zijn in plaats van een sensor uit HA, met dezelfde kleurgrenzen. Kies in de zijbalk *Of een waarde van een Tuya-toestel*: een toestel van deze installatie of een dat je bij een andere installatie gekozen hebt.
+
 ### Van YAML naar kaarten
 
 Tot versie 0.10 had elk paneel een YAML van `nspanel-lovelace-ui`. Bij het starten van 0.11 wordt die **eenmalig omgezet naar kaarten**, die naast het paneel op het schema komen. De oude YAML staat daarna in de datamap als `panel-<paneel>.yaml.overgenomen`. Wat niet mee kon (een sjabloon in een naam, een voorwaarde zoals `state:`, een ander kaarttype, opties van de screensaver zoals `tapToWake`) staat in de zijbalk van het paneel onder *Omgezet uit de YAML*, tot je op *Gelezen* klikt.
@@ -147,6 +149,24 @@ Een andere YAML (bv. van een tweede panel onder AppDaemon) zet je om via *YAML v
   Terugdraaien kan altijd: de regel weghalen en herstarten.
 * **Netwerk**: UDP, poort 47480 op de add-on en 47481 op de panel. Het verkeer is niet versleuteld en de add-on kijkt alleen naar het IP-adres van de panel; houd het op een vertrouwd LAN.
   Een pakket kan verloren gaan: de add-on stuurt de huidige pagina daarom elke twee minuten opnieuw, en een stand die verandert meteen.
+
+## Waarden van Tuya-toestellen in de logica
+
+* **Tuya-waarde** (*+ Module → Waarden*): de waarde van een datapunt als getal, van een toestel hier of bij een andere installatie. Aan/uit is 1/0. Is het toestel offline, dan is de waarde onbekend.
+* **Groter dan** en **Kleiner dan** (*+ Module → Vergelijken*): 1 als de waarde boven of onder een grens ligt (met decimalen, bv. 3.5 kW). Die 0/1 sluit je aan op alles wat een 0/1 neemt: de disable- of aan/uit-ingang van een lamp, *En* en *Of*, het blokkeren van een sprinkler, of de routine hieronder.
+
+## Tuya instellen
+
+*+ Module → Routines → Tuya instellen*: een 0/1 van een timer of module zet een datapunt van een Tuya-toestel, hier of bij een andere installatie. Bv. de laadpaal start om 23:00 (*Laden* op `OpenCharging` bij 1, `CloseCharging` bij 0), of de laadstroom gaat naar 8 A als het verbruik boven 3.5 kW komt en terug naar 16 A eronder.
+
+Omdat zo'n routine een lader kan starten, is ze voorzichtig:
+
+* Een nieuwe routine staat **uit**. Aanzetten zet zelf niets: pas als de ingang daarna verandert.
+* Ze doet **nooit iets bij het opstarten** of als de ingang weer bekend wordt (na een herstart, of als een toestel of een andere installatie terug is). Die eerste stand onthoudt ze alleen.
+* Een **onbekende** ingang doet niets.
+* Ze stuurt **hoogstens om de zoveel seconden** (standaard 60): een waarde die rond de grens schommelt laat de lader niet klapperen. Is de ingang na die tijd nog altijd anders, dan gaat het bevel alsnog.
+* Laat je de waarde bij 0 leeg, dan gebeurt er bij 0 niets.
+* Een mislukt bevel staat in het logboek en op het blok, en wordt na de wachttijd opnieuw geprobeerd. Een toestel van een andere installatie wordt bediend via die installatie, die beslist (alleen wat je daar gekozen hebt).
 
 ## Andere installaties (een ander subnet)
 

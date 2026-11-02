@@ -232,7 +232,70 @@ def _module(mid, v) -> dict:
         out["value"] = value
     if kind == "number":
         out["value"] = _int(v.get("value", 1), 0, MAX_NUMBER, "getal")
+    if kind in ("above", "below"):
+        out["value"] = _num(v.get("value", 0), -MAX_NUMBER, MAX_NUMBER, "grens")
+    if kind == "dp":
+        out["device"], out["dp"] = _device_ref(v.get("device")), _dp(v.get("dp"))
     return out
+
+
+def _device_ref(v) -> str:
+    """Een Tuya-toestel: `<id>` van deze installatie of `r:<installatie>:y:<id>`; leeg = nog niet gekozen."""
+    v = v or ""
+    remote = split_ref(v) if isinstance(v, str) else None
+    if not isinstance(v, str) or (v and not TUYA_ID_RE.fullmatch(v) and not (remote and remote[1].startswith("y:"))):
+        raise ModelError("ongeldig Tuya-toestel")
+    return v
+
+
+def _dp(v) -> str:
+    v = "" if v is None else str(v)
+    if v and not re.fullmatch(r"\d{1,4}", v):
+        raise ModelError("datapunt: een nummer, bv. 109")
+    return v
+
+
+MAX_ACTIONS = 40
+
+
+def _action(aid, v) -> dict:
+    """Tuya instellen (zie actions.py): een 0/1 zet een datapunt. Staat standaard uit."""
+    if not isinstance(aid, str) or not GROUP_ID_RE.match(aid) or not isinstance(v, dict):
+        raise ModelError(f"routine: ongeldig id {aid!r}")
+    raw = v.get("inputs") or {}
+    if not isinstance(raw, dict) or set(raw) - {"trigger"}:
+        raise ModelError("routine: onbekende ingang")
+    ref = raw.get("trigger")
+    if ref is not None and (not isinstance(ref, str) or not SOURCE_RE.match(ref)):
+        raise ModelError(f"routine: ongeldige bron {ref!r}")
+    vals = {}
+    for k in ("on_value", "off_value"):
+        x = v.get(k, "")
+        if not isinstance(x, (str, int, float)) or isinstance(x, bool) or len(str(x)) > 40:
+            raise ModelError("routine: een waarde van hoogstens 40 tekens")
+        vals[k] = str(x).strip()
+    return {"name": _name(v.get("name"), "routine.name") or aid, "enabled": bool(v.get("enabled", False)), "device": _device_ref(v.get("device")),
+            "dp": _dp(v.get("dp")), **vals, "interval": _int(v.get("interval", 60), 10, 86400, "interval"), "inputs": {"trigger": ref} if ref else {}}
+
+
+def _actions(raw) -> dict[str, dict]:
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict) or len(raw) > MAX_ACTIONS:
+        raise ModelError(f"routines: maximaal {MAX_ACTIONS}")
+    return {k: _action(k, v) for k, v in raw.items()}
+
+
+def _check_actions(actions: dict[str, dict], modules: dict[str, dict], timers: dict[str, dict]) -> None:
+    for a in actions.values():
+        ref = a["inputs"].get("trigger")
+        if ref is None:
+            continue
+        got = _source_type(ref, modules, timers)
+        if got is None:
+            raise ModelError(f"routine {a['name']}: de ingang wijst naar iets dat niet bestaat")
+        if got != BOOL:
+            raise ModelError(f"routine {a['name']}: de ingang verwacht een 0 of 1")
 
 
 def _modules(raw) -> dict[str, dict]:
@@ -392,14 +455,17 @@ def _card(cid, v) -> dict:
         for it in items:
             if not isinstance(it, dict):
                 raise ModelError("kaart: ongeldige knop")
-            ref, ent = it.get("ref") or None, _opt_entity(it.get("entity"), "knop")
-            if ref is not None and (not isinstance(ref, str) or not (_cards.LAMP_REF.match(ref) or _cards.CARD_REF.match(ref))):
+            ref, ent, dp = it.get("ref") or None, _opt_entity(it.get("entity"), "knop"), _dp(it.get("dp"))
+            if dp:  # een waarde van een Tuya-toestel: y:<id> hier, of r:<installatie>:y:<id>
+                if not isinstance(ref, str) or not _cards.DEVICE_REF.match(ref):
+                    raise ModelError("kaart: een waarde komt van een Tuya-toestel")
+            elif ref is not None and (not isinstance(ref, str) or not (_cards.LAMP_REF.match(ref) or _cards.CARD_REF.match(ref))):
                 raise ModelError(f"kaart: een knop kan niet naar {ref!r} wijzen")
             if ref and ent:
                 raise ModelError("kaart: een knop bedient een lamp óf een entiteit")
             if ref == f"c:{cid}":
                 raise ModelError("kaart: een knop kan niet naar zijn eigen kaart gaan")
-            clean.append({"ref": ref, "entity": ent, "name": _plain(_name(it.get("name"), "knop.name"), "knop.name"), "icon": _icon_name(it.get("icon"))})
+            clean.append({"ref": ref, "entity": ent, "name": _plain(_name(it.get("name"), "knop.name"), "knop.name"), "icon": _icon_name(it.get("icon")), "dp": dp})
         out.update(layout=layout, items=clean)
     elif t == "charger":
         did = v.get("tuya") or ""
@@ -420,7 +486,12 @@ def _card(cid, v) -> dict:
             lv = it.get("levels")
             if lv is not None and (not isinstance(lv, list) or len(lv) != 2 or _num(lv[0], 0, MAX_NUMBER, "grens") >= _num(lv[1], 0, MAX_NUMBER, "grens")):
                 raise ModelError("energie: twee oplopende grenzen voor de kleur")
-            clean.append({"entity": _opt_entity(it.get("entity"), "energie"), "name": _plain(_name(it.get("name"), "rij.name"), "rij.name"), "icon": _icon_name(it.get("icon")),
+            ent, dev, dp = _opt_entity(it.get("entity"), "energie"), it.get("tuya") or "", _dp(it.get("dp"))
+            if dev and (not isinstance(dev, str) or not _cards.DEVICE_REF.match(dev) or not dp):
+                raise ModelError("energie: kies een Tuya-toestel en een datapunt")
+            if dev and ent:
+                raise ModelError("energie: een rij toont een sensor óf een Tuya-datapunt")
+            clean.append({"entity": ent, "tuya": dev, "dp": dp if dev else "", "name": _plain(_name(it.get("name"), "rij.name"), "rij.name"), "icon": _icon_name(it.get("icon")),
                           "speed": _int(it.get("speed", 0), -120, 120, "snelheid"), "levels": lv})
         out["items"] = clean
     elif t == "qr":
@@ -606,7 +677,7 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]], sprinkle
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|c:[a-z0-9_]{1,40}|r:[a-z0-9_]{1,40}:(?:g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80}|e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190})|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|c:[a-z0-9_]{1,40}|a:[a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:(?:g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80}|e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190})|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
 
 
 def _switch_gangs(raw) -> list[dict]:
@@ -778,6 +849,7 @@ class Model:
         self.sprinklers: dict[str, dict] = {}  # sprinklers: id -> {name, enabled, start, cycles, wait, refresh, days, inputs, zones}
         self.panels: dict[str, dict] = {}  # NSPanels: id -> {name, host, cards, locale, timeout, bright, dim, notes}
         self.cards: dict[str, dict] = {}  # kaarten voor de NSPanels: id -> {type, name, ...} (zie cards.py)
+        self.actions: dict[str, dict] = {}  # Tuya instellen: id -> {name, enabled, device, dp, on_value, off_value, interval, inputs}
         self.screens: dict[str, dict] = {}  # schermen met openHASP: id -> {name, plate, timeout, pages}
         self.rev = 0
         self._listeners: list[Callable[[], None]] = []
@@ -833,6 +905,8 @@ class Model:
             d["panels"] = self.panels
         if self.cards:
             d["cards"] = self.cards
+        if self.actions:
+            d["actions"] = self.actions
         if self.screens:
             d["screens"] = self.screens
         if self.schema["pages"] or self.schema["switches"] or self.schema["names"]:
@@ -879,12 +953,14 @@ class Model:
         sprinklers = _sprinklers(d.get("sprinklers"))
         panels, cards, old_yaml = _panels(d.get("panels"), _load_cards(d.get("cards")))
         screens = _screens(d.get("screens"))
+        actions = _actions(d.get("actions"))
         if save:  # bij het opstarten nooit weigeren, bij een import wel
             _conflicts(groups, virtual, sprinklers)
             _check_modules(modules, timers)
             _check_sprinklers(sprinklers, modules, timers)
             _check_cards(cards)
             _check_panels(panels, cards)
+            _check_actions(actions, modules, timers)
             for g in groups.values():
                 for key in ("disable", "control"):
                     if g.get(key, "").startswith("m:"):
@@ -895,7 +971,7 @@ class Model:
                 if c["type"] == "grid":
                     c["items"] = [it for it in c["items"] if not (it["ref"] or "").startswith("c:") or (it["ref"][2:] in cards and cards[it["ref"][2:]]["type"] != "saver")]
         self.nodes, self.lights, self.follow, self.virtual, self.plan, self.groups, self.schema, self.timers = nodes, lights, follow, virtual, plan, groups, schema, timers
-        self.modules, self.sprinklers, self.panels, self.cards, self.screens = modules, sprinklers, panels, cards, screens
+        self.modules, self.sprinklers, self.panels, self.cards, self.screens, self.actions = modules, sprinklers, panels, cards, screens, actions
         if old_yaml:
             self._keep_yaml(old_yaml)
             for pid in old_yaml:
@@ -1021,6 +1097,7 @@ class Model:
         self.groups = {k: {x: y for x, y in g.items() if not (x in ("disable", "control") and y == tid)} for k, g in self.groups.items()}
         self.modules = self._without_source(f"t:{tid}")
         self.sprinklers = self._sprinklers_without(f"t:{tid}")
+        self.actions = self._actions_without(f"t:{tid}")
         self._changed()
         return True
 
@@ -1117,6 +1194,47 @@ class Model:
         self.cards, self.panels = cards, panels
         self._changed()
         return notes
+
+    def _actions_without(self, ref: str) -> dict[str, dict]:
+        return {k: {**a, "inputs": {i: r for i, r in a["inputs"].items() if r != ref}} for k, a in self.actions.items()}
+
+    def add_action(self, name=None) -> str:
+        """Een nieuwe routine staat uit: er wordt niets ingesteld voor je dat zelf kiest."""
+        if len(self.actions) >= MAX_ACTIONS:
+            raise ModelError(f"routines: maximaal {MAX_ACTIONS}")
+        base = _name(name, "name") or "Tuya instellen"
+        slug = re.sub(r"[^a-z0-9_]+", "_", base.lower()).strip("_")[:70] or "routine"
+        aid, label, n = slug, base, 2
+        while aid in self.actions:
+            aid, label, n = f"{slug}_{n}", f"{base} {n}", n + 1
+        self.actions = {**self.actions, aid: _action(aid, {"name": label})}
+        self._changed()
+        return aid
+
+    def set_action(self, aid: str, **fields) -> None:
+        """Alleen wat je meegeeft verandert. In `inputs` maakt None een ingang los."""
+        old = self.actions.get(aid)
+        if old is None:
+            raise ModelError("onbekende routine")
+        unknown = set(fields) - {"name", "enabled", "device", "dp", "on_value", "off_value", "interval", "inputs"}
+        if unknown:
+            raise ModelError(f"routine: onbekend veld {sorted(unknown)[0]}")
+        if "inputs" in fields:
+            if not isinstance(fields["inputs"], dict):
+                raise ModelError("routine: inputs moet een object zijn")
+            fields["inputs"] = {k: r for k, r in {**old["inputs"], **fields["inputs"]}.items() if r is not None}
+        new = {**self.actions, aid: _action(aid, {**old, **fields})}
+        _check_actions(new, self.modules, self.timers)
+        self.actions = new
+        self._changed()
+
+    def remove_action(self, aid: str) -> bool:
+        if aid not in self.actions:
+            return False
+        self.actions = {k: v for k, v in self.actions.items() if k != aid}
+        self.schema = {**self.schema, "blocks": {k: v for k, v in self.schema["blocks"].items() if k != f"a:{aid}"}}
+        self._changed()
+        return True
 
     def add_card(self, kind, name=None) -> str:
         if kind not in _cards.TYPES:
@@ -1224,8 +1342,8 @@ class Model:
         self._changed()
         return mid
 
-    def set_module(self, mid: str, name=None, value=None, inputs=None) -> None:
-        """Alleen wat je meegeeft verandert. In `inputs` maakt None een ingang los."""
+    def set_module(self, mid: str, name=None, value=None, inputs=None, **extra) -> None:
+        """Alleen wat je meegeeft verandert. In `inputs` maakt None een ingang los. `extra`: `device` en `dp` van een Tuya-waarde."""
         old = self.modules.get(mid)
         if old is None:
             raise ModelError("onbekende module")
@@ -1236,8 +1354,12 @@ class Model:
             v["name"] = name
         if value is not None:
             v["value"] = value
+        if set(extra) - {"device", "dp"}:
+            raise ModelError(f"module: onbekend veld {sorted(set(extra) - {'device', 'dp'})[0]}")
+        v.update(extra)
         modules = {**self.modules, mid: _module(mid, v)}
         _check_modules(modules, self.timers)
+        _check_actions(self.actions, modules, self.timers)  # een module die nu iets anders geeft dan een 0/1
         self.modules = modules
         self._changed()
 
@@ -1248,6 +1370,7 @@ class Model:
         ref = f"m:{mid}"
         self.modules = self._without_source(ref)
         self.sprinklers = self._sprinklers_without(ref)
+        self.actions = self._actions_without(ref)
         self.modules.pop(mid)
         self.groups = {k: {x: y for x, y in g.items() if not (x in ("disable", "control") and y == ref)} for k, g in self.groups.items()}
         self.schema = {**self.schema, "blocks": {k: v for k, v in self.schema["blocks"].items() if k != ref}}

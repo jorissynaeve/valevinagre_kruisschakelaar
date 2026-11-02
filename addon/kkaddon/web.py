@@ -22,7 +22,7 @@ STATIC = Path(__file__).parent / "static"
 CTX = web.AppKey("ctx", object)
 INGRESS_PROXY = {"172.30.32.2", "127.0.0.1", "::1"}
 # Events die de pagina moet kennen; de rest (bv. losse commando-statussen) is ruis.
-PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "link"}
+PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "link", "action"}
 
 
 class Ctx:
@@ -310,7 +310,7 @@ async def module_post(request: web.Request) -> web.Response:
 
 async def module_put(request: web.Request) -> web.Response:
     b = await _body(request)
-    request.app[CTX].model.set_module(request.match_info["mid"], b.get("name"), b.get("value"), b.get("inputs"))
+    request.app[CTX].model.set_module(request.match_info["mid"], b.get("name"), b.get("value"), b.get("inputs"), **{k: b[k] for k in ("device", "dp") if k in b})
     return web.json_response({"ok": True})
 
 
@@ -326,6 +326,25 @@ async def sprinkler_post(request: web.Request) -> web.Response:
     if b.get("page"):
         schema.place(ctx.model, ctx.engine.snapshot(), f"s:{sid}", b["page"], b.get("x", 0), b.get("y", 0))
     return web.json_response({"ok": True, "key": f"s:{sid}"})
+
+
+async def action_post(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    aid = ctx.model.add_action(b.get("name"))
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"a:{aid}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "key": f"a:{aid}"})
+
+
+async def action_put(request: web.Request) -> web.Response:
+    request.app[CTX].model.set_action(request.match_info["aid"], **await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def action_delete(request: web.Request) -> web.Response:
+    ok = request.app[CTX].model.remove_action(request.match_info["aid"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
 async def sprinkler_put(request: web.Request) -> web.Response:
@@ -721,6 +740,9 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/sprinklers/{sid}", sprinkler_put)
     r.add_delete("/api/sprinklers/{sid}", sprinkler_delete)
     r.add_post("/api/sprinklers/{sid}/run", sprinkler_run)
+    r.add_post("/api/actions", action_post)
+    r.add_put("/api/actions/{aid}", action_put)
+    r.add_delete("/api/actions/{aid}", action_delete)
     r.add_get("/api/panels/script", panel_script)
     r.add_post("/api/panels", panel_post)
     r.add_put("/api/panels/{pid}", panel_put)

@@ -20,6 +20,7 @@ from .linkhub import LinkHub
 from .model import Model
 from .mqttbridge import MqttBridge
 from .panelhub import PanelHub
+from .points import Points
 from .transport import UdpTransport
 from .tuyahub import TuyaHub
 from .web import Ctx, make_app
@@ -56,6 +57,7 @@ async def run() -> None:
     links = LinkHub(s.data_dir, engine, port=s.link_port)
     links.tuya = tuya
     links.attach_ha(ha)  # de gangen van deze installatie: hun stand en ze schakelen voor een andere
+    engine.points = Points(tuya, links)  # Tuya-datapunten voor de logica, de routines en de kaarten, hier of bij een andere installatie
     panels.linkhub = links  # kaarten met een lamp of lader van een andere installatie
     mqtt.extras.append(tuya)
     tuya.changed = mqtt.resync

@@ -28,6 +28,7 @@ from .proto import CF_BRIDGE, DEFAULT_TTL, LINK_LOCAL, T, Frame, Mode
 from .replay import ReplayTable
 from .sprinkler import TICK as SPRINKLER_TICK
 from .sprinkler import Sprinklers
+from .actions import Actions
 from .sync import HOLD_EVERY, EntityGroups
 from .virtual import Virtuals
 
@@ -145,6 +146,7 @@ class Engine:
         self.relay_cb: Callable[[bytes, Any], None] | None = None  # hub: frame doorgeven aan andere peers
         self.ha_call: Callable[[str, bool], bool] | None = None  # HA-entiteit aan/uit zetten (habridge.py); False = mislukt
         self.remote_call: Callable[[str, bool], bool] | None = None  # een gang van een andere installatie (r:...:e:...) via de koppeling (linkhub.py)
+        self.points = None  # points.Points: Tuya-datapunten lezen en zetten, hier of bij een andere installatie (voor de logica en de routines)
 
         self._replay = ReplayTable()
         self._btn_seen: OrderedDict[tuple[int, int, int, int], None] = OrderedDict()
@@ -169,6 +171,7 @@ class Engine:
         self._at(self.t.maintenance, self._maintenance)
         self._at(HOLD_EVERY, self._hold_tick)
         self.sprinklers = Sprinklers(self)
+        self.actions = Actions(self)
         self.panel_view: Callable[[], list[dict]] | None = None  # status van de panelen (panelhub.py)
         self.screen_view: Callable[[], list[dict]] | None = None  # status van de schermen (hasphub.py)
         self.tuya_view: Callable[[], list[dict]] | None = None  # status van de Tuya-toestellen, zonder sleutels (tuyahub.py)
@@ -258,7 +261,8 @@ class Engine:
 
     def module_values(self) -> dict:
         now = self.local_now()
-        return evaluate(self.model.modules, lambda t: self.timer_on(t) if t in self.model.timers else None, now.hour * 60 + now.minute, self.sun_today())
+        return evaluate(self.model.modules, lambda t: self.timer_on(t) if t in self.model.timers else None, now.hour * 60 + now.minute, self.sun_today(),
+                        lambda dev, dp: self.points.number(dev, dp) if self.points else None)
 
     def source_value(self, source: str) -> bool | None:
         """Wat de bron op een ingang van een lamp nu geeft: 0, 1 of onbekend."""
@@ -277,6 +281,7 @@ class Engine:
     def _sprinkler_tick(self) -> None:
         self._at(SPRINKLER_TICK, self._sprinkler_tick)
         self.sprinklers.tick()
+        self.actions.tick()
 
     def _hold_tick(self) -> None:
         self._at(HOLD_EVERY, self._hold_tick)
@@ -823,6 +828,7 @@ class Engine:
             "timers": [{"id": k, **t, "on": self.timer_on(k)} for k, t in sorted(self.model.timers.items(), key=lambda kv: kv[1]["name"].lower())],
             "modules": [{"id": k, **m, "out": values.get(k)} for k, m in self.model.modules.items()],
             "sprinklers": [{"id": k, **s, "status": self.sprinklers.status(k)} for k, s in self.model.sprinklers.items()],
+            "actions": [{"id": k, **a, "status": self.actions.view(k)} for k, a in self.model.actions.items()],
             "panels": self.panel_view() if self.panel_view else [{"id": k, **p, "online": False, "error": "", "greeted": False, "last_seen": None, "relays": [None, None],
                                                                   "temperature": None, "rssi": None} for k, p in self.model.panels.items()],
             "tuya": self.tuya_view() if self.tuya_view else [],

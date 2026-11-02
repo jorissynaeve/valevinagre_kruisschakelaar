@@ -88,7 +88,7 @@ def test_cards_are_checked_on_the_way_in():
     with pytest.raises(ModelError, match="pictogram"):
         m.set_card("raster", items=[{"entity": "switch.x", "icon": "Lamp!"}])
     m.set_card("raster", items=[{"entity": "switch.x", "icon": "mdi:lamp"}, {}])
-    assert m.cards["raster"]["items"] == [{"ref": None, "entity": "switch.x", "name": "", "icon": "lamp"}, {"ref": None, "entity": None, "name": "", "icon": ""}]
+    assert m.cards["raster"]["items"] == [{"ref": None, "entity": "switch.x", "name": "", "icon": "lamp", "dp": ""}, {"ref": None, "entity": None, "name": "", "icon": "", "dp": ""}]
     with pytest.raises(ModelError, match="onbekend veld"):
         m.set_card("raster", tuya="lader")
     m.add_card("power")

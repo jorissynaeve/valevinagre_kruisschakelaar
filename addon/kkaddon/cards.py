@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from .link import split_ref
 from .panel import DEFAULT_COLOR, ON_COLOR, PanelError, extract, rgb565
+from .points import Points
 
 log = logging.getLogger("kk.cards")
 
@@ -28,6 +29,8 @@ MAX_ITEMS = {"grid": 8, "list": 4}  # een raster met meer dan 6 wordt het brede 
 MAX_POWER = 6
 LAMP_REF = re.compile(r"^(g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|r:[a-z0-9_]{1,40}:(g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}))$")  # r:<installatie>:<lamp> = van een andere installatie
 CARD_REF = re.compile(r"^c:[a-z0-9_]{1,40}$")
+DEVICE_REF = re.compile(r"^(y:[a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})$")  # een Tuya-toestel hier of bij een andere installatie, voor een waarde
+LEVEL_RGB = ([0, 255, 0], [255, 165, 0], [255, 0, 0])  # groen, oranje, rood: dezelfde kleuren als het sjabloon van een HA-sensor
 DYN = "kk"  # het domein van een rij die zijn stand uit de add-on haalt: kk.<kaart>__<deel>
 
 # De laadpaal (Feyree, zie tuyahub.FEYREE): welke datapunten de kaart leest en schrijft
@@ -142,7 +145,7 @@ def _card(model, cid: str, lang: str) -> dict:
             {"entity": f"{DYN}.{cid}__energy", "name": w["energy"], "icon": "mdi:lightning-bolt"},
             {"entity": f"{DYN}.{cid}__price", "name": w["price"], "icon": "mdi:currency-eur"}]}
     if t == "power":
-        return {**base, "type": "cardPower", "entities": [_power_item(it) for it in c["items"]] or [{"entity": "delete"}]}
+        return {**base, "type": "cardPower", "entities": [_power_item(it, cid, i) for i, it in enumerate(c["items"])] or [{"entity": "delete"}]}
     if t == "qr":
         w = WORDS[lang]
         rows = [{"entity": f"iText.{_clean(c['ssid'])}", "name": w["ssid"], "icon": "mdi:wifi"}]
@@ -153,9 +156,16 @@ def _card(model, cid: str, lang: str) -> dict:
     return {**base, "type": "cardGrid", "entities": [{"entity": "delete"}]}
 
 
+def device_of(ref: str) -> str:
+    """De verwijzing naar een Tuya-toestel op een kaart (`y:<id>` of `r:..:y:<id>`) -> wat points.Points verwacht."""
+    return ref[2:] if ref.startswith("y:") else ref
+
+
 def _grid_item(model, cid: str, i: int, it: dict) -> dict:
     name = _clean(it.get("name")) or None
     ref, ent = it.get("ref"), it.get("entity")
+    if it.get("dp"):  # een waarde van een Tuya-toestel: de naam van het datapunt komt live mee (Live.value)
+        return {"entity": f"{DYN}.{cid}__{i}", "name": name, "icon": _icon(it.get("icon"), "gauge")}
     if ref and ref.startswith("c:"):
         return {"entity": f"navigate.{ref[2:]}", "name": name, "icon": _icon(it.get("icon"))}
     if ref and ref.startswith("r:"):  # de naam komt live van de andere installatie (Live.value), want ze kan daar veranderen
@@ -167,7 +177,9 @@ def _grid_item(model, cid: str, i: int, it: dict) -> dict:
     return {"entity": "delete"}
 
 
-def _power_item(it: dict) -> dict:
+def _power_item(it: dict, cid: str = "", i: int = 0) -> dict:
+    if it.get("tuya"):  # een Tuya-datapunt: waarde en kleur komen live uit de add-on (Live.value)
+        return {"entity": f"{DYN}.{cid}__p{i}", "name": _clean(it.get("name")) or None, "icon": _icon(it.get("icon"), "flash"), "speed": it.get("speed", 0)}
     if not it.get("entity"):
         return {"entity": "delete"}
     out = {"entity": it["entity"], "name": _clean(it.get("name")) or None, "icon": _icon(it.get("icon")), "speed": it.get("speed", 0)}
@@ -204,6 +216,7 @@ class Live:
     def __init__(self, model, engine=None, tuya=None, state: Callable[[str], Any] | None = None, link=None) -> None:
         self.model, self.engine, self.tuya, self.link = model, engine, tuya, link
         self.state = state or (lambda _e: None)
+        self.points = Points(tuya, link)
 
     def _remote(self, ref: str) -> tuple[str, str, dict | None] | None:
         hit = split_ref(ref)
@@ -224,9 +237,13 @@ class Live:
         if hit is None:
             return None
         c, cid, part = hit
+        if c["type"] == "power" and part.startswith("p") and part[1:].isdigit():
+            return self._power(c, int(part[1:]))
         if c["type"] == "grid" and part.isdigit():
             items = c["items"]
             i = int(part)
+            if i < len(items) and items[i].get("dp") and items[i].get("ref"):
+                return self._value(device_of(items[i]["ref"]), items[i]["dp"])
             if i >= len(items) or not items[i].get("ref") or items[i]["ref"].startswith("c:"):
                 return None
             ref = items[i]["ref"]
@@ -242,6 +259,27 @@ class Live:
         if c["type"] == "charger":
             return self._charger(c, part, WORDS[lang], lang)
         return None
+
+    def _value(self, dev: str, dp: str) -> dict | None:
+        """Een rij met een Tuya-datapunt: de waarde met eenheid, en de naam van het datapunt als de kaart er geen eigen heeft."""
+        d = self.points.device(dev)
+        if d is None:
+            return None
+        p = d["points"].get(str(dp))
+        text = self.points.text(dev, dp) if p else None
+        return {"kind": "text", "name": _clean(p.get("name")) if p else str(dp), "value": _clean(text) if d["online"] and text else "—", "color": DEFAULT_COLOR}
+
+    def _power(self, c: dict, i: int) -> dict | None:
+        if i >= len(c["items"]) or not c["items"][i].get("tuya"):
+            return None
+        it = c["items"][i]
+        out = self._value(device_of(it["tuya"]), it["dp"])
+        if out is None:
+            return None
+        n, lv = self.points.number(device_of(it["tuya"]), it["dp"]), it.get("levels")
+        if lv and n is not None:  # groen onder de eerste grens, oranje onder de tweede, anders rood
+            out["color"] = rgb565(LEVEL_RGB[0 if n < lv[0] else 1 if n < lv[1] else 2])
+        return out
 
     def lamp_on(self, ref: str) -> bool | None:
         if ref.startswith("r:"):

@@ -492,7 +492,7 @@ class Panel:
             row = self.item(it, ct)
             body += row
             if card.type == "cardPower":
-                speed = self.tpl(str(it.speed)) if self.state(it.entity) else None
+                speed = self.tpl(str(it.speed)) if self.state(it.entity) or it.entity.startswith(f"{DYN}.") else None
                 body += f"~{0 if speed is None else speed}"
         if body != self._last_page:
             self._last_page = body

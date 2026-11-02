@@ -71,9 +71,11 @@ function logText(e) {
       if (e.what === 'kept') return `Kring ${groupName(e.group)}: ${e.entity} terug naar ${e.on ? 'aan' : 'uit'} (aan/uit-ingang)`;
       if (e.what === 'held') return `Kring ${groupName(e.group)}: aan/uit-ingang zet de lamp ${e.on ? 'aan' : 'uit'}`;
       if (e.what === 'command') return `Kring ${groupName(e.group)}: ${e.entity ? e.entity : 'alle leden'} ${e.on ? 'aan' : 'uit'} gezet (bediening)`;
+      if (e.what === 'aligned') return `Kring ${groupName(e.group)}: koppeling terug, ${e.to.length} ${e.to.length === 1 ? 'touch neemt' : 'touches nemen'} de stand van de lamp over (${e.on ? 'aan' : 'uit'})`;
       return e.what === 'follow'
       ? `Kring ${groupName(e.group)}: ${e.entity} ${e.on ? 'aan' : 'uit'} → ${e.to.length} ${e.to.length === 1 ? 'volgt' : 'volgen'}${e.skipped.length ? `, ${e.skipped.length} overgeslagen (niet beschikbaar)` : ''}`
       : `Kring ${groupName(e.group)}: ${e.entity} ${e.on ? 'aan' : 'uit'} mislukt (${e.why})`;
+    case 'action': return e.what === 'set' ? `Tuya instellen ${e.name}: datapunt ${e.dp} op ${e.value}` : `Tuya instellen ${e.name}: datapunt ${e.dp} op ${e.value} mislukt (${e.why})`;
     case 'sprinkler': return {
       start: `Sprinkler ${e.name}: gestart ${e.how === 'hand' ? 'met de hand' : 'op de klok'} (${e.cycles} ${e.cycles === 1 ? 'cyclus' : 'cycli'})`,
       done: `Sprinkler ${e.name}: klaar`, stopped: `Sprinkler ${e.name}: gestopt`, blocked: `Sprinkler ${e.name}: gestopt door de ingang blokkeren`,
@@ -469,7 +471,7 @@ function connect() {
   const ws = new WebSocket(new URL('api/ws', location.href).href.replace(/^http/, 'ws'));
   ws.onmessage = (m) => {
     const e = JSON.parse(m.data).event;
-    if (S && e && ['btn', 'light', 'node', 'cfg', 'learn', 'cmd', 'sync', 'sprinkler'].includes(e.t)) {
+    if (S && e && ['btn', 'light', 'node', 'cfg', 'learn', 'cmd', 'sync', 'sprinkler', 'action'].includes(e.t)) {
       S.log.push(e);
       if (S.log.length > 300) S.log.shift();
     }

@@ -29,6 +29,9 @@ MODULE_TYPES: dict[str, dict] = {
     "before": {"label": "Voor", "out": BOOL, "inputs": (("time", TIME, "tijd"),)},
     "and": {"label": "En", "out": BOOL, "inputs": (("a", BOOL, "A"), ("b", BOOL, "B"))},
     "or": {"label": "Of", "out": BOOL, "inputs": (("a", BOOL, "A"), ("b", BOOL, "B"))},
+    "dp": {"label": "Tuya-waarde", "out": NUMBER, "inputs": ()},  # een datapunt van een Tuya-toestel, hier of bij een andere installatie
+    "above": {"label": "Groter dan", "out": BOOL, "inputs": (("a", NUMBER, "waarde"),)},  # 1 als de waarde groter is dan de grens
+    "below": {"label": "Kleiner dan", "out": BOOL, "inputs": (("a", NUMBER, "waarde"),)},
 }
 
 # de ingangen van een sprinkler: (naam, soort, label)
@@ -85,8 +88,10 @@ def _between(now: int, a: int, b: int) -> bool:
     return a <= now < b if a <= b else now >= a or now < b
 
 
-def evaluate(modules: dict[str, dict], timer: Callable[[str], bool | None], now: int, sun: tuple[int, int] | None) -> dict:
-    """De uitgang van elke module. Een lus of een verdwenen bron (kan alleen uit een oud bestand komen) geeft onbekend."""
+def evaluate(modules: dict[str, dict], timer: Callable[[str], bool | None], now: int, sun: tuple[int, int] | None,
+             point: Callable[[str, str], float | None] | None = None) -> dict:
+    """De uitgang van elke module. Een lus of een verdwenen bron (kan alleen uit een oud bestand komen) geeft onbekend.
+    `point(toestel, datapunt)`: de waarde van een Tuya-datapunt als getal, of None (offline, geen getal)."""
     values: dict[str, int | bool | None] = {}
     busy: set[str] = set()
 
@@ -115,6 +120,8 @@ def evaluate(modules: dict[str, dict], timer: Callable[[str], bool | None], now:
             return minutes(m["value"])
         if kind == "number":
             return m["value"]
+        if kind == "dp":
+            return point(m["device"], m["dp"]) if point and m.get("device") and m.get("dp") else None
         if kind in ("and", "or"):
             return (_and if kind == "and" else _or)(read(ins.get("a")), read(ins.get("b")))
         args = [read(ins.get(name)) for name, _, _ in MODULE_TYPES[kind]["inputs"]]
@@ -126,6 +133,8 @@ def evaluate(modules: dict[str, dict], timer: Callable[[str], bool | None], now:
             return (args[0] - args[1]) % DAY
         if kind == "between":
             return _between(now, args[0], args[1])
+        if kind in ("above", "below"):
+            return args[0] > m["value"] if kind == "above" else args[0] < m["value"]
         return now >= args[0] if kind == "after" else now < args[0]
 
     for mid in modules:
