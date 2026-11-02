@@ -25,7 +25,7 @@ const SC_MARGIN = 200; // links van x=0: de verwijzingen en draden aan de touch-
 const SC_GANGED = ['switch', 'panel', 'tuya', 'remote']; // blokken met gangen: per gang een touch en een relais (remote: alleen een gang van een andere installatie)
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
-const scW = (b) => (b.kind === 'lamp' ? LAMP_W : b.kind === 'tuya' ? TUYA_W : SW_W);
+const scW = (b) => (b.kind === 'lamp' ? LAMP_W : b.kind === 'tuya' || (b.kind === 'remote' && b.sub === 'tuya') ? TUYA_W : SW_W);
 const scRows = (b) => (b.kind === 'card' || b.kind === 'remote' || b.kind === 'action' ? b.rows : b.kind === 'panel' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
 const scH = (b) => SC_HEAD + scRows(b) * SC_ROW + SC_FOOT;
 const rowY = (b, i) => b.y + SC_HEAD + i * SC_ROW + SC_ROW / 2;
@@ -118,9 +118,25 @@ function scCardLines(b) { // wat een kaart zonder knoppen op haar blok laat zien
   return [b.ssid ? `Netwerk: ${b.ssid}` : 'Nog geen netwerk', b.security === 'nopass' ? 'zonder wachtwoord' : 'met wachtwoord'];
 }
 
+const scDevKey = (dev) => (dev.startsWith('r:') ? dev : `y:${dev}`); // het blok van een toestel
+
+function scChargerRows(b) { // de laadpaal: links Status, Laadtijd en Geladen (een waarde elk), rechts start/stop naar een instelling
+  const ins = b.ins.map((x, i) => {
+    const y = rowY(b, i), src = x.ref ? scSrc(x.ref) : null;
+    return `<circle class="pt v-number ${x.ref ? '' : 'free'}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="cdin" data-i="${i}"><title>${x.label}: sleep hierheen vanaf een waarde (rechts op een Tuya-blok)</title></circle>
+      ${x.ref ? `<text class="bkt away" x="${b.x + 11}" y="${y + 4}" ${src && src.key ? `data-sc="go" data-k="${esc(src.key)}"` : ''}>${x.label}: ${esc(scCut(x.src || '', 17))}<title>${esc(x.src || '')} (nu ${esc(src ? src.out : '?')})</title></text>`
+    : `<text class="ptl" x="${b.x + 11}" y="${y + 4}">+ ${x.label.toLowerCase()}</text>`}`;
+  }).join('');
+  const y1 = rowY(b, 1), dev = b.target.device;
+  const out = `<circle class="pt v-bool ${b.target_label ? '' : 'free'}" cx="${b.x + SW_W}" cy="${y1}" r="6" data-b="${esc(b.key)}" data-role="cdout" data-i="1"><title>Start/stop: sleep naar een instelling (links op een Tuya-blok), bv. Laden</title></circle>
+    <text class="ptl" x="${b.x + SW_W - 11}" y="${y1 + 4}" text-anchor="end">start/stop</text>
+    ${b.target_label ? `<text class="stub" x="${b.x + SW_W + 11}" y="${y1 + 4}" data-sc="go" data-k="${esc(scDevKey(dev))}">→ ${esc(scCut(b.target_label, 26))}<title>${esc(b.target_label)}: starten ${esc(b.target.on || '(niets)')}, stoppen ${esc(b.target.off || '(niets)')}</title></text>` : ''}`;
+  return `${ins}${out}<text class="bkt" x="${b.x + 11}" y="${rowY(b, 3) + 4}">Prijs: € ${b.price} per kWh${b.price_entity ? ' of uit HA' : ''}</text>`;
+}
+
 function scCard(b) {
   const y0 = rowY(b, 0);
-  const rows = b.type !== 'grid' ? scCardLines(b).map((t, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}">${esc(scCut(t, 26))}</text>`).join('')
+  const rows = b.type === 'charger' ? scChargerRows(b) : b.type !== 'grid' ? scCardLines(b).map((t, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}">${esc(scCut(t, 26))}</text>`).join('')
     : b.items.map((it, i) => {
       const y = rowY(b, i), go = it.target && scBlock(it.target);
       return `<circle class="pt crd ${it.ref || it.entity ? '' : 'free'}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="citem" data-i="${i}"><title>Knop ${i + 1}: sleep hierheen vanaf een lamp, een gang van een schakelaar of de uitgang van een kaart</title></circle>
@@ -137,6 +153,7 @@ function scCard(b) {
 }
 
 function scRemote(b, tags) { // een lamp, gang of Tuya-toestel van een andere installatie: alleen-lezen, te bedienen
+  if (b.sub === 'tuya') return scRemoteTuya(b);
   const st = b.on === true ? 'on' : b.on === null || b.on === undefined ? 'unknown' : '';
   const rows = b.sub === 'gang'
     ? `<text class="bkt" x="${b.x + SW_W / 2}" y="${rowY(b, 0) + 4}" text-anchor="middle">${b.on === true ? 'aan' : b.on === false ? 'uit' : 'onbekend'}${b.busy ? ' · bezet' : ''}</text>${scGangPorts(b, b.gangs[0], SW_W, tags)}`
@@ -238,18 +255,56 @@ function scGangPorts(b, g, w, tags) { // touch links, relais rechts, en de verwi
     ${(tags.get(`${b.key}|${g.i}|out`) || []).map((t, n) => `<text class="stub" x="${b.x + w + 11}" y="${y + 4 + n * 13}" data-sc="go" data-k="${esc(t.key)}">→ ${esc(scCut(t.text, 28))}<title>${esc(t.text)}</title></text>`).join('')}`;
 }
 
+const scDevOf = (b) => (b.kind === 'tuya' ? { id: b.id, card: `y:${b.id}`, points: b.points } : { id: b.key, card: b.key, points: b.points });
+
+function scSrc(ref) { // de bron van een ingang: een blok, of een datapunt (v:<dp>@<toestel>) -> {key, name, out}
+  if (!ref) return null;
+  if (ref.startsWith('v:')) {
+    const [dp, dev] = ref.slice(2).split('@'), blk = scBlock(dev.startsWith('r:') ? dev : `y:${dev}`);
+    const pt = blk && blk.points.find((x) => String(x.dp) === dp);
+    return { key: blk ? blk.key : '', name: blk ? `${blk.name} · ${pt ? pt.name : dp}` : `datapunt ${dp} (weg)`, out: pt ? scTyValue(pt) : '?' };
+  }
+  const b = scBlock(ref);
+  return b ? { key: b.key, name: b.name, out: scOut(b) } : null;
+}
+
+function scDpUsers(dev, dp, out) { // wie dit datapunt gebruikt: rechts (een waarde) of links (een routine die het zet)
+  dp = String(dp);
+  if (!out) {
+    return scBlocks().filter((a) => (a.kind === 'action' && a.device === dev.id && String(a.dp) === dp)
+      || (a.kind === 'card' && a.type === 'charger' && a.target.device === dev.id && String(a.target.dp) === dp)).map((a) => ({ key: a.key, text: a.name }));
+  }
+  const v = `v:${dp}@${dev.id}`;
+  return scBlocks().filter((u) => ((u.kind === 'module' || u.kind === 'sprinkler') && u.ports.some((x) => x.ref === v)) || (u.kind === 'module' && u.type === 'dp' && u.device === dev.id && String(u.dp) === dp)
+    || (u.kind === 'card' && (u.items || []).some((it) => (it.ref === dev.card || it.tuya === dev.card) && String(it.dp) === dp))
+    || (u.kind === 'card' && (u.ins || []).some((x) => x.ref === v))).map((u) => ({ key: u.key, text: u.name }));
+}
+
+function scTyRow(b, p, i, left, w) { // een datapunt met een poort: links instellen (een 0/1 maakt een routine), rechts een waarde
+  const y = rowY(b, i), x = left ? b.x + 11 : b.x + w - 11, users = scDpUsers(scDevOf(b), p.dp, !left);
+  const tip = `${p.name}: ${scTyValue(p)}${left ? ' · sleep hierheen vanaf een 0/1 (timer, Groter dan, ...) om het te laten instellen' : ' · sleep naar Groter dan, Kleiner dan of een knop van een kaart'}`;
+  return `<circle class="pt ${left ? 'v-bool' : 'v-number'} ${users.length ? '' : 'free'}" cx="${left ? b.x : b.x + w}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="${left ? 'pset' : 'pval'}" data-dp="${esc(p.dp)}" data-i="${i}"><title>${esc(tip)}</title></circle>
+    <text class="bkt" x="${x}" y="${y + 4}" ${left ? '' : 'text-anchor="end"'}><title>${esc(tip)}</title>${esc(scCut(p.name, left ? 17 : 21))} <tspan class="tyv">${esc(scCut(scTyValue(p), left ? 14 : 12))}</tspan></text>
+    ${users.map((u, n) => `<text class="stub" x="${left ? b.x - 11 : b.x + w + 11}" y="${y + 4 + n * 13}" ${left ? 'text-anchor="end"' : ''} data-sc="go" data-k="${esc(u.key)}">${left ? `${esc(scCut(u.text, 24))} ←` : `→ ${esc(scCut(u.text, 24))}`}<title>${esc(u.text)}</title></text>`).join('')}`;
+}
+
+function scRemoteTuya(b) { // een Tuya-toestel van een andere installatie: dezelfde poorten als een Tuya-blok van hier
+  return `<g class="bk ty t-remote ${SC.sel === b.key ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
+    <rect class="bkbox" x="${b.x}" y="${b.y}" width="${TUYA_W}" height="${scH(b)}" rx="8"/>
+    <rect class="bkhead" x="${b.x}" y="${b.y}" width="${TUYA_W}" height="${SC_HEAD}" rx="8"/>
+    <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 44))}</text>
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">↔ ${esc(scCut(b.peerName, 20))} · Tuya${b.online ? '' : ' · offline'}</text>
+    ${b.pin.length || b.pout.length ? '' : `<text class="bkt" x="${b.x + TUYA_W / 2}" y="${rowY(b, 0) + 4}" text-anchor="middle">Nog geen waarden</text>`}
+    ${b.pin.map((x, i) => scTyRow(b, x, i, true, TUYA_W)).join('')}${b.pout.map((x, i) => scTyRow(b, x, i, false, TUYA_W)).join('')}</g>`;
+}
+
 function scTuya(b, tags) { // bovenaan de relais (touch en relais, zoals een schakelaar); daaronder links wat je kunt instellen, rechts wat het toestel meldt
   const relays = b.gangs.slice(0, b.nrelay).map((g) => {
     const y = rowY(b, g.i);
     return `<line class="bkrule" x1="${b.x}" x2="${b.x + TUYA_W}" y1="${y - SC_ROW / 2}" y2="${y - SC_ROW / 2}"/>
       <text class="bkt" x="${b.x + TUYA_W / 2}" y="${y + 4}" text-anchor="middle">${esc(scCut(g.label, 30))}</text>${scGangPorts(b, g, TUYA_W, tags)}`;
   }).join('');
-  const row = (p, n, left) => {
-    const i = n + b.nrelay, y = rowY(b, i), x = left ? b.x + 11 : b.x + TUYA_W - 11;
-    const tip = `${p.name}: ${scTyValue(p)}${left ? ' (instellen in de zijbalk)' : ''}`;
-    return `<circle class="ptv ${left ? 'tou' : 'rel'}" cx="${left ? b.x : b.x + TUYA_W}" cy="${y}" r="5"><title>${esc(tip)}</title></circle>
-      <text class="bkt" x="${x}" y="${y + 4}" ${left ? '' : 'text-anchor="end"'}><title>${esc(tip)}</title>${esc(scCut(p.name, left ? 17 : 21))} <tspan class="tyv">${esc(scCut(scTyValue(p), left ? 14 : 12))}</tspan></text>`;
-  };
+  const row = (p, n, left) => scTyRow(b, p, n + b.nrelay, left, TUYA_W);
   return `<g class="bk ty t-tuya ${SC.sel === b.key ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${TUYA_W}" height="${scH(b)}" rx="8"/>
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${TUYA_W}" height="${SC_HEAD}" rx="8"/>
@@ -317,7 +372,7 @@ function scValueInput(attrs, p, cur) { // de waarde die een routine zet: een keu
 }
 
 function scAction(b) {
-  const y0 = rowY(b, 0), p = b.ports[0], src = p.ref && scBlock(p.ref), st = b.status;
+  const y0 = rowY(b, 0), p = b.ports[0], src = scSrc(p.ref), st = b.status;
   return `<g class="bk act t-spr ${SC.sel === b.key ? 'sel' : ''}" data-block="${esc(b.key)}">
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
@@ -325,7 +380,7 @@ function scAction(b) {
     <text class="bkbadge ${b.enabled ? 'ok' : ''}" x="${b.x + SW_W - 12}" y="${b.y + 18}" text-anchor="end">${b.enabled ? 'actief' : 'uit'}</text>
     <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Tuya instellen${st.ok ? '' : ' · mislukt'}</text>
     <circle class="pt v-bool ${src ? '' : 'free'} ${st.input === true ? 'on' : ''}" cx="${b.x}" cy="${y0}" r="6" data-b="${esc(b.key)}" data-role="min" data-i="0"><title>Ingang: een 0 of 1 van een timer of module</title></circle>
-    ${src ? `<text class="bkt away" x="${b.x + 11}" y="${y0 + 4}" data-sc="go" data-k="${esc(src.key)}">${esc(scCut(src.name, 16))} (${scOut(src)})<title>${esc(src.name)} geeft nu ${scOut(src)}</title></text>` : `<text class="ptl" x="${b.x + 11}" y="${y0 + 4}">+ ingang</text>`}
+    ${src ? `<text class="bkt away" x="${b.x + 11}" y="${y0 + 4}" data-sc="go" data-k="${esc(src.key)}">${esc(scCut(src.name, 16))} (${src.out})<title>${esc(src.name)} geeft nu ${src.out}</title></text>` : `<text class="ptl" x="${b.x + 11}" y="${y0 + 4}">+ ingang</text>`}
     <text class="bkt" x="${b.x + 11}" y="${rowY(b, 1) + 4}">→ ${esc(scCut(b.target, 30))}<title>1: ${esc(b.on_value || 'niets')} · 0: ${esc(b.off_value || 'niets')}</title></text></g>`;
 }
 
@@ -367,9 +422,9 @@ const SC_HELP = {
 function scModule(b) {
   const y0 = rowY(b, 0), users = scUsers(b);
   const rows = b.ports.map((p, i) => {
-    const y = rowY(b, i), src = p.ref && scBlock(p.ref);
+    const y = rowY(b, i), src = scSrc(p.ref);
     return `<circle class="pt v-${p.type} ${src ? '' : 'free'}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="min" data-i="${i}"><title>Ingang ${esc(p.label)}: ${p.type === 'time' ? 'een tijd' : 'een 0 of 1'}</title></circle>
-      ${src ? `<text class="bkt away" x="${b.x + 11}" y="${y + 4}" data-sc="go" data-k="${esc(src.key)}">${esc(p.label)}: ${esc(scCut(src.name, 14))} (${scOut(src)})<title>${esc(src.name)} geeft nu ${scOut(src)}</title></text>`
+      ${src ? `<text class="bkt away" x="${b.x + 11}" y="${y + 4}" data-sc="go" data-k="${esc(src.key)}">${esc(p.label)}: ${esc(scCut(src.name, 14))} (${src.out})<title>${esc(src.name)} geeft nu ${src.out}</title></text>`
     : `<text class="ptl" x="${b.x + 11}" y="${y + 4}">+ ${esc(p.label)}</text>`}`;
   }).join('');
   return `<g class="bk mod t-${scType(b)} ${SC.sel === b.key ? 'sel' : ''}" data-block="${esc(b.key)}">
@@ -402,9 +457,9 @@ function scSprText(b) {
 function scSprinkler(b) {
   const paramText = { start: b.start, cycles: b.cycles, wait: `${b.wait} min` };
   const left = b.ports.map((p, i) => {
-    const y = rowY(b, i), src = p.ref && scBlock(p.ref);
+    const y = rowY(b, i), src = scSrc(p.ref);
     return `<circle class="pt v-${p.type} ${src ? '' : 'free'}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="min" data-i="${i}"><title>Ingang ${esc(p.label)}</title></circle>
-      ${src ? `<text class="bkt away" x="${b.x + 11}" y="${y + 4}" data-sc="go" data-k="${esc(src.key)}">${esc(scCut(p.label, 6))}: ${esc(scCut(src.name, 9))} (${scOut(src)})<title>${esc(p.label)}: ${esc(src.name)} geeft nu ${scOut(src)}</title></text>`
+      ${src ? `<text class="bkt away" x="${b.x + 11}" y="${y + 4}" data-sc="go" data-k="${esc(src.key)}">${esc(scCut(p.label, 6))}: ${esc(scCut(src.name, 9))} (${src.out})<title>${esc(p.label)}: ${esc(src.name)} geeft nu ${src.out}</title></text>`
     : `<text class="ptl" x="${b.x + 11}" y="${y + 4}">${esc(p.label)}${paramText[p.name] !== undefined ? `: ${esc(paramText[p.name])}` : ''}</text>`}`;
   }).join('');
   const right = b.zones.map((z, i) => {
@@ -470,7 +525,7 @@ function scPanelPanel(b, props) {
 
 const SC_CARD_HELP = {
   grid: 'Tot 8 knoppen (een lijst: 4). Een knop bedient een lamp, een entiteit uit HA, of opent een subpagina.',
-  charger: 'Start/stop, de stand, de laadtijd, de geladen kWh en de prijs, rechtstreeks van de Tuya-lader (ook zonder HA).',
+  charger: 'Start/stop, de status, de laadtijd, de geladen kWh en de prijs. Sluit links waarden van een Tuya-blok aan en rechts start/stop op een instelling, van welke lader ook.',
   saver: 'Het startscherm: klok, datum, het weer met 4 dagen voorspelling en een temperatuur binnen.',
   power: 'Het energieschema van nspanel-lovelace-ui: tot 6 rijen, elk een sensor uit HA.',
   qr: 'Een QR-code waarmee een gast op de wifi komt, met de naam en het wachtwoord ernaast.',
@@ -505,13 +560,18 @@ function scCardPanel(b, props) {
       <div class="sub">Een waarde (bv. het vermogen van een stroommeter) toont de lijstweergave het best: het raster toont alleen het pictogram en de naam.</div>
       <div class="sub">Sleep naar een knop (links op het blok) vanaf een <b>lamp</b>, een <b>gang</b> van een schakelaar, of de <b>uitgang</b> van een andere kaart (dan wordt het een subpagina). Pictogrammen: de MDI-naam, bv. <code>ceiling-light</code>; wat het scherm niet kent wordt een uitroepteken.</div>`;
   } else if (b.type === 'charger') {
-    const tuyas = scBlocks().filter((t) => t.kind === 'tuya'), far = scBlocks().filter((t) => t.kind === 'remote' && t.sub === 'tuya');
-    body = `<label>Lader (Tuya-blok)</label><select data-cdfield="tuya"><option value="">kies een lader…</option>${tuyas.map((t) => opt(t.id, b.tuya, `${t.name}${t.online ? '' : ' (offline)'}`)).join('')}
-      ${far.length ? `<optgroup label="Van andere installaties">${far.map((t) => opt(t.key, b.tuya, `${t.name} (${t.peerName})${t.online ? '' : ' (offline)'}`)).join('')}</optgroup>` : ''}</select>
-      ${b.device ? `<div class="sub"><a href="#" data-sc="go" data-k="${esc(b.device.key)}">↗ ${esc(b.device.name)}</a></div>` : ''}
-      <label>Prijs per kWh (€)</label><input type="number" min="0" max="100" step="0.01" data-cdfield="price" value="${esc(b.price)}">
+    const pt = scPointOf(b.target.device, b.target.dp, SC_HERE);
+    body = `<h2>Ingangen</h2>${b.ins.map((x) => `<div class="scc"><div><b>${x.label}</b><div class="sub">${x.ref ? esc(x.src || x.ref) : 'niet aangesloten: sleep een waarde (rechts op een Tuya-blok) naar de poort links'}</div></div>
+        ${x.ref ? `<button class="btn small danger" type="button" data-sc="cdinclear" data-k="${esc(b.key)}" data-name="${x.name}" title="Loskoppelen">✕</button>` : ''}</div>`).join('')}
+      <h2>Start/stop</h2>
+      <label>Toestel</label>${scDeviceSelect('data-cdtarget="device"', b.target.device, SC_HERE)}
+      <label>Datapunt</label>${scPointSelect('data-cdtarget="dp"', b.target.device, b.target.dp, SC_HERE, (x) => x.rw)}
+      <label>Waarde om te starten</label>${scValueInput('data-cdtarget="on"', pt, b.target.on)}
+      <label>Waarde om te stoppen</label>${scValueInput('data-cdtarget="off"', pt, b.target.off)}
+      <div class="sub">Of sleep de uitgang <b>start/stop</b> (rechts op het blok) naar een instelling van een Tuya-blok, hier of van een andere installatie. De knop toont Stop zolang dat datapunt op de startwaarde staat (of de status zegt dat hij laadt).</div>
+      <h2>Prijs</h2><label>Prijs per kWh (€)</label><input type="number" min="0" max="100" step="0.01" data-cdfield="price" value="${esc(b.price)}">
       ${tx('price_entity', 'Of de prijs uit een entiteit van HA (wint als ze een getal geeft)', 'bv. sensor.stroomprijs')}
-      <div class="sub">De knop start of stopt het laden (datapunt 124). De stand komt uit datapunt 101; alleen <code>connect</code> is op de lader gemeten, een stand die de add-on niet kent staat er zoals de lader ze meldt.</div>`;
+      <div class="sub">Prijs = Geladen × de prijs per kWh.</div>`;
   } else if (b.type === 'saver') {
     body = `${tx('weather', 'Weer', 'weather.forecast_thuis')}${tx('forecast', 'Voorspelling uit (leeg: uit het weer)', 'sensor.weather_forecast_daily')}${tx('temperature', 'Temperatuur binnen', 'sensor.temperatuur_hal')}
       ${tx('status1', 'Statuspictogram 1', 'bv. binary_sensor.voordeur')}${tx('status2', 'Statuspictogram 2', '')}`;
@@ -660,7 +720,7 @@ const SC_WEEK = ['ma', 'di', 'wo', 'do', 'vr', 'za', 'zo'];
 function scSprinklerPanel(b, props) {
   const sel = (p) => {
     const srcs = scBlocks().filter((s) => (s.kind === 'timer' && p.type === 'bool') || (s.kind === 'module' && s.out === p.type));
-    return `<select data-spinput="${esc(p.name)}"><option value="">${p.name === 'block' ? 'niet aangesloten' : 'waarde hierboven gebruiken'}</option>${srcs.map((s) => `<option value="${esc(s.key)}" ${s.key === p.ref ? 'selected' : ''}>${esc(s.name)} (nu ${scOut(s)})</option>`).join('')}</select>`;
+    return `<select data-spinput="${esc(p.name)}"><option value="">${p.name === 'block' ? 'niet aangesloten' : 'waarde hierboven gebruiken'}</option>${p.ref && p.ref.startsWith('v:') ? `<option value="${esc(p.ref)}" selected>${esc(scSrc(p.ref).name)}</option>` : ''}${srcs.map((s) => `<option value="${esc(s.key)}" ${s.key === p.ref ? 'selected' : ''}>${esc(s.name)} (nu ${scOut(s)})</option>`).join('')}</select>`;
   };
   const port = (n) => b.ports.find((p) => p.name === n);
   scLoadEnts();
@@ -733,7 +793,7 @@ async function scSaveSprinkler(b, patch) {
 
 function scModulePanel(b, props) {
   const sources = (p) => scBlocks().filter((s) => s.key !== b.key && ((s.kind === 'timer' && p.type === 'bool') || (s.kind === 'module' && s.out === p.type)));
-  const ports = b.ports.map((p) => `<label>${esc(p.label)}</label><select data-mport="${esc(p.name)}" data-k="${esc(b.key)}"><option value="">niet aangesloten</option>${sources(p).map((s) => `<option value="${esc(s.key)}" ${s.key === p.ref ? 'selected' : ''}>${esc(s.name)} (nu ${scOut(s)})</option>`).join('')}</select>`).join('');
+  const ports = b.ports.map((p) => `<label>${esc(p.label)}</label><select data-mport="${esc(p.name)}" data-k="${esc(b.key)}"><option value="">niet aangesloten</option>${p.ref && p.ref.startsWith('v:') ? `<option value="${esc(p.ref)}" selected>${esc(scSrc(p.ref).name)} (nu ${esc(scSrc(p.ref).out)})</option>` : ''}${sources(p).map((s) => `<option value="${esc(s.key)}" ${s.key === p.ref ? 'selected' : ''}>${esc(s.name)} (nu ${scOut(s)})</option>`).join('')}</select>`).join('');
   const users = scUsers(b);
   const nosun = (b.type === 'sunrise' || b.type === 'sunset') && b.value === null ? '<div class="sub">Nog onbekend: de add-on heeft de locatie van Home Assistant nog niet, of de zon komt vandaag niet op of gaat niet onder.</div>' : '';
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge">uitgang nu ${scOut(b)}</span><span class="sub">${esc(S.clock.time)} · ${esc(S.clock.tz)}</span></div>
@@ -828,7 +888,8 @@ function scPortPos(p) {
   if (b.kind === 'sprinkler') return p.role === 'min' ? [b.x, rowY(b, +p.i)] : [b.x + SW_W, rowY(b, +p.i)];
   if (b.kind === 'module') return p.role === 'min' ? [b.x, rowY(b, +p.i)] : [b.x + SW_W, rowY(b, 0)];
   if (b.kind === 'action') return [b.x, rowY(b, 0)];
-  if (b.kind === 'card') return p.role === 'cout' ? [b.x + SW_W, rowY(b, 0)] : [b.x, rowY(b, p.i === 'new' ? b.items.length : +p.i)];
+  if (p.role === 'pval' || p.role === 'pset') return [p.role === 'pval' ? b.x + TUYA_W : b.x, rowY(b, +p.i)];
+  if (b.kind === 'card') return p.role === 'cout' ? [b.x + SW_W, rowY(b, 0)] : p.role === 'cdout' ? [b.x + SW_W, rowY(b, 1)] : [b.x, rowY(b, p.i === 'new' ? b.items.length : +p.i)];
   if (b.kind === 'panel' && p.role === 'pcard') return [b.x, rowY(b, b.gangs.length + (p.i === 'new' ? b.cards.length : +p.i))];
   if (p.role === 'disable') return [b.x, rowY(b, scRows(b) - 1)];
   if (p.role === 'control') return [b.x, rowY(b, scRows(b) - 2)];
@@ -1168,8 +1229,48 @@ async function scWireCard(a, b) { // de uitgang van een kaart naar een paneel of
   await refresh();
 }
 
+async function scWireDp(a, b) { // een datapunt van een Tuya-blok: een waarde naar de logica of een kaart, of een 0/1 die het instelt
+  const val = [a, b].find((p) => p.role === 'pval'), set = [a, b].find((p) => p.role === 'pset');
+  if (val && set) throw new Error('Een waarde sluit je aan op Groter dan of Kleiner dan, niet rechtstreeks op een instelling.');
+  if (val) {
+    const sink = val === a ? b : a, dev = scDevOf(scBlock(val.b)), to = scBlock(sink.b);
+    if (sink.role === 'min' && (to.kind === 'module' || to.kind === 'sprinkler')) {
+      const port = to.ports[+sink.i];
+      if (port.type !== 'number') throw new Error(port.type === 'bool' ? 'Deze ingang verwacht een 0 of 1. Zet er een Groter dan of Kleiner dan tussen.' : 'Deze ingang verwacht een tijd, geen waarde.');
+      await api('PUT', `${to.kind === 'module' ? 'modules' : 'sprinklers'}/${to.id}`, { inputs: { [port.name]: `v:${val.dp}@${dev.id}` } });
+    } else if (sink.role === 'citem') await scSetItem(to, sink.i, { ref: dev.card, dp: String(val.dp), entity: null });
+    else if (sink.role === 'cdin') {
+      const ins = Object.fromEntries(to.ins.filter((x) => x.ref).map((x) => [x.name, x.ref]));
+      ins[to.ins[+sink.i].name] = `v:${val.dp}@${dev.id}`;
+      await api('PUT', `cards/${to.id}`, { inputs: ins });
+    } else throw new Error('Een waarde sluit je aan op de ingang van Groter dan, Kleiner dan, een sprinkler of een laadpaal, of op een knop van een kaart.');
+    SC.sel = to.key;
+  } else {
+    const src = set === a ? b : a, from = scBlock(src.b), tb = scBlock(set.b), dev = scDevOf(tb);
+    if (src.role === 'cdout') { // de knop van een laadpaal: start en stop zetten dit datapunt
+      const pt = dev.points.find((x) => String(x.dp) === String(set.dp)), opts = (pt && pt.options) || [];
+      const guess = opts.includes('OpenCharging') && opts.includes('CloseCharging') ? ['OpenCharging', 'CloseCharging'] : pt && pt.type === 'bool' ? ['ON', 'OFF'] : ['', ''];
+      await api('PUT', `cards/${from.id}`, { target: { device: dev.id, dp: String(set.dp), on: guess[0], off: guess[1] } });
+      SC.sel = from.key;
+      if (!guess[0]) toast('Kies bij de kaart de waarde om te starten en om te stoppen.', 6000);
+      SC.force = true;
+      await refresh();
+      return;
+    }
+    if (!(src.role === 'tout' || (src.role === 'mout' && from.out === 'bool'))) throw new Error('Een instelling stuur je vanaf de uitgang van een timer of een 0/1-module (bv. Groter dan).');
+    const pt = dev.points.find((x) => String(x.dp) === String(set.dp));
+    const r = await api('POST', 'actions', { name: `${tb.name} · ${pt ? pt.name : set.dp}`.slice(0, 60), page: tb.page || SC.page, ...scFreeSpot('module', tb.page || SC.page) });
+    await api('PUT', `actions/${r.key.slice(2)}`, { device: dev.id, dp: String(set.dp), inputs: { trigger: from.key } });
+    SC.sel = SC.reveal = r.key;
+    toast('Routine Tuya instellen gemaakt, nog uit. Kies de waarden bij 1 en 0 en zet ze aan.', 7000);
+  }
+  SC.force = true;
+  await refresh();
+}
+
 async function scWireUp(a, b) { // a en b zijn poorten; één hoort bij een lamp, de ander bij een schakelaar, of het zijn modules
   const pa = scBlock(a.b), pb = scBlock(b.b);
+  if ([a.role, b.role].some((r) => r === 'pval' || r === 'pset')) return scWireDp(a, b);
   if (SC_CARD_ROLES.includes(a.role) || SC_CARD_ROLES.includes(b.role)) return scWireCard(a, b);
   if (a.role === 'zout' || b.role === 'zout') return scWireZone(a, b);
   if (SC_LOGIC_ROLES.includes(a.role) || SC_LOGIC_ROLES.includes(b.role)) return scWireLogic(a, b);
@@ -1304,6 +1405,10 @@ const SC_ACTIONS = {
   },
   rtoggle: (d) => scRemoteCmd(scBlock(d.k), { op: 'toggle' }),
   rcmd: (d) => scRemoteCmd(scBlock(d.k), { op: d.op }),
+  cdinclear: (d) => {
+    const b = scBlock(d.k);
+    return scSaveCard(b, { inputs: Object.fromEntries(b.ins.filter((x) => x.ref && x.name !== d.name).map((x) => [x.name, x.ref])) });
+  },
   delaction: async (d) => {
     if (!confirm('Deze routine verwijderen? Wat ze al gezet heeft blijft zo staan.')) return;
     await api('DELETE', `actions/${d.id}`);
@@ -1500,17 +1605,17 @@ function scPt(ev) {
   return { x: q.x, y: q.y };
 }
 
-const scPortOf = (el) => (el && el.dataset && el.dataset.role ? { b: el.dataset.b, role: el.dataset.role === 'touch' || el.dataset.role === 'relay' ? null : el.dataset.role, swRole: el.dataset.role, g: el.dataset.g, i: el.dataset.i } : null);
+const scPortOf = (el) => (el && el.dataset && el.dataset.role ? { b: el.dataset.b, role: el.dataset.role === 'touch' || el.dataset.role === 'relay' ? null : el.dataset.role, swRole: el.dataset.role, g: el.dataset.g, i: el.dataset.i, dp: el.dataset.dp } : null);
 
 function scFinish(target) {
   const from = SC.link;
   const toPort = target && target.closest && target.closest('.pt');
   const toBlock = target && target.closest && target.closest('[data-block]');
-  const norm = (p) => ({ b: p.b, role: scBlock(p.b).kind === 'lamp' ? p.lampRole : p.swRole, g: p.g, i: p.i });
+  const norm = (p) => ({ b: p.b, role: scBlock(p.b).kind === 'lamp' ? p.lampRole : p.swRole, g: p.g, i: p.i, dp: p.dp });
   let dest = null;
   if (toPort) {
     const p = scPortOf(toPort);
-    dest = { b: p.b, lampRole: p.role, swRole: p.swRole, g: p.g, i: p.i };
+    dest = { b: p.b, lampRole: p.role, swRole: p.swRole, g: p.g, i: p.i, dp: p.dp };
   } else if (toBlock && toBlock.dataset.block !== from.b) {
     const tb = scBlock(toBlock.dataset.block);
     if (tb.kind === 'lamp' || (tb.kind === 'remote' && from.swRole === 'citem')) dest = { b: tb.key, lampRole: null }; // losgelaten op de lamp zelf: de poort waar je begon beslist
@@ -1543,7 +1648,7 @@ document.addEventListener('pointerdown', (ev) => {
   if (port) {
     const p = scPortOf(port);
     ev.preventDefault();
-    SC.link = { b: p.b, lampRole: p.role, swRole: p.swRole, role: p.role || p.swRole, g: p.g, i: p.i, x: pt.x, y: pt.y, startX: ev.clientX, startY: ev.clientY };
+    SC.link = { b: p.b, lampRole: p.role, swRole: p.swRole, role: p.role || p.swRole, g: p.g, i: p.i, dp: p.dp, x: pt.x, y: pt.y, startX: ev.clientX, startY: ev.clientY };
     svg.setPointerCapture(ev.pointerId);
     return;
   }
@@ -1731,6 +1836,12 @@ document.addEventListener('change', (ev) => {
     const value = f === 'price' ? (raw === '' ? 0 : +raw) : ['weather', 'forecast', 'temperature', 'status1', 'status2', 'price_entity'].includes(f) ? (raw || null) : f === 'password' ? t.value : raw;
     t.blur();
     act(() => scSaveCard(card, { [f]: value }))();
+  }
+  if (t.dataset && t.dataset.cdtarget && card) {
+    const f = t.dataset.cdtarget, v = t.value.trim();
+    const target = f === 'device' ? { device: v, dp: '', on: '', off: '' } : f === 'dp' ? { ...card.target, dp: v, on: '', off: '' } : { ...card.target, [f]: v };
+    t.blur();
+    act(() => scSaveCard(card, { target }))();
   }
   if (t.dataset && t.dataset.cditem && card) {
     const f = t.dataset.cditem, i = +t.dataset.i, items = scItems(card);

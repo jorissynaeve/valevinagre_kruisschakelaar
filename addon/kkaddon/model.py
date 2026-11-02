@@ -119,7 +119,9 @@ ENTITY_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 FLOOR_ID_RE = re.compile(r"^[a-z0-9]{1,12}$")
 GROUP_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
 DISABLE_RE = re.compile(r"^(m:)?[a-z0-9_]{1,80}$")
-SOURCE_RE = re.compile(r"^[tm]:[a-z0-9_]{1,80}$")
+# een bron: een timer, een module, of rechtstreeks een datapunt van een Tuya-toestel (v:<datapunt>@<toestel>, hier of r:..:y:<id>)
+SOURCE_RE = re.compile(r"^([tm]:[a-z0-9_]{1,80}|v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80}))$")
+VALUE_RE = re.compile(r"^v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})$")  # alleen een datapunt
 
 
 def _group(gid, v) -> dict:
@@ -468,11 +470,24 @@ def _card(cid, v) -> dict:
             clean.append({"ref": ref, "entity": ent, "name": _plain(_name(it.get("name"), "knop.name"), "knop.name"), "icon": _icon_name(it.get("icon")), "dp": dp})
         out.update(layout=layout, items=clean)
     elif t == "charger":
-        did = v.get("tuya") or ""
-        remote = split_ref(did) if isinstance(did, str) else None
-        if not isinstance(did, str) or (did and not TUYA_ID_RE.fullmatch(did) and not (remote and remote[1].startswith("y:"))):
-            raise ModelError("laadpaal: ongeldig Tuya-toestel")
-        out.update(tuya=did, price=_num(v.get("price", 0.30), 0, 100, "prijs per kWh"), price_entity=_opt_entity(v.get("price_entity"), "prijs"))
+        ins, tgt = v.get("inputs") or {}, v.get("target") or {}
+        if v.get("tuya"):  # tot 0.15 koos je een Feyree-lader: dat zijn deze datapunten (zie tuyahub.FEYREE)
+            dev = _device_ref(v["tuya"])
+            ins = {"status": f"v:101@{dev}", "time": f"v:120@{dev}", "energy": f"v:25@{dev}"}
+            tgt = {"device": dev, "dp": "124", "on": "OpenCharging", "off": "CloseCharging"}
+        if not isinstance(ins, dict) or set(ins) - set(_cards.CHARGER_INPUTS) or not isinstance(tgt, dict):
+            raise ModelError("laadpaal: onbekende ingang")
+        for k, r in ins.items():
+            if r is not None and (not isinstance(r, str) or not VALUE_RE.match(r)):
+                raise ModelError(f"laadpaal: {k} moet een datapunt van een Tuya-toestel zijn")
+        vals = {}
+        for k in ("on", "off"):
+            x = tgt.get(k, "")
+            if not isinstance(x, (str, int, float)) or isinstance(x, bool) or len(str(x)) > 40:
+                raise ModelError("laadpaal: een waarde van hoogstens 40 tekens")
+            vals[k] = str(x).strip()
+        out.update(inputs={k: r for k, r in ins.items() if r}, target={"device": _device_ref(tgt.get("device")), "dp": _dp(tgt.get("dp")), **vals},
+                   price=_num(v.get("price", 0.30), 0, 100, "prijs per kWh"), price_entity=_opt_entity(v.get("price_entity"), "prijs"))
     elif t == "saver":
         out.update({k: _opt_entity(v.get(k), k) for k in ("weather", "forecast", "temperature", "status1", "status2")})
     elif t == "power":
@@ -607,6 +622,8 @@ def _check_sprinklers(sprinklers: dict[str, dict], modules: dict[str, dict], tim
 
 def _source_type(ref: str, modules: dict[str, dict], timers: dict[str, dict]) -> str | None:
     """Wat een bron geeft: een tijd, een 0/1, of None als ze niet bestaat."""
+    if ref.startswith("v:"):
+        return NUMBER  # een datapunt: een getal (aan/uit = 1/0); is het toestel er niet, dan is de waarde onbekend, geen fout
     if ref.startswith("t:"):
         return BOOL if ref[2:] in timers else None
     m = modules.get(ref[2:])
@@ -1256,7 +1273,7 @@ class Model:
         old = self.cards.get(cid)
         if old is None:
             raise ModelError("onbekende kaart")
-        unknown = set(fields) - (set(old) - {"type"})
+        unknown = set(fields) - (set(old) - {"type"}) - ({"tuya"} if old["type"] == "charger" else set())  # tuya: een Feyree-lader in één keer
         if unknown:
             raise ModelError(f"kaart: onbekend veld {sorted(unknown)[0]}")
         cards = {**self.cards, cid: _card(cid, {**old, **fields})}

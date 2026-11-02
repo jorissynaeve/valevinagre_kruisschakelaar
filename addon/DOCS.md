@@ -126,7 +126,7 @@ Wat er op het scherm staat, bouw je uit **kaarten**: eigen blokken op het schema
 | Kaart | Wat ze toont |
 |---|---|
 | **Knoppen** | Een raster tot 8 knoppen (of een lijst tot 4). Een knop bedient een **lamp** van het schema, een **entiteit** uit HA, of opent een **subpagina**. |
-| **Laadpaal** | Start/stop, de stand, de laadtijd, de geladen kWh en de prijs (vast tarief per kWh, of een entiteit uit HA die wint als ze een getal geeft). |
+| **Laadpaal** | Start/stop, de status, de laadtijd, de geladen kWh en de prijs (vast tarief per kWh, of een entiteit uit HA die wint als ze een getal geeft). Werkt met elke lader: sleep links een waarde van een Tuya-blok naar *Status*, *Laadtijd* en *Geladen*, en rechts *start/stop* naar een instelling (bv. *Laden*); kies bij de kaart de waarde om te starten en te stoppen. |
 | **Screensaver** | Het startscherm: klok, datum, weer met 4 dagen voorspelling, een temperatuur binnen en tot 2 statuspictogrammen. Eén per paneel; ze is geen pagina. |
 | **Energie** | Het energieschema, tot 6 sensoren, met per sensor eventueel twee grenzen voor de kleur (groen, oranje, rood). |
 | **Wifi (QR)** | Een QR-code voor het gastnetwerk, met de naam en het wachtwoord ernaast. |
@@ -151,6 +151,11 @@ Een andere YAML (bv. van een tweede panel onder AppDaemon) zet je om via *YAML v
   Een pakket kan verloren gaan: de add-on stuurt de huidige pagina daarom elke twee minuten opnieuw, en een stand die verandert meteen.
 
 ## Waarden van Tuya-toestellen in de logica
+
+Een Tuya-blok (van hier, of gekozen bij een andere installatie) heeft poorten zoals de andere blokken: **rechts** wat het toestel meldt, **links** wat je kunt instellen. Naast elke poort staat waar ze aan hangt.
+
+* Sleep een **waarde** (rechts) naar de ingang van *Groter dan*, *Kleiner dan* of een getal-ingang van een sprinkler: de waarde gaat er rechtstreeks in. Of naar een knop van een kaart: die toont de waarde.
+* Sleep de uitgang van een **timer of een 0/1-module** naar een **instelling** (links): er komt een routine *Tuya instellen* voor dat datapunt, nog uit. Kies de waarden bij 1 en 0 en zet ze aan.
 
 * **Tuya-waarde** (*+ Module → Waarden*): de waarde van een datapunt als getal, van een toestel hier of bij een andere installatie. Aan/uit is 1/0. Is het toestel offline, dan is de waarde onbekend.
 * **Groter dan** en **Kleiner dan** (*+ Module → Vergelijken*): 1 als de waarde boven of onder een grens ligt (met decimalen, bv. 3.5 kW). Die 0/1 sluit je aan op alles wat een 0/1 neemt: de disable- of aan/uit-ingang van een lamp, *En* en *Of*, het blokkeren van een sprinkler, of de routine hieronder.

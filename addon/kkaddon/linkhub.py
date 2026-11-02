@@ -136,8 +136,19 @@ class LinkHub:
         refs = {k for k in m.schema["blocks"] if k.startswith("r:")}
         for c in m.cards.values():
             refs |= {it["ref"] for it in c.get("items", []) if c["type"] == "grid" and (it.get("ref") or "").startswith("r:")}
-            if c["type"] == "charger" and (c.get("tuya") or "").startswith("r:"):
-                refs.add(c["tuya"])
+            if c["type"] == "charger":  # de toestellen op de ingangen en op start/stop
+                devs = [r.partition("@")[2] for r in c["inputs"].values()] + [c["target"]["device"]]
+                refs |= {d for d in devs if d.startswith("r:")}
+            for it in c.get("items", []):  # een waarde op een knop of een energierij
+                for d in (it.get("ref") if it.get("dp") else None, it.get("tuya")):
+                    if d and d.startswith("r:"):
+                        refs.add(d)
+        for mm in m.modules.values():  # een Tuya-waarde, of een ingang die rechtstreeks een datapunt leest
+            devs = [mm.get("device") or ""] + [r.partition("@")[2] for r in mm["inputs"].values() if r.startswith("v:")]
+            refs |= {d for d in devs if d.startswith("r:")}
+        for a in m.actions.values():
+            if a["device"].startswith("r:"):
+                refs.add(a["device"])
         return refs
 
     def _save(self) -> None:

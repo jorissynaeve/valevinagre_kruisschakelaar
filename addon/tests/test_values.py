@@ -179,3 +179,44 @@ def test_values_on_a_panel_card_here_and_from_another_installation():
     live.tuya.online["meter"] = False
     assert live.value("kk.meters__0", "nl")["value"] == "—"
     assert Points(link=link).set("r:atelier:y:meter", "19", "1") is True and link.sent == [("atelier", "y:meter", {"dp": "19", "value": "1"})]
+
+
+def test_an_input_can_point_straight_at_a_datapoint():
+    points = Points(FakeTuya())
+    mods = {"hoog": {"type": "above", "value": 2.0, "inputs": {"a": "v:19@meter"}}, "weg": {"type": "above", "value": 2.0, "inputs": {"a": "v:19@bestaat_niet"}}}
+    v = evaluate(mods, lambda t: None, 600, None, points.number)
+    assert v["hoog"] is True and v["weg"] is None, "een toestel dat er niet is: onbekend, geen fout"
+    m = Model()
+    hoog = m.add_module("above", value=3.5)
+    m.set_module(hoog, inputs={"a": "v:19@r:atelier:y:meter"})
+    with pytest.raises(ModelError, match="0 of 1"):
+        m.set_module(m.add_module("and"), inputs={"a": "v:19@meter"})  # een waarde is geen 0/1
+    with pytest.raises(ModelError, match="ongeldige bron"):
+        m.set_module(hoog, inputs={"a": "v:19@r:atelier:g:hal"})  # alleen een Tuya-toestel
+    sid = m.add_sprinkler("Tuin")
+    m.set_sprinkler(sid, inputs={"cycles": "v:115@lader"})
+    r = Rig()
+    r.m.set_module(r.hoog, inputs={"a": "v:19@meter"})
+    assert r.e.ref_value("v:19@meter") == 2.5 and r.e.ref_value(f"m:{r.hoog}") is False
+
+
+def test_the_charger_card_has_inputs_and_an_output_instead_of_a_fixed_charger():
+    m = Model()
+    m.load_dict({"version": 1, "cards": {"oud": {"type": "charger", "name": "Oud", "tuya": "r:atelier:y:lader", "price": 0.3}}}, save=False)
+    assert m.cards["oud"]["inputs"] == {"status": "v:101@r:atelier:y:lader", "time": "v:120@r:atelier:y:lader", "energy": "v:25@r:atelier:y:lader"}
+    assert m.cards["oud"]["target"] == {"device": "r:atelier:y:lader", "dp": "124", "on": "OpenCharging", "off": "CloseCharging"}, "een Feyree-kaart van vroeger blijft werken"
+    cid = m.add_card("charger", "Stekker")
+    m.set_card(cid, inputs={"energy": "v:19@meter"}, target={"device": "meter", "dp": "1", "on": "ON", "off": "OFF"})  # een slimme stekker als lader
+    with pytest.raises(ModelError, match="datapunt"):
+        m.set_card(cid, inputs={"status": "m:iets"})
+    with pytest.raises(ModelError, match="onbekende ingang"):
+        m.set_card(cid, inputs={"vermogen": "v:19@meter"})
+    t = FakeTuya()
+    live = cards.Live(m, tuya=t)
+    run = live.value(f"kk.{cid}__run", "nl")
+    assert run["kind"] == "button" and run["name"] == "Stekker" and run["value"] == "Stop", "aan staat op de startwaarde: Stop; zonder status de naam van de kaart"
+    assert live.value(f"kk.{cid}__energy", "nl")["value"] == "2.50 kW" and live.value(f"kk.{cid}__time", "nl")["value"] == "—"
+    assert live.press(f"kk.{cid}__run", "button", None) and t.sent == [("meter", "1", "OFF")]
+    m.set_card(cid, target={"device": "meter", "dp": "1", "on": "ON", "off": ""})
+    t.values["meter"]["1"] = True
+    assert live.press(f"kk.{cid}__run", "button", None) is False and len(t.sent) == 1, "geen stopwaarde gekozen: dan niets"

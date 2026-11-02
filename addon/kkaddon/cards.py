@@ -33,8 +33,9 @@ DEVICE_REF = re.compile(r"^(y:[a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80
 LEVEL_RGB = ([0, 255, 0], [255, 165, 0], [255, 0, 0])  # groen, oranje, rood: dezelfde kleuren als het sjabloon van een HA-sensor
 DYN = "kk"  # het domein van een rij die zijn stand uit de add-on haalt: kk.<kaart>__<deel>
 
-# De laadpaal (Feyree, zie tuyahub.FEYREE): welke datapunten de kaart leest en schrijft
-DP_STATUS, DP_ENERGY, DP_POWER, DP_TIME, DP_RUN = "101", "25", "109", "120", "124"
+# De laadpaal: drie ingangen (een datapunt elk, v:<dp>@<toestel>) en een uitgang start/stop (een datapunt met een waarde voor starten
+# en stoppen). Een Feyree-lader van vroeger (`tuya`) wordt bij het laden omgezet naar zijn datapunten (model._card).
+CHARGER_INPUTS = {"status": "Status", "time": "Laadtijd", "energy": "Geladen"}
 RUN_ON, RUN_OFF = "OpenCharging", "CloseCharging"
 # DeviceState van de lader. Gemeten is alleen `connect`; de rest is een gok op wat zo'n lader meldt. Wat we niet kennen tonen we zoals het komt.
 STATUS = {
@@ -44,11 +45,24 @@ STATUS = {
            "wait": "Waiting", "waiting": "Waiting", "finish": "Done", "charge_end": "Done", "end": "Done", "fault": "Fault", "error": "Fault"},
 }
 CHARGING = {"charing", "charging"}
+
+
+def same(value, want: str) -> bool:
+    """Staat een datapunt op deze waarde? Aan/uit meldt True/False, maar je zet het met ON/OFF."""
+    if isinstance(value, bool):
+        return value == (str(want).strip().upper() in ("ON", "TRUE", "1", "AAN"))
+    return str(value) == str(want)
+
+
+def value_ref(ref: str) -> tuple[str, str]:
+    """`v:<dp>@<toestel>` -> (toestel, dp)."""
+    dp, _, dev = ref[2:].partition("@")
+    return dev, dp
 CHARGE_COLOR = rgb565([0, 200, 80])
 WORDS = {
-    "nl": {"time": "Laadtijd", "energy": "Geladen", "price": "Prijs", "start": "Start", "stop": "Stop", "offline": "Lader offline", "offline_short": "offline", "none": "Geen lader gekozen",
+    "nl": {"time": "Laadtijd", "energy": "Geladen", "price": "Prijs", "start": "Start", "stop": "Stop", "offline": "Lader offline", "offline_short": "offline", "none": "Start/stop niet aangesloten",
            "ssid": "Netwerk", "password": "Wachtwoord", "missing": "Niet gevonden"},
-    "en": {"time": "Charge time", "energy": "Charged", "price": "Price", "start": "Start", "stop": "Stop", "offline": "Charger offline", "offline_short": "offline", "none": "No charger chosen",
+    "en": {"time": "Charge time", "energy": "Charged", "price": "Price", "start": "Start", "stop": "Stop", "offline": "Charger offline", "offline_short": "offline", "none": "Start/stop not connected",
            "ssid": "Network", "password": "Password", "missing": "Not found"},
 }
 
@@ -296,57 +310,46 @@ class Live:
         m = re.fullmatch(r"l(\d+)\.(\d+)", ref)
         return e.light_state(int(m[1]), int(m[2])) if m else None
 
-    def _points(self, c: dict) -> dict | None:
-        """De gemelde waarden van de lader (zoals in de zijbalk: met de schaal toegepast), of None als hij er niet is."""
-        did = c.get("tuya") or ""
-        if did.startswith("r:"):
-            r = self._remote(did)
-            o = r[2] if r else None
-            return {str(p.get("dp")): p.get("value") for p in o.get("points") or []} if o else None
-        t = self.tuya
-        if t is None or not did or did not in t.devices:
+    def _input(self, c: dict, name: str) -> dict | None:
+        """Het punt op een ingang van de laadpaal, of None (niet aangesloten, toestel weg of offline)."""
+        ref = c["inputs"].get(name)
+        if not ref:
             return None
-        return t.read(did)
+        dev, dp = value_ref(ref)
+        d = self.points.device(dev)
+        return d["points"].get(dp) if d and d["online"] else None
 
-    def _online(self, c: dict) -> bool:
-        did = c.get("tuya") or ""
-        if did.startswith("r:"):
-            r = self._remote(did)
-            return bool(r and r[2] and r[2].get("online") and self.link.is_up(r[0]))
-        return self.tuya is not None and self.tuya.is_online(did)
-
-    def _set(self, c: dict, dp: str, value: str) -> bool:
-        """Een datapunt van de lader zetten: zelf, of via de installatie waar hij hangt (die beslist)."""
-        did = c["tuya"]
-        if did.startswith("r:"):
-            r = self._remote(did)
-            return bool(r and self.link and self.link.send(r[0], r[1], dp=dp, value=value))
-        self.tuya.set(did, dp, value)
-        return True
+    def _target(self, c: dict) -> tuple[dict | None, bool]:
+        """(punt, bereikbaar) van de uitgang start/stop."""
+        t = c["target"]
+        d = self.points.device(t["device"]) if t["device"] and t["dp"] else None
+        return (d["points"].get(t["dp"]) if d else None), bool(d and d["online"])
 
     def charging(self, c: dict) -> bool:
-        v = self._points(c) or {}
-        return v.get(DP_RUN) == RUN_ON or v.get(DP_STATUS) in CHARGING
+        """Laadt hij? Het datapunt van start/stop staat op de startwaarde, of de status zegt laden."""
+        p, _ = self._target(c)
+        st = self._input(c, "status")
+        return bool((p and c["target"]["on"] and same(p.get("value"), c["target"]["on"])) or (st and str(st.get("value")) in CHARGING))
 
     def _charger(self, c: dict, part: str, w: dict, lang: str) -> dict:
-        v = self._points(c)
-        online = v is not None and self._online(c)
         if part == "run":
-            if v is None:
-                return {"kind": "text", "name": w["none"] if not c.get("tuya") else w["offline"], "value": "", "color": DEFAULT_COLOR}
-            if not online:
+            p, online = self._target(c)
+            if not (c["target"]["device"] and c["target"]["dp"]):
+                return {"kind": "text", "name": w["none"], "value": "", "color": DEFAULT_COLOR}
+            if p is None or not online:
                 return {"kind": "text", "name": w["offline"], "value": "", "color": DEFAULT_COLOR}
             on = self.charging(c)
-            st = v.get(DP_STATUS)
-            return {"kind": "button", "name": STATUS[lang].get(str(st), str(st)) if st is not None else "?", "value": w["stop"] if on else w["start"],
-                    "color": CHARGE_COLOR if on else DEFAULT_COLOR}
-        v = v or {}
+            st = self._input(c, "status")
+            name = (STATUS[lang].get(str(st.get("value")), str(st.get("value"))) if st else _clean(c["name"]))
+            return {"kind": "button", "name": _clean(name), "value": w["stop"] if on else w["start"], "color": CHARGE_COLOR if on else DEFAULT_COLOR}
         if part == "time":
-            t = v.get(DP_TIME)
+            p = self._input(c, "time")
+            t = p.get("value") if p else None
             return {"kind": "text", "value": _clean(t) if t not in (None, "") else "—"}
-        energy = v.get(DP_ENERGY)
+        p = self._input(c, "energy")
+        energy = p.get("value") if p and isinstance(p.get("value"), (int, float)) and not isinstance(p.get("value"), bool) else None
         if part == "energy":
-            return {"kind": "text", "value": f"{energy:.2f} kWh" if isinstance(energy, (int, float)) else "—"}
+            return {"kind": "text", "value": f"{energy:.2f} {(p or {}).get('unit') or 'kWh'}" if energy is not None else "—"}
         if part == "price":
             tariff = self.tariff(c)
             if not isinstance(energy, (int, float)) or tariff is None:
@@ -378,12 +381,15 @@ class Live:
             on = (value == "1") if kind == "OnOff" else None
             return self._lamp(ref, on)
         if c["type"] == "charger" and part == "run" and kind == "button":
-            if self._points(c) is None or not self._online(c):
+            p, online = self._target(c)
+            if p is None or not online:
                 log.info("laadpaal %s: niet bereikbaar, niets gestuurd", c["name"])
                 return False
-            want = RUN_OFF if self.charging(c) else RUN_ON
+            want = c["target"]["off"] if self.charging(c) else c["target"]["on"]
+            if not want:
+                return False  # geen waarde voor deze richting gekozen
             try:
-                if not self._set(c, DP_RUN, want):
+                if not self.points.set(c["target"]["device"], c["target"]["dp"], want):
                     return False
             except ValueError as e:  # ModelError
                 log.warning("laadpaal %s: %s", c["name"], e)

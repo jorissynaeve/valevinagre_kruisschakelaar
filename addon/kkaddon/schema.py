@@ -221,12 +221,13 @@ def _remote_blocks(snap: dict) -> list[dict]:
         for obj, o in sorted(p["objects"].items()):
             pts = [x for x in o.get("points") or [] if not x.get("hide") and not x.get("diag")]
             kind, key = o.get("kind"), f"r:{pid}:{obj}"
+            shown = [x for x in pts if x.get("rw")], [x for x in pts if not x.get("rw")]  # zoals een Tuya-blok van hier: links instellen, rechts meldingen
             # een gang: touch en relais zoals een schakelaar, met de verwijzing zelf als entiteit (een lid van een kring)
             gangs = [{"i": 0, "label": o.get("name") or obj, "entity": key, "touch": True, "relay": True, "on": o.get("on")}] if kind == "gang" else []
             out.append({"key": key, "kind": "remote", "source": "remote", "sub": kind, "peer": pid, "peerName": p["name"], "obj": obj,
                         "name": o.get("name") or obj, "tech": f"{p['name']} · {obj}", "alias": "", "room": "", "online": bool(p["online"] and o.get("online")),
                         "linked": p["online"], "on": o.get("on"), "held": bool(o.get("held")), "busy": bool(o.get("busy")), "points": pts, "gangs": gangs,
-                        "rows": 1 if kind in ("lamp", "gang") else max(len(pts), 1)})
+                        "pin": shown[0], "pout": shown[1], "rows": 1 if kind in ("lamp", "gang") else max(len(shown[0]), len(shown[1]), 1)})
     return out
 
 
@@ -251,7 +252,6 @@ def _card_item(model: Model, it: dict, by_key: dict, snap: dict) -> dict:
 
 
 def _card_blocks(model: Model, snap: dict, lamps: set[str]) -> list[dict]:
-    tuya = {t["id"]: t for t in snap.get("tuya", [])}
     out = []
     for cid, c in model.cards.items():
         b = {**c, "key": f"c:{cid}", "id": cid, "kind": "card", "source": "card", "tech": f"Kaart · {_cards.TYPES[c['type']]}", "alias": "", "room": "",
@@ -259,11 +259,13 @@ def _card_blocks(model: Model, snap: dict, lamps: set[str]) -> list[dict]:
         if c["type"] == "grid":
             b["items"] = [_card_item(model, it, lamps, snap) for it in c["items"]]
             b["rows"] = len(c["items"]) + (1 if len(c["items"]) < _cards.MAX_ITEMS[c["layout"]] else 0)
-        elif c["type"] == "charger":
-            t, r = tuya.get(c["tuya"]), _remote_obj(snap, c["tuya"])
-            b["device"] = ({"key": f"y:{t['id']}", "name": t["name"], "online": t["online"]} if t
-                           else {"key": c["tuya"], "name": f"{r[1].get('name')} ({r[0]['name']})", "online": bool(r[0]["online"] and r[1].get("online"))} if r else None)
-            b["rows"] = 2
+        elif c["type"] == "charger":  # links drie ingangen, rechts start/stop; `inputs` heet hier `ins` (een lamp-blok heeft al `inputs`)
+            b.pop("inputs", None)
+            b["ins"] = [{"name": n, "label": lbl, "ref": c["inputs"].get(n), "src": _device_label(snap, *_cards.value_ref(c["inputs"][n])) if c["inputs"].get(n) else None}
+                        for n, lbl in _cards.CHARGER_INPUTS.items()]
+            tg = c["target"]
+            b["target_label"] = _device_label(snap, tg["device"], tg["dp"]) if tg["device"] and tg["dp"] else None
+            b["rows"] = 4
         elif c["type"] == "power":
             b["rows"] = max(len(c["items"]), 1)
             b["labels"] = [(_point_label(snap, it["tuya"], it["dp"])[1] if it.get("tuya") else it.get("name") or it.get("entity") or "leeg") for it in c["items"]]

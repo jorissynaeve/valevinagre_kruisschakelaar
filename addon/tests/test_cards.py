@@ -106,6 +106,10 @@ class FakeTuya:
     def read(self, did):
         return dict(self.values)
 
+    def status(self):  # zoals TuyaHub.status: wat points.Points leest
+        return [{"id": d, "name": d.capitalize(), "online": self.online, "points": [{"dp": dp, "name": f"Punt {dp}", "value": v, "unit": "", "rw": True}
+                                                                             for dp, v in self.values.items()]} for d in self.devices]
+
     def is_online(self, did):
         return self.online
 
@@ -131,10 +135,10 @@ def test_the_charger_rows():
     assert live.press("kk.laadpaal__run", "button", None) is True and t.sent == [("124", "CloseCharging")]
     live = cards.Live(m, tuya=t, state=lambda e: ("unknown", {}))
     assert live.value("kk.laadpaal__price", "nl")["value"] == "€ 3.00", "geeft de entiteit geen getal, dan het vaste tarief"
-    t.values = {"101": "iets_nieuws"}
+    t.values = {"101": "iets_nieuws", "124": "CloseCharging"}
     assert live.value("kk.laadpaal__run", "nl")["name"] == "iets_nieuws", "een onbekende stand tonen we zoals ze komt"
     assert live.value("kk.laadpaal__energy", "nl")["value"] == "—" and live.value("kk.laadpaal__price", "nl")["value"] == "—"
-    assert cards.Live(charger(), tuya=t).value("kk.laadpaal__run", "nl")["name"] == "Geen lader gekozen"
+    assert cards.Live(charger(), tuya=t).value("kk.laadpaal__run", "nl")["name"] == "Start/stop niet aangesloten"
     assert cards.Live(m, tuya=None).value("kk.laadpaal__run", "nl")["name"] == "Lader offline"
     assert cards.Live(m, tuya=t).value("kk.weg__run", "nl") is None
 
@@ -161,7 +165,7 @@ def test_a_dynamic_row_on_the_screen_asks_the_env_and_a_press_goes_back_to_it():
     m.add_panel("P")
     m.set_panel("p", cards=["laadpaal"])
     env, out = FakeEnv(), []
-    t = FakeTuya({"101": "connect", "25": 1.0})
+    t = FakeTuya({"101": "connect", "25": 1.0, "124": "CloseCharging"})
     live = cards.Live(m, tuya=t)
     env.dynamic, env.press = live.value, lambda e, k, v: live.press(e, k, v)
     p = Panel(cards.config(m, "p"), env, out.append)

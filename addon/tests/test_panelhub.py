@@ -321,6 +321,10 @@ class FakeTuya:
     def read(self, did):
         return dict(self.values) if did in self.devices else None
 
+    def status(self):  # zoals TuyaHub.status: wat points.Points leest
+        return [{"id": d, "name": d.capitalize(), "online": self.online, "points": [{"dp": dp, "name": f"Punt {dp}", "value": v, "unit": "", "rw": True}
+                                                                             for dp, v in self.values.items()]} for d in self.devices]
+
     def is_online(self, did):
         return self.online
 

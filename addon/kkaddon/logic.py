@@ -1,7 +1,7 @@
 """Kleine tijd- en logicamodules, om op het schema aan elkaar te koppelen.
 
 Een module heeft een uitgang met een tijd (minuten sinds middernacht) of een 0/1. Een ingang wijst naar de uitgang van
-een andere module (`m:<id>`) of een timer (`t:<id>`). Er is ook een derde waarde: None = onbekend, bv. een ingang die
+een andere module (`m:<id>`), een timer (`t:<id>`) of rechtstreeks naar een datapunt van een Tuya-toestel (`v:<datapunt>@<toestel>`). Er is ook een derde waarde: None = onbekend, bv. een ingang die
 niet is aangesloten of een zonsondergang zonder locatie. Onbekend blokkeert nooit iets.
 
 De waarden worden niet bewaard maar telkens opnieuw berekend uit de klok, dus er is niets dat uit de pas kan lopen.
@@ -98,6 +98,9 @@ def evaluate(modules: dict[str, dict], timer: Callable[[str], bool | None], now:
     def read(ref: str | None):
         if ref is None:
             return None
+        if ref.startswith("v:"):  # rechtstreeks een datapunt: v:<datapunt>@<toestel>
+            dp, _, dev = ref[2:].partition("@")
+            return point(dev, dp) if point else None
         return timer(ref[2:]) if ref.startswith("t:") else module(ref[2:])
 
     def module(mid: str):

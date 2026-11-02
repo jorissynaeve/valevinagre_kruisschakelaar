@@ -269,7 +269,10 @@ class Engine:
         return self.ref_value(disable_ref(source))
 
     def ref_value(self, ref: str):
-        """De waarde van een uitgang (`t:<id>` of `m:<id>`): een 0/1, tijd of getal, of None als ze onbekend is."""
+        """De waarde van een uitgang (`t:<id>`, `m:<id>` of een datapunt `v:<dp>@<toestel>`): een 0/1, tijd of getal, of None als ze onbekend is."""
+        if ref.startswith("v:"):
+            dp, _, dev = ref[2:].partition("@")
+            return self.points.number(dev, dp) if self.points else None
         if ref.startswith("t:"):
             return self.timer_on(ref[2:]) if ref[2:] in self.model.timers else None
         return self.module_values().get(ref[2:])
