@@ -438,6 +438,23 @@ def _plain(v, what, n: int = MAX_NAME) -> str:
     return v
 
 
+def _status_list(v) -> list[str]:
+    """Statuswaarden van een laadpaal (bv. connect, charing): een lijst, of tekst met komma's. Leeg = de status beslist niet."""
+    if v is None or v == "":
+        return []
+    xs = v.split(",") if isinstance(v, str) else v
+    if not isinstance(xs, list) or len(xs) > 20:
+        raise ModelError("laadpaal: hoogstens 20 statuswaarden")
+    out: list[str] = []
+    for x in xs:
+        if not isinstance(x, (str, int, float)) or isinstance(x, bool) or len(str(x).strip()) > 40:
+            raise ModelError("laadpaal: een statuswaarde van hoogstens 40 tekens")
+        s = str(x).strip()
+        if s and s.lower() not in (o.lower() for o in out):
+            out.append(s)
+    return out
+
+
 def _card(cid, v) -> dict:
     """Een kaart voor een NSPanel (zie cards.py)."""
     if not isinstance(cid, str) or not CARD_ID_RE.fullmatch(cid) or not isinstance(v, dict):
@@ -486,7 +503,11 @@ def _card(cid, v) -> dict:
             if not isinstance(x, (str, int, float)) or isinstance(x, bool) or len(str(x)) > 40:
                 raise ModelError("laadpaal: een waarde van hoogstens 40 tekens")
             vals[k] = str(x).strip()
-        out.update(inputs={k: r for k, r in ins.items() if r}, target={"device": _device_ref(tgt.get("device")), "dp": _dp(tgt.get("dp")), **vals},
+        whens = {k: _status_list(v.get(k)) for k in ("start_when", "stop_when")}
+        both = {s.lower() for s in whens["start_when"]} & {s.lower() for s in whens["stop_when"]}
+        if both:
+            raise ModelError(f"laadpaal: de status {sorted(both)[0]!r} kan niet starten én stoppen")
+        out.update(inputs={k: r for k, r in ins.items() if r}, target={"device": _device_ref(tgt.get("device")), "dp": _dp(tgt.get("dp")), **vals}, **whens,
                    price=_num(v.get("price", 0.30), 0, 100, "prijs per kWh"), price_entity=_opt_entity(v.get("price_entity"), "prijs"))
     elif t == "saver":
         out.update({k: _opt_entity(v.get(k), k) for k in ("weather", "forecast", "temperature", "status1", "status2")})

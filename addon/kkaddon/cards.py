@@ -331,6 +331,23 @@ class Live:
         st = self._input(c, "status")
         return bool((p and c["target"]["on"] and same(p.get("value"), c["target"]["on"])) or (st and str(st.get("value")) in CHARGING))
 
+    def action(self, c: dict) -> str | None:
+        """Wat de knop doet: "start", "stop" of None (niets).
+
+        Met een lijst bij de kaart (start_when / stop_when) en een aangesloten status beslist de status: een waarde uit de
+        stoplijst geeft Stop, een uit de startlijst Start, een andere waarde (of een status die niet te lezen is) niets.
+        Zonder lijsten of zonder status: Stop zolang hij laadt (zie charging), anders Start."""
+        start, stop = c.get("start_when") or [], c.get("stop_when") or []
+        if (start or stop) and c["inputs"].get("status"):
+            st = self._input(c, "status")
+            v = str(st.get("value")).strip().lower() if st and st.get("value") is not None else None
+            if v is not None and v in {s.lower() for s in stop}:
+                return "stop"
+            if v is not None and v in {s.lower() for s in start}:
+                return "start"
+            return None
+        return "stop" if self.charging(c) else "start"
+
     def _charger(self, c: dict, part: str, w: dict, lang: str) -> dict:
         if part == "run":
             p, online = self._target(c)
@@ -338,9 +355,12 @@ class Live:
                 return {"kind": "text", "name": w["none"], "value": "", "color": DEFAULT_COLOR}
             if p is None or not online:
                 return {"kind": "text", "name": w["offline"], "value": "", "color": DEFAULT_COLOR}
-            on = self.charging(c)
+            act = self.action(c)
             st = self._input(c, "status")
             name = (STATUS[lang].get(str(st.get("value")), str(st.get("value"))) if st else _clean(c["name"]))
+            if act is None:  # de status laat niets toe: geen knop, alleen de status
+                return {"kind": "text", "name": _clean(name), "value": "", "color": CHARGE_COLOR if self.charging(c) else DEFAULT_COLOR}
+            on = act == "stop"
             return {"kind": "button", "name": _clean(name), "value": w["stop"] if on else w["start"], "color": CHARGE_COLOR if on else DEFAULT_COLOR}
         if part == "time":
             p = self._input(c, "time")
@@ -385,7 +405,11 @@ class Live:
             if p is None or not online:
                 log.info("laadpaal %s: niet bereikbaar, niets gestuurd", c["name"])
                 return False
-            want = c["target"]["off"] if self.charging(c) else c["target"]["on"]
+            act = self.action(c)
+            if act is None:
+                log.info("laadpaal %s: de status laat geen start of stop toe, niets gestuurd", c["name"])
+                return False
+            want = c["target"]["off"] if act == "stop" else c["target"]["on"]
             if not want:
                 return False  # geen waarde voor deze richting gekozen
             try:

@@ -126,7 +126,7 @@ Wat er op het scherm staat, bouw je uit **kaarten**: eigen blokken op het schema
 | Kaart | Wat ze toont |
 |---|---|
 | **Knoppen** | Een raster tot 8 knoppen (of een lijst tot 4). Een knop bedient een **lamp** van het schema, een **entiteit** uit HA, of opent een **subpagina**. |
-| **Laadpaal** | Start/stop, de status, de laadtijd, de geladen kWh en de prijs (vast tarief per kWh, of een entiteit uit HA die wint als ze een getal geeft). Werkt met elke lader: sleep links een waarde van een Tuya-blok naar *Status*, *Laadtijd* en *Geladen*, en rechts *start/stop* naar een instelling (bv. *Laden*); kies bij de kaart de waarde om te starten en te stoppen. |
+| **Laadpaal** | Start/stop, de status, de laadtijd, de geladen kWh en de prijs (vast tarief per kWh, of een entiteit uit HA die wint als ze een getal geeft). Werkt met elke lader: sleep links een waarde van een Tuya-blok naar *Status*, *Laadtijd* en *Geladen*, en rechts *start/stop* naar een instelling (bv. *Laden*); kies bij de kaart de waarde om te starten en te stoppen. Onder *Start of stop volgens de status* zet je per statuswaarde wat de knop doet: bv. `connect` en `finish` → Start, `charing` → Stop. Bij een andere status toont het paneel alleen de status, zonder knop. Laat je dat leeg, dan toont de knop Stop zolang hij laadt, anders Start. |
 | **Screensaver** | Het startscherm: klok, datum, weer met 4 dagen voorspelling, een temperatuur binnen en tot 2 statuspictogrammen. Eén per paneel; ze is geen pagina. |
 | **Energie** | Het energieschema, tot 6 sensoren, met per sensor eventueel twee grenzen voor de kleur (groen, oranje, rood). |
 | **Wifi (QR)** | Een QR-code voor het gastnetwerk, met de naam en het wachtwoord ernaast. |

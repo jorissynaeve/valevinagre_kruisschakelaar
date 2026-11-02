@@ -371,6 +371,25 @@ function scValueInput(attrs, p, cur) { // de waarde die een routine zet: een keu
   return `<input type="text" ${attrs} maxlength="40" placeholder="leeg = niets" value="${esc(cur)}"${p && p.min != null ? ` title="van ${p.min} tot ${p.max}"` : ''}>`;
 }
 
+function scChargerWhen(b) { // welke statuswaarden Start en welke Stop geven (start_when / stop_when van de kaart)
+  const ref = (b.ins.find((x) => x.name === 'status') || {}).ref;
+  if (!ref) return '<div class="sub">Sluit eerst de ingang <b>Status</b> aan. Zonder status toont de knop Stop zolang het datapunt op de startwaarde staat, anders Start.</div>';
+  const m = /^v:(\d+)@(.+)$/.exec(ref), p = m && scPointOf(m[2], m[1], SC_HERE);
+  const start = b.start_when || [], stop = b.stop_when || [], low = (xs) => xs.map((x) => x.toLowerCase());
+  const now = p && p.value != null && p.value !== '' ? `<div class="sub">De status is nu <code>${esc(p.value)}</code>.</div>` : '';
+  const help = '<div class="sub">Staat de status op een waarde bij <b>Start</b>, dan start de knop; bij <b>Stop</b> stopt hij; bij een andere waarde toont het paneel alleen de status, zonder knop. Laat je alles leeg, dan toont de knop Stop zolang het datapunt op de startwaarde staat (of de status zegt dat hij laadt), anders Start.</div>';
+  if (p && p.type === 'enum' && p.options && p.options.length) {
+    const extra = [...start, ...stop].filter((x) => !low(p.options).includes(x.toLowerCase())); // een waarde die het toestel niet (meer) meldt
+    const rows = [...p.options, ...extra].map((o) => {
+      const cur = low(stop).includes(o.toLowerCase()) ? 'stop' : low(start).includes(o.toLowerCase()) ? 'start' : '';
+      return `<div class="row sp"><code>${esc(o)}</code><select data-cdstat="${esc(o)}">${[['', 'niets'], ['start', 'Start'], ['stop', 'Stop']].map(([v, l]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
+    }).join('');
+    return rows + now + help;
+  }
+  return `<label>Start bij (waarden met komma's)</label><input type="text" spellcheck="false" data-cdwhen="start_when" placeholder="bv. connect, finish" value="${esc(start.join(', '))}">
+    <label>Stop bij (waarden met komma's)</label><input type="text" spellcheck="false" data-cdwhen="stop_when" placeholder="bv. charing" value="${esc(stop.join(', '))}">${now}${help}`;
+}
+
 function scAction(b) {
   const y0 = rowY(b, 0), p = b.ports[0], src = scSrc(p.ref), st = b.status;
   return `<g class="bk act t-spr ${SC.sel === b.key ? 'sel' : ''}" data-block="${esc(b.key)}">
@@ -568,7 +587,8 @@ function scCardPanel(b, props) {
       <label>Datapunt</label>${scPointSelect('data-cdtarget="dp"', b.target.device, b.target.dp, SC_HERE, (x) => x.rw)}
       <label>Waarde om te starten</label>${scValueInput('data-cdtarget="on"', pt, b.target.on)}
       <label>Waarde om te stoppen</label>${scValueInput('data-cdtarget="off"', pt, b.target.off)}
-      <div class="sub">Of sleep de uitgang <b>start/stop</b> (rechts op het blok) naar een instelling van een Tuya-blok, hier of van een andere installatie. De knop toont Stop zolang dat datapunt op de startwaarde staat (of de status zegt dat hij laadt).</div>
+      <div class="sub">Of sleep de uitgang <b>start/stop</b> (rechts op het blok) naar een instelling van een Tuya-blok, hier of van een andere installatie.</div>
+      <h2>Start of stop volgens de status</h2>${scChargerWhen(b)}
       <h2>Prijs</h2><label>Prijs per kWh (€)</label><input type="number" min="0" max="100" step="0.01" data-cdfield="price" value="${esc(b.price)}">
       ${tx('price_entity', 'Of de prijs uit een entiteit van HA (wint als ze een getal geeft)', 'bv. sensor.stroomprijs')}
       <div class="sub">Prijs = Geladen × de prijs per kWh.</div>`;
@@ -1842,6 +1862,19 @@ document.addEventListener('change', (ev) => {
     const target = f === 'device' ? { device: v, dp: '', on: '', off: '' } : f === 'dp' ? { ...card.target, dp: v, on: '', off: '' } : { ...card.target, [f]: v };
     t.blur();
     act(() => scSaveCard(card, { target }))();
+  }
+  if (t.dataset && t.dataset.cdwhen && card) {
+    const f = t.dataset.cdwhen, value = t.value.split(',').map((x) => x.trim()).filter(Boolean);
+    t.blur();
+    act(() => scSaveCard(card, { [f]: value }))();
+  }
+  if (t.dataset && t.dataset.cdstat != null && card) { // één statuswaarde: niets, Start of Stop
+    const o = t.dataset.cdstat.toLowerCase(), drop = (xs) => (xs || []).filter((x) => x.toLowerCase() !== o);
+    const start_when = drop(card.start_when), stop_when = drop(card.stop_when);
+    if (t.value === 'start') start_when.push(t.dataset.cdstat);
+    if (t.value === 'stop') stop_when.push(t.dataset.cdstat);
+    t.blur();
+    act(() => scSaveCard(card, { start_when, stop_when }))();
   }
   if (t.dataset && t.dataset.cditem && card) {
     const f = t.dataset.cditem, i = +t.dataset.i, items = scItems(card);

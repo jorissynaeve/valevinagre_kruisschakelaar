@@ -143,6 +143,29 @@ def test_the_charger_rows():
     assert cards.Live(m, tuya=t).value("kk.weg__run", "nl") is None
 
 
+def test_the_status_decides_start_or_stop_from_two_lists():
+    m = charger(tuya="lader", start_when="connect, Finish", stop_when=["charing", "wait"])
+    assert m.cards["laadpaal"]["start_when"] == ["connect", "Finish"] and m.cards["laadpaal"]["stop_when"] == ["charing", "wait"]
+    t = FakeTuya({"101": "wait", "124": "CloseCharging"})
+    live = cards.Live(m, tuya=t)
+    assert live.value("kk.laadpaal__run", "nl")["value"] == "Stop", "de status wint van het datapunt van start/stop"
+    assert live.press("kk.laadpaal__run", "button", None) is True and t.sent == [("124", "CloseCharging")]
+    t.values = {"101": "finish", "124": "OpenCharging"}  # hoofdletters tellen niet
+    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Klaar", "value": "Start", "color": cards.DEFAULT_COLOR}
+    assert live.press("kk.laadpaal__run", "button", None) is True and t.sent[-1] == ("124", "OpenCharging")
+    t.values = {"101": "fault", "124": "CloseCharging"}
+    assert live.value("kk.laadpaal__run", "nl") == {"kind": "text", "name": "Storing", "value": "", "color": cards.DEFAULT_COLOR}, "in geen lijst: geen knop"
+    assert live.press("kk.laadpaal__run", "button", None) is False and len(t.sent) == 2
+    t.values = {"124": "CloseCharging"}
+    assert live.value("kk.laadpaal__run", "nl")["kind"] == "text", "status niet te lezen: niets"
+    m.set_card("laadpaal", inputs={})
+    assert live.value("kk.laadpaal__run", "nl")["value"] == "Start", "zonder status-ingang zoals vroeger"
+    with pytest.raises(ModelError, match="starten én stoppen"):
+        m.set_card("laadpaal", start_when=["connect"], stop_when=["Connect"])
+    with pytest.raises(ModelError, match="40 tekens"):
+        m.set_card("laadpaal", stop_when=["x" * 41])
+
+
 def test_a_lamp_on_the_network_is_read_and_switched_through_the_engine():
     m = Model()
     m.set_light(5, 1, name="Plafond")
