@@ -18,7 +18,8 @@ from pathlib import Path
 from . import discovery as d
 from .engine import Engine
 from .model import ModelError
-from .tuya import CRYPTO, TuyaClient
+from .tuya import CRYPTO, TuyaClient, listen
+from .tuyacloud import REGIONS, TuyaCloud
 
 log = logging.getLogger("kk.tuya")
 
@@ -76,8 +77,12 @@ FEYREE = {
     "126": _dp("sw_version", "ro", "string", "Softwareversie", diag=True),
     **{str(n): _dp(f"log_content{n - 126}", "ro", "string", hide=True) for n in range(127, 133)},
 }
-PROFILES = {"feyree": FEYREE}
-PROFILE_NAMES = {"feyree": "Feyree EV-lader"}
+# Ingebouwde datamodellen met nette namen, per product-id. De cloud meldt het product-id bij het ophalen; dan wint dit van het
+# ruwe datamodel, want het weet ook wat verborgen moet en welke grenzen echt gelden.
+FEYREE_PID = "zk1jkjhxqkfaaalp"
+PRODUCTS = {FEYREE_PID: ("Feyree EV-lader", FEYREE)}
+OLD_PROFILES = {"feyree": FEYREE_PID}  # tot 0.10.5 koos je dit zelf
+CLOUD_ID_RE = re.compile(r"^[A-Za-z0-9]{10,64}$")
 
 
 def parse_model(text: str) -> dict:
@@ -112,6 +117,10 @@ class TuyaHub:
         self.engine = engine
         self.changed = None  # de MQTT-brug: er is iets nieuws om te publiceren
         self.devices: dict[str, dict] = {}
+        self.cloud: dict = {"id": "", "secret": "", "region": "eu"}
+        self.cloud_base: str | None = None  # alleen voor tests
+        self.found: dict[str, dict] = {}  # device-id -> {"ip", "version"}, uit de broadcasts
+        self._udp: list = []
         self.clients: dict[str, TuyaClient] = {}
         self.values: dict[str, dict] = {}
         self.tasks: dict[str, asyncio.Task] = {}
@@ -124,6 +133,12 @@ class TuyaHub:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             self.devices = {k: v for k, v in raw.get("devices", {}).items() if isinstance(v, dict)}
+            if isinstance(raw.get("cloud"), dict):
+                self.cloud.update({k: str(raw["cloud"].get(k) or "") for k in ("id", "secret", "region")})
+            for dev in self.devices.values():
+                old = dev.pop("profile", "")
+                if old in OLD_PROFILES and not dev.get("product"):
+                    dev["product"] = OLD_PROFILES[old]
         except FileNotFoundError:
             pass
         except (ValueError, OSError, AttributeError) as e:
@@ -133,7 +148,7 @@ class TuyaHub:
         tmp = self.path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"devices": self.devices}, f, ensure_ascii=False, indent=1)
+            json.dump({"devices": self.devices, "cloud": self.cloud}, f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.path)
 
     # ------------------------------------------------------------ toestellen
@@ -154,20 +169,20 @@ class TuyaHub:
             raise ModelError("een local key is precies 16 tekens")
         if dev.get("version") not in VERSIONS:
             raise ModelError("versie moet auto, 3.3, 3.4 of 3.5 zijn")
-        if dev.get("profile") and dev["profile"] not in PROFILES:
-            raise ModelError("onbekend profiel")
 
     @staticmethod
     def _fields(dev: dict, b: dict) -> dict:
         new = dict(dev)
-        for k in ("name", "device_id", "host", "version", "profile"):
+        for k in ("name", "device_id", "host", "version"):
             if k in b:
                 new[k] = str(b[k] or "").strip()
+        if new.get("device_id") != dev.get("device_id"):
+            new["product"] = ""  # een ander toestel: wat de cloud over het vorige zei, geldt niet meer
         if b.get("key"):  # leeg bij bewerken: de sleutel blijft
             new["key"] = str(b["key"])
         if b.get("model"):
             new["defs"] = parse_model(str(b["model"]))
-            new["profile"] = str(b.get("profile") or "")  # anders wint een eerder gekozen profiel van wat je net plakte
+            new["product"] = ""  # wat je net plakte, wint
         return new
 
     def _unique(self, did: str, dev: dict) -> None:
@@ -177,7 +192,7 @@ class TuyaHub:
     def add(self, b: dict) -> str:
         if len(self.devices) >= MAX_DEVICES:
             raise ModelError(f"maximaal {MAX_DEVICES} toestellen")
-        dev = self._fields({"name": "Tuya", "device_id": "", "host": "", "key": "", "version": "auto", "profile": "", "defs": {}}, b)
+        dev = self._fields({"name": "Tuya", "device_id": "", "host": "", "key": "", "version": "auto", "product": "", "defs": {}}, b)
         self._check(dev)
         self._unique("", dev)
         base = did = _slug(dev["name"])
@@ -196,6 +211,9 @@ class TuyaHub:
         dev = self._fields(self.devices[did], b)
         self._check(dev)
         self._unique(did, dev)
+        self._apply(did, dev)
+
+    def _apply(self, did: str, dev: dict) -> None:
         reconnect = any(dev.get(k) != self.devices[did].get(k) for k in ("device_id", "host", "version", "key"))
         self.devices[did] = dev
         self._save()
@@ -204,6 +222,51 @@ class TuyaHub:
             self.values.pop(did, None)
             self._start(did)
         self._poke()
+
+    # ------------------------------------------------------------ eenmalig uit de cloud
+
+    def set_cloud(self, b: dict) -> None:
+        new = dict(self.cloud)
+        for k in ("id", "region"):
+            if k in b:
+                new[k] = str(b[k] or "").strip()
+        if b.get("secret"):  # leeg bij bewerken: het geheim blijft
+            new["secret"] = str(b["secret"]).strip()
+        if new["id"] and not CLOUD_ID_RE.match(new["id"]):
+            raise ModelError("ongeldige Access ID")
+        if new["secret"] and not CLOUD_ID_RE.match(new["secret"]):
+            raise ModelError("ongeldig Access Secret")
+        if new["region"] not in REGIONS:
+            raise ModelError("onbekend datacenter")
+        self.cloud = new
+        self._save()
+        self._poke()
+
+    def cloud_ready(self) -> bool:
+        return bool(self.cloud["id"] and self.cloud["secret"])
+
+    async def fetch(self, did: str) -> None:
+        """Local key, product en datamodel uit de cloud. Het IP niet: de cloud kent alleen het publieke adres."""
+        if did not in self.devices:
+            raise ModelError("onbekend toestel")
+        dev = dict(self.devices[did])
+        if not dev.get("device_id"):
+            raise ModelError("vul eerst het device-id in")
+        if not self.cloud_ready():
+            raise ModelError("vul eerst de Access ID en het Access Secret van je Tuya-cloudproject in")
+        info, model = await TuyaCloud(self.cloud["id"], self.cloud["secret"], self.cloud["region"], self.cloud_base).device(dev["device_id"])
+        if did not in self.devices:
+            return  # intussen verwijderd
+        dev = dict(self.devices[did])
+        if info.get("local_key"):
+            dev["key"] = str(info["local_key"])
+        dev["product"] = str(info.get("product_id") or "")
+        if model:
+            dev["defs"] = parse_model(model)
+        if dev.get("name") in ("", "Tuya") and info.get("name"):
+            dev["name"] = str(info["name"])[:60]
+        self._check(dev)
+        self._apply(did, dev)
 
     def remove(self, did: str) -> bool:
         if did not in self.devices:
@@ -222,6 +285,37 @@ class TuyaHub:
     def start(self) -> None:
         for did in self.devices:
             self._start(did)
+        if CRYPTO:
+            self.tasks["_listen"] = asyncio.get_running_loop().create_task(self._listen())
+
+    async def _listen(self) -> None:
+        self._udp = await listen(self.on_broadcast)
+
+    # ------------------------------------------------------------ zoeken op het LAN
+
+    def on_broadcast(self, found: dict, src: str) -> None:
+        """Een toestel meldt zich. Een leeg IP vullen we in; een ander IP alleen als we het toestel niet bereiken (DHCP)."""
+        tid = found["id"]
+        if not ID_RE.match(tid):
+            return
+        ip = found["ip"] if HOST_RE.match(found["ip"]) else src
+        new = tid not in self.found or self.found[tid]["ip"] != ip
+        self.found[tid] = {"ip": ip, "version": found["version"] if found["version"] in VERSIONS else ""}
+        for did, dev in self.devices.items():
+            if dev.get("device_id") != tid or dev.get("host") == ip or (dev.get("host") and self._online(did)):
+                continue
+            log.info("%s gevonden op %s", dev["name"], ip)
+            upd = {**dev, "host": ip}
+            if dev.get("version") == "auto" and self.found[tid]["version"]:
+                upd["version"] = self.found[tid]["version"]
+            self._apply(did, upd)
+            return
+        if new:
+            self._poke()
+
+    def _unclaimed(self) -> list[dict]:
+        used = {dev.get("device_id") for dev in self.devices.values()}
+        return [{"id": k, **v} for k, v in sorted(self.found.items(), key=lambda x: x[1]["ip"]) if k not in used]
 
     def _start(self, did: str) -> None:
         dev = self.devices[did]
@@ -245,6 +339,9 @@ class TuyaHub:
     def close(self) -> None:
         for did in list(self.tasks):
             self._stop(did)
+        for t in self._udp:
+            t.close()
+        self._udp = []
 
     def _on_version(self, did: str, version: str) -> None:
         if did in self.devices:
@@ -265,7 +362,7 @@ class TuyaHub:
 
     def _defs(self, did: str) -> dict:
         dev = self.devices[did]
-        return PROFILES.get(dev.get("profile") or "") or dev.get("defs") or {}
+        return PRODUCTS[dev["product"]][1] if dev.get("product") in PRODUCTS else dev.get("defs") or {}
 
     def _online(self, did: str) -> bool:
         c = self.clients.get(did)
@@ -287,9 +384,11 @@ class TuyaHub:
                 points.append({"dp": dp, "code": de.get("code") or "", "name": de.get("name") or f"Datapunt {dp}", "value": self._shown(de, v), "unit": de.get("unit", ""), "rw": rw, "hide": bool(de.get("hide")) or de.get("type") == "raw", "diag": bool(de.get("diag")),
                                "type": de.get("type") or "", "options": de.get("options") or [],
                                "min": de["min"] / 10 ** scale if rw and de.get("min") is not None else None, "max": de["max"] / 10 ** scale if rw and de.get("max") is not None else None, "step": 1 / 10 ** scale})
-            out.append({"id": did, "name": dev["name"], "device_id": dev.get("device_id", ""), "host": dev.get("host", ""), "version": c.version if c else dev.get("version"), "profile": dev.get("profile", ""),
-                        "has_key": bool(dev.get("key")), "configured": self._complete(dev), "has_model": bool(dev.get("defs")), "online": self._online(did), "error": c.last_error if c else "",
-                        "points": points, "available": CRYPTO, "profiles": PROFILE_NAMES})
+            out.append({"id": did, "name": dev["name"], "device_id": dev.get("device_id", ""), "host": dev.get("host", ""), "version": c.version if c else dev.get("version"),
+                        "product": PRODUCTS[dev["product"]][0] if dev.get("product") in PRODUCTS else "", "has_key": bool(dev.get("key")), "configured": self._complete(dev),
+                        "has_model": bool(dev.get("defs")) or dev.get("product") in PRODUCTS, "online": self._online(did), "error": c.last_error if c else "",
+                        "points": points, "available": CRYPTO, "cloud": {"id": self.cloud["id"], "region": self.cloud["region"], "has_secret": bool(self.cloud["secret"])},
+                        "found": self.found.get(dev.get("device_id") or ""), "unclaimed": self._unclaimed()})
         return out
 
     @staticmethod
@@ -355,7 +454,7 @@ class TuyaHub:
     def discovery(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
         for did, dev in self.devices.items():
-            device = {"identifiers": [f"kk_tuya_{did}"], "name": dev["name"], "manufacturer": "Tuya", "model": PROFILE_NAMES.get(dev.get("profile") or "", "Tuya (Huisconfig)")}
+            device = {"identifiers": [f"kk_tuya_{did}"], "name": dev["name"], "manufacturer": "Tuya", "model": PRODUCTS[dev["product"]][0] if dev.get("product") in PRODUCTS else "Tuya (Huisconfig)"}
             defs = self._defs(did)
             for dp, v in self.values.get(did, {}).items():
                 de = defs.get(dp) or {}

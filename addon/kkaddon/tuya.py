@@ -15,6 +15,7 @@ import hmac
 import json
 import logging
 import os
+import socket
 import struct
 import time
 from typing import Callable
@@ -206,6 +207,56 @@ def control_message(version: str, device_id: str, dps: dict, now: int) -> tuple[
 
 def _json(o) -> bytes:
     return json.dumps(o, separators=(",", ":")).encode()
+
+
+# ------------------------------------------------------------ broadcasts op het LAN
+
+UDP_PORTS = (6666, 6667)  # 6666: oude toestellen, onversleuteld; 6667: 3.3 en hoger, met een vaste sleutel
+UDP_KEY = hashlib.md5(b"yGAdlopoPVldABfn").digest()
+
+
+def parse_broadcast(data: bytes) -> dict | None:
+    """{"id", "ip", "version", "product"} uit de broadcast van een toestel, of None als het er geen is."""
+    try:
+        if frame_length(data) != len(data):
+            return None
+        plain = data[:4] == P55 and b"{" in (data[HDR55:HDR55 + 1], data[HDR55 + 4:HDR55 + 5])
+        if plain:  # 6666: leesbaar, eventueel achter een retourcode
+            if struct.unpack(">I", data[-8:-4])[0] != binascii.crc32(data[:-8]) & 0xFFFFFFFF:
+                return None
+            body = _strip(data[HDR55:-8])
+        else:
+            _, body = unpack("3.3", UDP_KEY, data)
+        j = json.loads(body.rstrip(b"\x00").decode("utf-8"))
+    except (TuyaError, ValueError, struct.error, IndexError, InvalidTag):
+        return None
+    if not isinstance(j, dict) or not isinstance(j.get("gwId"), str) or not isinstance(j.get("ip"), str):
+        return None
+    return {"id": j["gwId"], "ip": j["ip"], "version": str(j.get("version") or ""), "product": str(j.get("productKey") or "")}
+
+
+class _Listener(asyncio.DatagramProtocol):
+    def __init__(self, on_found: Callable[[dict, str], None]) -> None:
+        self.on_found = on_found
+
+    def datagram_received(self, data: bytes, addr) -> None:
+        found = parse_broadcast(data)
+        if found:
+            self.on_found(found, addr[0])
+
+
+async def listen(on_found: Callable[[dict, str], None], ports=UDP_PORTS) -> list[asyncio.DatagramTransport]:
+    """Luistert naar de broadcasts. Een poort die bezet is (LocalTuya zonder reuse_port) slaan we over."""
+    loop = asyncio.get_running_loop()
+    out = []
+    for port in ports:
+        try:
+            t, _ = await loop.create_datagram_endpoint(lambda: _Listener(on_found), local_addr=("0.0.0.0", port),
+                                                       reuse_port=hasattr(socket, "SO_REUSEPORT") or None)
+            out.append(t)
+        except OSError as e:
+            log.warning("UDP %d niet beschikbaar voor het zoeken van Tuya-toestellen: %s", port, e)
+    return out
 
 
 # ------------------------------------------------------------ verbinding

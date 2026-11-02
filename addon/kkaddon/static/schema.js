@@ -352,14 +352,23 @@ function scTuyaPanel(b, props) {
     ${b.nrelay ? `<h2>Relais</h2>${scGangRows(b)}<div class="sub">Sleep een <b>touch</b> naar de ingang van een lamp, of een <b>relais</b> naar de uitgang. De knop op het toestel schakelt altijd zijn eigen relais; staat de touch op een lamp, dan volgt de rest van die lamp mee.</div>` : ''}
     ${controls ? `<h2>Bedienen</h2>${controls}<div class="sub">Een wijziging gaat meteen naar het toestel.</div>` : ''}
     <h2>Toestel</h2>
+    ${b.unclaimed.length ? `<label>Op het netwerk gevonden</label><select data-tyfound="1"><option value="">${b.device_id ? 'ander toestel kiezen…' : 'kies een toestel…'}</option>${b.unclaimed.map((f) => `<option value="${esc(f.id)}|${esc(f.ip)}">${esc(f.ip)} · ${esc(f.id)}${f.version ? ` · ${esc(f.version)}` : ''}</option>`).join('')}</select>` : ''}
     <label>Device-id</label><input type="text" maxlength="40" data-tyfield="device_id" spellcheck="false" autocomplete="off" value="${esc(b.device_id)}">
-    <label>IP-adres</label><input type="text" maxlength="253" data-tyfield="host" spellcheck="false" autocomplete="off" placeholder="192.168.8.26" value="${esc(b.host)}">
-    <label>Local key</label><input type="password" maxlength="16" data-tyfield="key" autocomplete="new-password" placeholder="${b.has_key ? 'ingesteld, leeg laten om te behouden' : '16 tekens'}">
-    <div class="sub">Uit de Tuya API Explorer (<code>local_key</code>). Blijft in de add-on en gaat niet mee in de export.</div>
+    <label>IP-adres</label><input type="text" maxlength="253" data-tyfield="host" spellcheck="false" autocomplete="off" placeholder="${b.device_id ? 'wordt ingevuld zodra het toestel zich meldt' : '192.168.8.26'}" value="${esc(b.host)}">
+    ${b.found && b.found.ip !== b.host ? `<div class="sub">Het toestel meldt zich op ${esc(b.found.ip)}.</div>` : ''}
+    <div class="sub">Device-id: in de SmartLife-app → toestel → ✎ → <i>Apparaatinformatie</i> (<i>Virtuele ID</i>), of in het Tuya IoT Platform onder <i>Devices</i>.</div>
+    <label>Local key</label><input type="password" maxlength="16" data-tyfield="key" autocomplete="new-password" placeholder="${b.has_key ? 'ingesteld, leeg laten om te behouden' : '16 tekens, of haal hem op uit de cloud'}">
     <label>Protocol</label><select data-tyfield="version">${opt('auto', b.version, 'automatisch zoeken')}${['3.5', '3.4', '3.3'].map((v) => opt(v, b.version, v)).join('')}</select>
-    <label>Profiel</label><select data-tyfield="profile">${opt('', b.profile, b.has_model ? 'eigen datamodel' : 'geen')}${Object.keys(b.profiles).map((k) => opt(k, b.profile, b.profiles[k])).join('')}</select>
-    <label>Datamodel plakken</label><textarea rows="8" style="flex:none;min-height:150px" spellcheck="false" data-tyfield="model" placeholder="Antwoord van Query Things Data Model uit de Tuya API Explorer"></textarea>
-    <div class="sub">Het datamodel zegt wat elk datapunt betekent en wat instelbaar is. Een profiel is hetzelfde, maar al ingebouwd en met nette namen. Zonder een van beide zijn de datapunten alleen te lezen, onder hun nummer. Veel toestellen laten maar één verbinding toe: haal het toestel eerst uit LocalTuya en sluit de SmartLife-app.</div>
+    <div class="row"><span class="badge ${b.has_model ? 'ok' : ''}">${b.product ? esc(b.product) : b.has_model ? 'datamodel aanwezig' : 'geen datamodel: alles alleen-lezen'}</span></div>
+    <h2>Tuya-cloud (eenmalig)</h2>
+    <div class="sub">Haalt de local key en het datamodel op; daarna werkt het toestel zonder internet. Geldt voor alle Tuya-toestellen. Uit je cloudproject op iot.tuya.com → <i>Overview</i>.</div>
+    <label>Access ID</label><input type="text" maxlength="64" data-tycloud="id" spellcheck="false" autocomplete="off" value="${esc(b.cloud.id)}">
+    <label>Access Secret</label><input type="password" maxlength="64" data-tycloud="secret" autocomplete="new-password" placeholder="${b.cloud.has_secret ? 'ingesteld, leeg laten om te behouden' : ''}">
+    <label>Datacenter</label><select data-tycloud="region">${[['eu', 'Centraal-Europa'], ['weu', 'West-Europa'], ['us', 'West-Amerika'], ['eus', 'Oost-Amerika'], ['cn', 'China'], ['in', 'India']].map(([v, t]) => opt(v, b.cloud.region, t)).join('')}</select>
+    <div class="row" style="margin-top:6px"><button class="btn small primary" type="button" data-sc="tyfetch" data-id="${esc(b.id)}" ${b.device_id && b.cloud.id && b.cloud.has_secret ? '' : 'disabled'}>Ophalen uit de cloud</button></div>
+    <details><summary class="sub">Of plak het datamodel zelf</summary>
+    <textarea rows="8" style="flex:none;min-height:150px;width:100%" spellcheck="false" data-tyfield="model" placeholder="Antwoord van Query Things Data Model uit de Tuya API Explorer"></textarea></details>
+    <div class="sub">Veel toestellen laten maar één verbinding toe: haal het toestel eerst uit LocalTuya en sluit de SmartLife-app.</div>
     ${rows ? `<h2>Waarden</h2><div class="scroll"><table><tbody>${rows}</tbody></table></div>` : ''}
     <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="deltuya" data-id="${esc(b.id)}">Toestel verwijderen</button></div>`;
 }
@@ -960,6 +969,14 @@ const SC_ACTIONS = {
     SC.sel = null;
     await refresh();
   },
+  tyfetch: async (d) => {
+    try {
+      await api('POST', `tuya/${d.id}/fetch`, {});
+    } finally {
+      SC.force = true;
+      await refresh();
+    }
+  },
   deltuya: async (d) => {
     if (!confirm('Dit Tuya-toestel verwijderen? Zijn entiteiten verdwijnen uit Home Assistant.')) return;
     await api('DELETE', `tuya/${d.id}`);
@@ -1324,6 +1341,25 @@ document.addEventListener('change', (ev) => {
     const value = t.dataset.tyfield === 'key' ? t.value : t.value.trim();
     t.blur();
     if (value || t.dataset.tyfield !== 'model') act(() => scSaveTuya(b, { [t.dataset.tyfield]: value }))();
+  }
+  if (t.dataset && t.dataset.tyfound && t.value && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'tuya') {
+    const [deviceId, host] = t.value.split('|');
+    t.blur();
+    act(() => scSaveTuya(scBlock(SC.sel), { device_id: deviceId, host }))();
+  }
+  if (t.dataset && t.dataset.tycloud) {
+    const value = t.value.trim();
+    t.blur();
+    if (value || t.dataset.tycloud !== 'secret') {
+      act(async () => {
+        try {
+          await api('PUT', 'tuya-cloud', { [t.dataset.tycloud]: value });
+        } finally {
+          SC.force = true;
+          await refresh();
+        }
+      })();
+    }
   }
   if (t.dataset && (t.dataset.hsfield || t.dataset.hstitle !== undefined || t.dataset.hslabel !== undefined || t.dataset.hsent !== undefined) && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'screen') {
     const b = scBlock(SC.sel), d = t.dataset;

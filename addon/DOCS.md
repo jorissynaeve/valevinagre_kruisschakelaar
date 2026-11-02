@@ -146,12 +146,23 @@ Zonder de add-on of HA doen de knoppen niets; de lampen zelf blijven werken. In 
 toont per toesteltype zijn eigen poorten: links wat je kunt instellen, rechts wat het toestel meldt, met de huidige waarde. Bedienen doe je onder *Bedienen* in de zijbalk; aansluiten met draden kan nog niet. De
 entiteiten komen via MQTT in HA, dus de Mosquitto-broker en de MQTT-integratie zijn nodig.
 
-* **Local key**: Tuya IoT Platform → API Explorer → *Query Device Details* (`local_key`). Ze verandert als je het toestel opnieuw koppelt. Daarna is
-  geen internet meer nodig.
-* **Datapunten**: kies een profiel (*Feyree EV-lader*) of plak het antwoord van *Query Things Data Model*. Zonder een van beide zijn de datapunten alleen te lezen.
+* **Device-id**: SmartLife- of Tuya-app → toestel → ✎ → *Apparaatinformatie* (*Virtuele ID*), of in het Tuya IoT Platform onder
+  *Cloud → Devices*.
+* **Local key en datamodel, automatisch**: vul onder *Tuya-cloud* eenmalig de *Access ID* en het *Access Secret* van je cloudproject in
+  (iot.tuya.com → *Cloud* → je project → *Overview*; de SmartLife-app moet aan het project gekoppeld zijn onder *Devices → Link App Account*),
+  en kies het datacenter van je account (Belgisch account: *Centraal-Europa*). Daarna haalt de add-on bij een nieuw device-id meteen de local key en
+  het datamodel op; *Ophalen uit de cloud* doet het opnieuw, bv. na opnieuw koppelen (de local key verandert dan). Het toestel zelf werkt
+  daarna lokaal, zonder internet. Het IP-adres komt niet uit de cloud (die kent alleen je publieke adres) maar uit het LAN, zie hieronder.
+* **Zonder cloud**: de local key uit de API Explorer (*Query Device Details*, `local_key`) zelf invullen en het antwoord van
+  *Query Things Data Model* plakken. Zonder datamodel zijn de datapunten alleen te lezen.
+* Voor bekende toestellen (nu de *Feyree EV-lader*) heeft de add-on een ingebouwd datamodel met nette namen; dat gebruikt hij vanzelf als
+  de cloud dat product meldt.
 * **Eén verbinding**: veel toestellen laten maar één lokale verbinding toe. Haal een toestel eerst uit LocalTuya en sluit de SmartLife-app als het niet verbindt.
-* **Vast IP**: de add-on zoekt toestellen niet zelf; geef ze een vast IP via een DHCP-reservering.
-* De sleutels staan in `/data/tuya.json`: ze zitten in de HA-back-up, niet in *Exporteer configuratie*. Op armv7 is deze functie niet beschikbaar.
+* **IP-adres, automatisch**: Tuya-toestellen melden zich elke paar seconden met een UDP-broadcast (poort 6666 en 6667) en de add-on luistert
+  mee. Toestellen die nog geen blok hebben, staan in de zijbalk onder *Op het netwerk gevonden*: kies er een en device-id en IP staan
+  ingevuld. Een leeg IP vult de add-on zelf in; krijgt een toestel van DHCP een ander adres, dan neemt hij het nieuwe over zolang hij het
+  oude niet bereikt. Een vast IP via een DHCP-reservering blijft het betrouwbaarst. Broadcasts komen niet over routers of VLAN's heen.
+* De sleutels en het Access Secret staan in `/data/tuya.json`: ze zitten in de HA-back-up, niet in *Exporteer configuratie*. Op armv7 is deze functie niet beschikbaar.
 
 ## Externe apparaten (Tuya via local-tuya)
 

@@ -398,7 +398,24 @@ async def tuya_post(request: web.Request) -> web.Response:
 
 
 async def tuya_put(request: web.Request) -> web.Response:
-    _tuya(request).update(request.match_info["did"], await _body(request))
+    hub, did, b = _tuya(request), request.match_info["did"], await _body(request)
+    old = hub.devices.get(did, {}).get("device_id")
+    hub.update(did, b)
+    if b.get("device_id") and b["device_id"] != old and hub.cloud_ready():
+        try:
+            await hub.fetch(did)  # een nieuw device-id: meteen sleutel en datamodel erbij
+        except ModelError as e:
+            raise ModelError(f"device-id bewaard, maar ophalen mislukt: {e}")
+    return web.json_response({"ok": True})
+
+
+async def tuya_fetch(request: web.Request) -> web.Response:
+    await _tuya(request).fetch(request.match_info["did"])
+    return web.json_response({"ok": True})
+
+
+async def tuya_cloud(request: web.Request) -> web.Response:
+    _tuya(request).set_cloud(await _body(request))
     return web.json_response({"ok": True})
 
 
@@ -631,6 +648,8 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/screens/{sid}", screen_put)
     r.add_delete("/api/screens/{sid}", screen_delete)
     r.add_post("/api/tuya", tuya_post)
+    r.add_put("/api/tuya-cloud", tuya_cloud)
+    r.add_post("/api/tuya/{did}/fetch", tuya_fetch)
     r.add_put("/api/tuya/{did}", tuya_put)
     r.add_delete("/api/tuya/{did}", tuya_delete)
     r.add_post("/api/tuya/{did}/set", tuya_set)

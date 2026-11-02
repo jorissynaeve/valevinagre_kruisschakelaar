@@ -12,7 +12,8 @@ pytest.importorskip("cryptography")
 
 from kkaddon import schema, tuya  # noqa: E402
 from kkaddon.model import ModelError  # noqa: E402
-from kkaddon.tuyahub import TuyaHub, parse_model  # noqa: E402
+from kkaddon.tuyacloud import sign  # noqa: E402
+from kkaddon.tuyahub import FEYREE_PID, TuyaHub, parse_model  # noqa: E402
 from tests.rig import Rig  # noqa: E402
 
 KEY = b"0123456789abcdef"
@@ -211,7 +212,7 @@ def test_no_answer_to_the_query_is_not_a_connection():
 
 # ------------------------------------------------------------ de hub
 
-CHARGER = {"name": "Lader", "device_id": DEV, "host": "192.0.2.1", "key": KEY.decode(), "profile": "feyree", "version": "3.5"}
+CHARGER = {"name": "Lader", "device_id": DEV, "host": "192.0.2.1", "key": KEY.decode(), "product": FEYREE_PID, "version": "3.5"}
 REPORT = {"101": "connect", "102": 2363, "25": 2084, "115": 16, "114": 16, "123": False, "124": "WaitOperation", "125": "FELDWV02", "132": False, "999": 5}
 
 
@@ -220,6 +221,7 @@ def hub_with(tmp_path, dev=CHARGER, dps=REPORT):
         r = Rig(tmp_path)
         hub = TuyaHub(tmp_path, r.engine)
         did = hub.add(dict(dev))
+        hub.devices[did]["product"] = dev.get("product", "")  # zoals de cloud het meldt
         hub.close()
         if dps:
             hub._on_dps(did, dps)
@@ -354,7 +356,7 @@ def test_set_from_the_side_panel_refuses_what_it_should(tmp_path):
 
 def test_a_writable_point_without_limits_is_not_offered_as_control(tmp_path):
     model = {"services": [{"properties": [{"abilityId": 3, "code": "x", "accessMode": "rw", "typeSpec": {"type": "value"}}]}]}
-    hub, did = hub_with(tmp_path, {**CHARGER, "profile": "", "model": json.dumps(model)}, {"3": 1})
+    hub, did = hub_with(tmp_path, {**CHARGER, "product": "", "model": json.dumps(model)}, {"3": 1})
     assert not hub.status()[0]["points"][0]["rw"]
 
 
@@ -386,7 +388,7 @@ def test_found_version_is_remembered(tmp_path):
 
 @pytest.mark.parametrize("bad,word", [
     ({"key": "short"}, "16"), ({"host": "https://192.168.8.26/"}, "adres"), ({"device_id": "x"}, "device"), ({"name": ""}, "naam"),
-    ({"version": "9"}, "versie"), ({"profile": "x"}, "profiel"),
+    ({"version": "9"}, "versie"),
 ])
 def test_bad_input_is_refused(tmp_path, bad, word):
     async def go():
@@ -429,6 +431,7 @@ def test_block_on_the_schema_shows_the_main_values_and_no_key(tmp_path):
         r = Rig(tmp_path)
         hub = TuyaHub(tmp_path, r.engine)
         did = hub.add(dict(CHARGER))
+        hub.devices[did]["product"] = FEYREE_PID
         hub.close()
         hub._on_dps(did, REPORT)
         page = schema.view(r.model, r.engine.snapshot())
@@ -469,18 +472,189 @@ def test_nonsense_is_not_a_data_model(text):
         parse_model(text)
 
 
-def test_a_pasted_model_replaces_the_profile(tmp_path):
+def test_a_pasted_model_replaces_the_built_in_one(tmp_path):
     hub, did = hub_with(tmp_path, dps={"1": True})
 
     async def go():
         hub.update(did, {"model": json.dumps(MODEL)})
         hub.close()
     asyncio.run(go())
-    assert hub.devices[did]["profile"] == "" and "switch_1" in by_name(hub)
+    assert hub.devices[did]["product"] == "" and "switch_1" in by_name(hub)
 
 
 def test_device_with_a_pasted_model_can_switch(tmp_path):
-    hub, did = hub_with(tmp_path, {**CHARGER, "device_id": DEV[:-1] + "k", "profile": "", "model": json.dumps(MODEL)}, {"1": True, "9": 123})
+    hub, did = hub_with(tmp_path, {**CHARGER, "device_id": DEV[:-1] + "k", "product": "", "model": json.dumps(MODEL)}, {"1": True, "9": 123})
     names = by_name(hub)
     assert names["switch_1"][0] == "switch" and "command_topic" in names["switch_1"][1] and names["power"][0] == "sensor"
     assert hub.states()[hub.t_state(did, "9")][0] == "12.3"
+
+
+# ------------------------------------------------------------ eenmalig uit de cloud
+
+def test_an_old_profile_becomes_the_product(tmp_path):
+    (tmp_path / "tuya.json").write_text(json.dumps({"devices": {"lader": {**CHARGER, "product": None, "profile": "feyree"}}}), encoding="utf-8")
+    hub = TuyaHub(tmp_path, Rig(tmp_path).engine)
+    assert hub.devices["lader"]["product"] == FEYREE_PID and "profile" not in hub.devices["lader"]
+    assert hub.status()[0]["product"] == "Feyree EV-lader"
+
+
+def test_another_device_id_forgets_the_product(tmp_path):
+    hub, did = hub_with(tmp_path)
+
+    async def go():
+        hub.update(did, {"device_id": DEV[:-1] + "z"})
+        hub.close()
+    asyncio.run(go())
+    assert hub.devices[did]["product"] == ""
+
+
+def test_cloud_secret_is_kept_and_never_shown(tmp_path):
+    hub, did = hub_with(tmp_path)
+    hub.set_cloud({"id": "a" * 20, "secret": "s" * 32, "region": "weu"})
+    hub.set_cloud({"id": "a" * 20, "secret": ""})
+    assert hub.cloud["secret"] == "s" * 32 and hub.cloud_ready()
+    assert "s" * 32 not in json.dumps(hub.status()) and hub.status()[0]["cloud"] == {"id": "a" * 20, "region": "weu", "has_secret": True}
+    assert TuyaHub(tmp_path, Rig(tmp_path).engine).cloud["secret"] == "s" * 32
+    for bad in ({"id": "x y"}, {"region": "mars"}):
+        with pytest.raises(ModelError):
+            hub.set_cloud(bad)
+
+
+def fake_cloud(seen, product="p" * 16, key="k" * 16):
+    from aiohttp import web
+
+    async def handle(request):
+        token = request.headers.get("access_token", "")
+        want = sign("cid0123456", "secret0123456789", request.headers["t"], request.headers["nonce"], "GET", request.path_qs, token=token)
+        if request.headers.get("sign") != want:
+            return web.json_response({"success": False, "msg": "sign invalid"})
+        seen.append(request.path_qs)
+        if request.path == "/v1.0/token":
+            return web.json_response({"success": True, "result": {"access_token": "tok"}})
+        if token != "tok":
+            return web.json_response({"success": False, "msg": "token invalid"})
+        if request.path.endswith("/model"):
+            return web.json_response({"success": True, "result": {"model": json.dumps(MODEL)}})
+        return web.json_response({"success": True, "result": {"local_key": key, "product_id": product, "name": "Buitenkeuken", "ip": "81.1.2.3"}})
+
+    app = web.Application()
+    app.router.add_get("/{tail:.*}", handle)
+    return app
+
+
+def test_key_and_model_come_from_the_cloud(tmp_path):
+    from aiohttp.test_utils import TestServer
+
+    async def go():
+        seen = []
+        srv = TestServer(fake_cloud(seen))
+        await srv.start_server()
+        try:
+            hub = TuyaHub(tmp_path, Rig(tmp_path).engine)
+            hub.cloud_base = str(srv.make_url("")).rstrip("/")
+            did = hub.add({"device_id": DEV, "host": "192.0.2.1"})
+            with pytest.raises(ModelError, match="Access ID"):
+                await hub.fetch(did)
+            hub.set_cloud({"id": "cid0123456", "secret": "secret0123456789"})
+            await hub.fetch(did)
+            dev = hub.devices[did]
+            assert dev["key"] == "k" * 16 and dev["name"] == "Buitenkeuken" and "1" in dev["defs"] and dev["host"] == "192.0.2.1"
+            assert did in hub.clients, "met de sleutel erbij verbindt het toestel"
+            assert seen == ["/v1.0/token?grant_type=1", f"/v2.0/cloud/thing/{DEV}", f"/v2.0/cloud/thing/{DEV}/model"]
+            hub.cloud["secret"] = "fout0123456789"
+            with pytest.raises(ModelError, match="sign invalid"):
+                await hub.fetch(did)
+            hub.close()
+        finally:
+            await srv.close()
+    asyncio.run(go())
+
+
+def test_a_known_product_from_the_cloud_gets_its_built_in_names(tmp_path):
+    from aiohttp.test_utils import TestServer
+
+    async def go():
+        srv = TestServer(fake_cloud([], product=FEYREE_PID))
+        await srv.start_server()
+        try:
+            hub = TuyaHub(tmp_path, Rig(tmp_path).engine)
+            hub.cloud_base = str(srv.make_url("")).rstrip("/")
+            hub.set_cloud({"id": "cid0123456", "secret": "secret0123456789"})
+            did = hub.add({"name": "Lader", "device_id": DEV})
+            await hub.fetch(did)
+            assert hub._defs(did)["115"]["name"] == "Laadstroom" and hub.status()[0]["product"] == "Feyree EV-lader"
+            assert hub.devices[did]["name"] == "Lader", "een eigen naam blijft"
+            hub.close()
+        finally:
+            await srv.close()
+    asyncio.run(go())
+
+
+# ------------------------------------------------------------ zoeken op het LAN
+
+ANNOUNCE = {"ip": "192.168.8.26", "gwId": DEV, "active": 2, "ability": 0, "mode": 0, "encrypt": True, "productKey": "keyabc", "version": "3.3"}
+
+
+def _frame55(body: bytes) -> bytes:
+    import binascii
+    import struct
+    data = tuya.P55 + struct.pack(">III", 0, 0x13, len(body) + 8) + body
+    return data + struct.pack(">I", binascii.crc32(data) & 0xFFFFFFFF) + tuya.S55
+
+
+@pytest.mark.parametrize("make", [
+    lambda j: _frame55(b"\x00\x00\x00\x00" + tuya.ecb_encrypt(tuya.UDP_KEY, j)),  # 6667: 3.3 en 3.4
+    lambda j: _frame55(b"\x00\x00\x00\x00" + j),  # 6666: oude toestellen, leesbaar
+    lambda j: tuya.pack("3.5", tuya.UDP_KEY, 0, 0x13, j + b"\x00\x00"),  # 6667: 3.5, met nullen erachter
+])
+def test_broadcasts_are_understood(make):
+    j = json.dumps(ANNOUNCE).encode()
+    assert tuya.parse_broadcast(make(j)) == {"id": DEV, "ip": "192.168.8.26", "version": "3.3", "product": "keyabc"}
+
+
+@pytest.mark.parametrize("data", [b"", b"hallo", _frame55(b"\x00" * 20), _frame55(b'{"gwId":5}')])
+def test_noise_is_not_a_broadcast(data):
+    assert tuya.parse_broadcast(data) is None
+
+
+def test_a_broadcast_fills_in_the_ip(tmp_path):
+    async def go():
+        hub = TuyaHub(tmp_path, Rig(tmp_path).engine)
+        did = hub.add({"name": "Lader", "device_id": DEV, "key": KEY.decode()})
+        other = DEV[:-1] + "q"
+        hub.on_broadcast({"id": other, "ip": "192.168.8.30", "version": "3.4", "product": ""}, "192.168.8.30")
+        assert [f["id"] for f in hub.status()[0]["unclaimed"]] == [other] and hub.devices[did]["host"] == ""
+        hub.on_broadcast({"id": DEV, "ip": "192.168.8.26", "version": "3.5", "product": ""}, "192.168.8.26")
+        assert hub.devices[did]["host"] == "192.168.8.26" and hub.devices[did]["version"] == "3.5" and did in hub.clients
+        assert hub.status()[0]["found"]["ip"] == "192.168.8.26"
+
+        class Up:
+            connected = True
+        hub.clients[did] = Up()
+        hub.on_broadcast({"id": DEV, "ip": "192.168.8.99", "version": "3.5", "product": ""}, "192.168.8.99")
+        assert hub.devices[did]["host"] == "192.168.8.26", "een verbonden toestel laten we met rust"
+        hub.close()
+    asyncio.run(go())
+
+
+def test_listener_hears_a_real_datagram():
+    import socket
+
+    async def go():
+        got = []
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        ts = await tuya.listen(lambda f, src: got.append((f["id"], src)), ports=(port,))
+        try:
+            loop = asyncio.get_running_loop()
+            out, _ = await loop.create_datagram_endpoint(asyncio.DatagramProtocol, remote_addr=("127.0.0.1", port))
+            out.sendto(_frame55(b"\x00\x00\x00\x00" + tuya.ecb_encrypt(tuya.UDP_KEY, json.dumps(ANNOUNCE).encode())))
+            await _until(lambda: got, "broadcast ontvangen")
+            out.close()
+        finally:
+            for t in ts:
+                t.close()
+        assert got == [(DEV, "127.0.0.1")]
+    asyncio.run(go())
