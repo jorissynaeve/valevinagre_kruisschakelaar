@@ -12,6 +12,7 @@ from aiohttp import WSMsgType, web
 
 from . import __version__, appdaemon_import, schema
 from .engine import Engine
+from .link import LinkError
 from .model import ENTITY_RE, Model, ModelError
 from .settings import Settings, key_header
 
@@ -21,15 +22,15 @@ STATIC = Path(__file__).parent / "static"
 CTX = web.AppKey("ctx", object)
 INGRESS_PROXY = {"172.30.32.2", "127.0.0.1", "::1"}
 # Events die de pagina moet kennen; de rest (bv. losse commando-statussen) is ruis.
-PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya"}
+PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "link"}
 
 
 class Ctx:
     """Alles wat de handlers nodig hebben."""
 
-    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None) -> None:
+    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None) -> None:
         self.settings, self.engine, self.model = settings, engine, engine.model
-        self.transport, self.mqtt, self.ha, self.panels, self.tuya = transport, mqtt, ha, panels, tuya
+        self.transport, self.mqtt, self.ha, self.panels, self.tuya, self.links = transport, mqtt, ha, panels, tuya, links
         self.clients: set[web.WebSocketResponse] = set()
         engine.subscribe(self._on_event)
 
@@ -365,6 +366,49 @@ async def panel_yaml(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "notes": notes, "cards": new})
 
 
+def _links(request: web.Request):
+    hub = request.app[CTX].links
+    if hub is None:
+        raise ModelError("koppelingen zijn niet beschikbaar")
+    return hub
+
+
+async def link_put(request: web.Request) -> web.Response:
+    """Naam van deze installatie en de koppelsleutel."""
+    _links(request).configure(await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def link_peer_add(request: web.Request) -> web.Response:
+    b = await _body(request)
+    _links(request).add_peer(b.get("host"), b.get("port", 47490))
+    return web.json_response({"ok": True})
+
+
+async def link_peer_remove(request: web.Request) -> web.Response:
+    b = await _body(request)
+    ok = _links(request).remove_peer(b.get("host"), b.get("port"))
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
+async def link_forget(request: web.Request) -> web.Response:
+    ok = _links(request).forget(str((await _body(request)).get("peer")))
+    if not ok:
+        raise ModelError("alleen een installatie die niet verbonden is kan vergeten worden")
+    return web.json_response({"ok": True})
+
+
+async def link_cmd(request: web.Request) -> web.Response:
+    """Een toestel van een andere installatie bedienen: {peer, obj, op} of {peer, obj, dp, value}. Wacht op het antwoord van de eigenaar."""
+    b = await _body(request)
+    cmd = {"op": b["op"]} if "op" in b else {"dp": str(b.get("dp")), "value": str(b.get("value"))}
+    try:
+        await _links(request).command(str(b.get("peer")), str(b.get("obj")), **cmd)
+    except LinkError as e:
+        raise ModelError(str(e)) from e
+    return web.json_response({"ok": True})
+
+
 async def card_post(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     b = await _body(request)
@@ -677,6 +721,11 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/panels/{pid}/relay/{n}", panel_relay)
     r.add_post("/api/panels/{pid}/yaml", panel_yaml)
     r.add_post("/api/cards", card_post)
+    r.add_put("/api/link", link_put)
+    r.add_post("/api/link/peers", link_peer_add)
+    r.add_post("/api/link/peers/remove", link_peer_remove)
+    r.add_post("/api/link/forget", link_forget)
+    r.add_post("/api/link/cmd", link_cmd)
     r.add_put("/api/cards/{cid}", card_put)
     r.add_delete("/api/cards/{cid}", card_delete)
     r.add_post("/api/screens", screen_post)

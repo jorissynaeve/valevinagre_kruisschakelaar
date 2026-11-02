@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import cards as _cards
+from .link import split_ref
 from .logic import BOOL, MODULE_TYPES, NUMBER, SPRINKLER_INPUTS, TIME, disable_ref
 from .logic import minutes as _minutes
 from .hasp import DOMAINS as SCREEN_DOMAINS
@@ -402,7 +403,8 @@ def _card(cid, v) -> dict:
         out.update(layout=layout, items=clean)
     elif t == "charger":
         did = v.get("tuya") or ""
-        if not isinstance(did, str) or (did and not TUYA_ID_RE.fullmatch(did)):
+        remote = split_ref(did) if isinstance(did, str) else None
+        if not isinstance(did, str) or (did and not TUYA_ID_RE.fullmatch(did) and not (remote and remote[1].startswith("y:"))):
             raise ModelError("laadpaal: ongeldig Tuya-toestel")
         out.update(tuya=did, price=_num(v.get("price", 0.30), 0, 100, "prijs per kWh"), price_entity=_opt_entity(v.get("price_entity"), "prijs"))
     elif t == "saver":
@@ -604,7 +606,7 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]], sprinkle
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|c:[a-z0-9_]{1,40}|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|c:[a-z0-9_]{1,40}|r:[a-z0-9_]{1,40}:(?:g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80})|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
 
 
 def _switch_gangs(raw) -> list[dict]:

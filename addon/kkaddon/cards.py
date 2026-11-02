@@ -17,6 +17,7 @@ import logging
 import re
 from typing import Any, Callable
 
+from .link import split_ref
 from .panel import DEFAULT_COLOR, ON_COLOR, PanelError, extract, rgb565
 
 log = logging.getLogger("kk.cards")
@@ -25,7 +26,7 @@ TYPES = {"grid": "Knoppen", "charger": "Laadpaal", "saver": "Screensaver", "powe
 LAYOUTS = {"grid": "cardGrid", "list": "cardEntities"}
 MAX_ITEMS = {"grid": 8, "list": 4}  # een raster met meer dan 6 wordt het brede raster; een lijst toont er 4
 MAX_POWER = 6
-LAMP_REF = re.compile(r"^(g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2})$")
+LAMP_REF = re.compile(r"^(g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|r:[a-z0-9_]{1,40}:(g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}))$")  # r:<installatie>:<lamp> = van een andere installatie
 CARD_REF = re.compile(r"^c:[a-z0-9_]{1,40}$")
 DYN = "kk"  # het domein van een rij die zijn stand uit de add-on haalt: kk.<kaart>__<deel>
 
@@ -42,9 +43,9 @@ STATUS = {
 CHARGING = {"charing", "charging"}
 CHARGE_COLOR = rgb565([0, 200, 80])
 WORDS = {
-    "nl": {"time": "Laadtijd", "energy": "Geladen", "price": "Prijs", "start": "Start", "stop": "Stop", "offline": "Lader offline", "none": "Geen lader gekozen",
+    "nl": {"time": "Laadtijd", "energy": "Geladen", "price": "Prijs", "start": "Start", "stop": "Stop", "offline": "Lader offline", "offline_short": "offline", "none": "Geen lader gekozen",
            "ssid": "Netwerk", "password": "Wachtwoord", "missing": "Niet gevonden"},
-    "en": {"time": "Charge time", "energy": "Charged", "price": "Price", "start": "Start", "stop": "Stop", "offline": "Charger offline", "none": "No charger chosen",
+    "en": {"time": "Charge time", "energy": "Charged", "price": "Price", "start": "Start", "stop": "Stop", "offline": "Charger offline", "offline_short": "offline", "none": "No charger chosen",
            "ssid": "Network", "password": "Password", "missing": "Not found"},
 }
 
@@ -157,6 +158,8 @@ def _grid_item(model, cid: str, i: int, it: dict) -> dict:
     ref, ent = it.get("ref"), it.get("entity")
     if ref and ref.startswith("c:"):
         return {"entity": f"navigate.{ref[2:]}", "name": name, "icon": _icon(it.get("icon"))}
+    if ref and ref.startswith("r:"):  # de naam komt live van de andere installatie (Live.value), want ze kan daar veranderen
+        return {"entity": f"{DYN}.{cid}__{i}", "name": name, "icon": _icon(it.get("icon"), "lightbulb")}
     if ref:
         return {"entity": f"{DYN}.{cid}__{i}", "name": name or _clean(lamp_name(model, ref)) or ref, "icon": _icon(it.get("icon"), "lightbulb")}
     if ent:
@@ -195,11 +198,19 @@ def _saver(c: dict) -> dict:
 class Live:
     """Rijen `kk.<kaart>__<deel>`: een lamp van de add-on (een kring of een licht op het netwerk) of de laadpaal.
 
-    `engine` voor de lampen, `tuya` (TuyaHub) voor de laadpaal, `state(entity)` voor een HA-entiteit (de prijs per kWh)."""
+    `engine` voor de lampen, `tuya` (TuyaHub) voor de laadpaal, `state(entity)` voor een HA-entiteit (de prijs per kWh), `link`
+    (LinkHub) voor een lamp of lader van een andere installatie (`r:<installatie>:<object>`)."""
 
-    def __init__(self, model, engine=None, tuya=None, state: Callable[[str], Any] | None = None) -> None:
-        self.model, self.engine, self.tuya = model, engine, tuya
+    def __init__(self, model, engine=None, tuya=None, state: Callable[[str], Any] | None = None, link=None) -> None:
+        self.model, self.engine, self.tuya, self.link = model, engine, tuya, link
         self.state = state or (lambda _e: None)
+
+    def _remote(self, ref: str) -> tuple[str, str, dict | None] | None:
+        hit = split_ref(ref)
+        if hit is None:
+            return None
+        peer, obj = hit
+        return peer, obj, (self.link.object(peer, obj) if self.link else None)
 
     def _parse(self, entity: str) -> tuple[dict, str, str] | None:
         cid, _, part = entity.removeprefix(f"{DYN}.").partition("__")
@@ -218,13 +229,25 @@ class Live:
             i = int(part)
             if i >= len(items) or not items[i].get("ref") or items[i]["ref"].startswith("c:"):
                 return None
-            on = self.lamp_on(items[i]["ref"])
-            return {"kind": "switch", "value": 1 if on else 0, "color": ON_COLOR if on else DEFAULT_COLOR}
+            ref = items[i]["ref"]
+            on = self.lamp_on(ref)
+            out = {"kind": "switch", "value": 1 if on else 0, "color": ON_COLOR if on else DEFAULT_COLOR}
+            if ref.startswith("r:"):
+                r = self._remote(ref)
+                o = r[2] if r else None
+                if o is None:
+                    return None
+                out["name"] = _clean(o.get("name")) + ("" if o.get("online") else f" ({WORDS[lang]['offline_short']})")
+            return out
         if c["type"] == "charger":
             return self._charger(c, part, WORDS[lang], lang)
         return None
 
     def lamp_on(self, ref: str) -> bool | None:
+        if ref.startswith("r:"):
+            r = self._remote(ref)
+            o = r[2] if r else None
+            return o.get("on") if o and o.get("online") else None
         e = self.engine
         if e is None:
             return None
@@ -237,11 +260,31 @@ class Live:
 
     def _points(self, c: dict) -> dict | None:
         """De gemelde waarden van de lader (zoals in de zijbalk: met de schaal toegepast), of None als hij er niet is."""
+        did = c.get("tuya") or ""
+        if did.startswith("r:"):
+            r = self._remote(did)
+            o = r[2] if r else None
+            return {str(p.get("dp")): p.get("value") for p in o.get("points") or []} if o else None
         t = self.tuya
-        did = c.get("tuya")
         if t is None or not did or did not in t.devices:
             return None
         return t.read(did)
+
+    def _online(self, c: dict) -> bool:
+        did = c.get("tuya") or ""
+        if did.startswith("r:"):
+            r = self._remote(did)
+            return bool(r and r[2] and r[2].get("online") and self.link.is_up(r[0]))
+        return self.tuya is not None and self.tuya.is_online(did)
+
+    def _set(self, c: dict, dp: str, value: str) -> bool:
+        """Een datapunt van de lader zetten: zelf, of via de installatie waar hij hangt (die beslist)."""
+        did = c["tuya"]
+        if did.startswith("r:"):
+            r = self._remote(did)
+            return bool(r and self.link and self.link.send(r[0], r[1], dp=dp, value=value))
+        self.tuya.set(did, dp, value)
+        return True
 
     def charging(self, c: dict) -> bool:
         v = self._points(c) or {}
@@ -249,7 +292,7 @@ class Live:
 
     def _charger(self, c: dict, part: str, w: dict, lang: str) -> dict:
         v = self._points(c)
-        online = v is not None and self.tuya.is_online(c["tuya"])
+        online = v is not None and self._online(c)
         if part == "run":
             if v is None:
                 return {"kind": "text", "name": w["none"] if not c.get("tuya") else w["offline"], "value": "", "color": DEFAULT_COLOR}
@@ -297,12 +340,13 @@ class Live:
             on = (value == "1") if kind == "OnOff" else None
             return self._lamp(ref, on)
         if c["type"] == "charger" and part == "run" and kind == "button":
-            if self._points(c) is None or not self.tuya.is_online(c["tuya"]):
+            if self._points(c) is None or not self._online(c):
                 log.info("laadpaal %s: niet bereikbaar, niets gestuurd", c["name"])
                 return False
             want = RUN_OFF if self.charging(c) else RUN_ON
             try:
-                self.tuya.set(c["tuya"], DP_RUN, want)
+                if not self._set(c, DP_RUN, want):
+                    return False
             except ValueError as e:  # ModelError
                 log.warning("laadpaal %s: %s", c["name"], e)
                 return False
@@ -311,6 +355,9 @@ class Live:
         return False
 
     def _lamp(self, ref: str, on: bool | None) -> bool:
+        if ref.startswith("r:"):  # de eigenaar beslist (bv. een lamp met een aan/uit-ingang weigert)
+            r = self._remote(ref)
+            return bool(r and self.link and self.link.send(r[0], r[1], op="toggle" if on is None else "on" if on else "off"))
         e = self.engine
         if e is None:
             return False

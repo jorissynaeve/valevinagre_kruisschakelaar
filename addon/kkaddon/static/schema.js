@@ -26,7 +26,7 @@ const SC_GANGED = ['switch', 'panel', 'tuya']; // blokken met gangen: per gang e
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
 const scW = (b) => (b.kind === 'lamp' ? LAMP_W : b.kind === 'tuya' ? TUYA_W : SW_W);
-const scRows = (b) => (b.kind === 'card' ? b.rows : b.kind === 'panel' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
+const scRows = (b) => (b.kind === 'card' || b.kind === 'remote' ? b.rows : b.kind === 'panel' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
 const scH = (b) => SC_HEAD + scRows(b) * SC_ROW + SC_FOOT;
 const rowY = (b, i) => b.y + SC_HEAD + i * SC_ROW + SC_ROW / 2;
 const scPageName = (id) => (S.schema.pages.find((p) => p.id === id) || {}).name || '';
@@ -50,7 +50,7 @@ function scType(b) { // bepaalt de kleur van het blok
   if (b.kind === 'lamp' || b.kind === 'timer') return b.kind;
   if (b.kind === 'module') return b.out === 'bool' ? 'logic' : 'time';
   if (b.kind === 'sprinkler') return 'spr';
-  if (b.kind === 'panel' || b.kind === 'screen' || b.kind === 'tuya' || b.kind === 'card') return b.kind;
+  if (b.kind === 'panel' || b.kind === 'screen' || b.kind === 'tuya' || b.kind === 'card' || b.kind === 'remote') return b.kind;
   if (b.source === 'node') return 'node';
   if (b.source === 'virtual') return 'ext';
   const conns = scConns().filter((x) => x.sw && x.sw.key === b.key);
@@ -133,6 +133,42 @@ function scCard(b) {
     <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Kaart · ${SC_CARD_NL[b.type]}${b.type === 'grid' && b.layout === 'list' ? ' (lijst)' : ''}</text>${rows}
     <circle class="pt crd ${b.users.length ? '' : 'free'}" cx="${b.x + SW_W}" cy="${y0}" r="6" data-b="${esc(b.key)}" data-role="cout" data-g="0"><title>Uitgang: sleep naar een paneel (pagina) of naar een knop van een rasterkaart (subpagina)</title></circle>
     ${b.users.map((u, n) => `<text class="stub" x="${b.x + SW_W + 11}" y="${y0 + 4 + n * 13}" data-sc="go" data-k="${esc(u.key)}">→ ${esc(scCut(u.name, 22))} ${u.as === 'page' ? `(${b.type === 'saver' ? 'start' : `pagina ${u.i + 1}`})` : '(sub)'}<title>${esc(u.name)}</title></text>`).join('')}</g>`;
+}
+
+function scRemote(b) { // een lamp of Tuya-toestel van een andere installatie: alleen-lezen, te bedienen
+  const st = b.on === true ? 'on' : b.on === null || b.on === undefined ? 'unknown' : '';
+  const rows = b.sub === 'lamp'
+    ? `<circle class="bulb ${st}" cx="${b.x + 22}" cy="${rowY(b, 0)}" r="9" data-sc="rtoggle" data-k="${esc(b.key)}"><title>Aan of uit zetten (via ${esc(b.peerName)})</title></circle>
+       <text class="bkt" x="${b.x + 40}" y="${rowY(b, 0) + 4}">${b.on === true ? 'aan' : b.on === false ? 'uit' : 'onbekend'}${b.held ? ' · vastgehouden' : ''}</text>`
+    : b.points.length ? b.points.map((p, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}"><title>${esc(`${p.name}: ${scTyValue(p)}`)}</title>${esc(scCut(p.name, 20))} <tspan class="tyv">${esc(scCut(scTyValue(p), 14))}</tspan></text>`).join('')
+      : `<text class="bkt" x="${b.x + 11}" y="${rowY(b, 0) + 4}">Nog geen waarden</text>`;
+  return `<g class="bk rem t-remote ${SC.sel === b.key ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
+    <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
+    <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
+    <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 28))}</text>
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">↔ ${esc(scCut(b.peerName, 16))} · ${b.sub === 'lamp' ? 'Lamp' : 'Tuya'}${b.online ? '' : ' · offline'}</text>${rows}</g>`;
+}
+
+function scRemotePanel(b) {
+  const opt = (v, cur, text) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(text)}</option>`;
+  const users = scBlocks().filter((c) => c.kind === 'card' && ((c.items || []).some((it) => it.ref === b.key) || c.tuya === b.key));
+  let body;
+  if (b.sub === 'lamp') {
+    body = `<div class="row"><button class="btn small" type="button" data-sc="rcmd" data-k="${esc(b.key)}" data-op="on" ${b.linked ? '' : 'disabled'}>Aan</button>
+      <button class="btn small" type="button" data-sc="rcmd" data-k="${esc(b.key)}" data-op="off" ${b.linked ? '' : 'disabled'}>Uit</button></div>
+      ${b.held ? '<div class="sub">Deze lamp wordt bij de eigenaar vastgehouden door haar aan/uit-ingang: een bevel wordt geweigerd.</div>' : ''}`;
+  } else {
+    const control = (p) => (p.type === 'bool' ? `<select data-rset="${esc(p.dp)}">${opt('ON', p.value ? 'ON' : 'OFF', 'aan')}${opt('OFF', p.value ? 'ON' : 'OFF', 'uit')}</select>`
+      : p.type === 'enum' ? `<select data-rset="${esc(p.dp)}">${p.options.map((o) => opt(o, p.value, o)).join('')}</select>`
+        : `<input type="number" data-rset="${esc(p.dp)}" min="${p.min}" max="${p.max}" step="${p.step}" value="${esc(p.value)}">`);
+    const rw = b.points.filter((p) => p.rw);
+    body = rw.length ? `<h2>Bedienen</h2>${rw.map((p) => `<label>${esc(p.name)}${p.unit ? ` (${esc(p.unit)})` : ''}</label>${control(p)}`).join('')}<div class="sub">Een wijziging gaat via ${esc(b.peerName)} naar het toestel.</div>` : '';
+  }
+  return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${b.linked ? (b.online ? 'online' : 'toestel offline') : `${esc(b.peerName)} niet verbonden`}</span></div>
+    <div class="sub">Van de installatie <b>${esc(b.peerName)}</b>. Instellen, hernoemen en aansluiten op touches doe je daar; hier kun je het bedienen en aan een NSPanel-kaart hangen${b.sub === 'lamp' ? ' (sleep een knop van een rasterkaart naar dit blok)' : ' (kies het bij een laadpaalkaart)'}.</div>
+    <label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+    ${body}
+    <h2>Gebruikt door</h2>${users.map((c) => `<div class="sub"><a href="#" data-sc="go" data-k="${esc(c.key)}">${esc(c.name)}</a></div>`).join('') || '<div class="sub">Nog geen kaart.</div>'}`;
 }
 
 function scRowText(c, name) { // de gang is het belangrijkste: inkorten gaat ten koste van de toestelnaam
@@ -391,8 +427,9 @@ function scCardPanel(b, props) {
       ${b.items.length < max ? `<div class="row" style="margin-top:6px"><button class="btn small" type="button" data-sc="cditem" data-k="${esc(b.key)}" data-op="add">+ Knop</button></div>` : ''}
       <div class="sub">Sleep naar een knop (links op het blok) vanaf een <b>lamp</b>, een <b>gang</b> van een schakelaar, of de <b>uitgang</b> van een andere kaart (dan wordt het een subpagina). Pictogrammen: de MDI-naam, bv. <code>ceiling-light</code>; wat het scherm niet kent wordt een uitroepteken.</div>`;
   } else if (b.type === 'charger') {
-    const tuyas = scBlocks().filter((t) => t.kind === 'tuya');
-    body = `<label>Lader (Tuya-blok)</label><select data-cdfield="tuya"><option value="">kies een lader…</option>${tuyas.map((t) => opt(t.id, b.tuya, `${t.name}${t.online ? '' : ' (offline)'}`)).join('')}</select>
+    const tuyas = scBlocks().filter((t) => t.kind === 'tuya'), far = scBlocks().filter((t) => t.kind === 'remote' && t.sub === 'tuya');
+    body = `<label>Lader (Tuya-blok)</label><select data-cdfield="tuya"><option value="">kies een lader…</option>${tuyas.map((t) => opt(t.id, b.tuya, `${t.name}${t.online ? '' : ' (offline)'}`)).join('')}
+      ${far.length ? `<optgroup label="Van andere installaties">${far.map((t) => opt(t.key, b.tuya, `${t.name} (${t.peerName})${t.online ? '' : ' (offline)'}`)).join('')}</optgroup>` : ''}</select>
       ${b.device ? `<div class="sub"><a href="#" data-sc="go" data-k="${esc(b.device.key)}">↗ ${esc(b.device.name)}</a></div>` : ''}
       <label>Prijs per kWh (€)</label><input type="number" min="0" max="100" step="0.01" data-cdfield="price" value="${esc(b.price)}">
       ${tx('price_entity', 'Of de prijs uit een entiteit van HA (wint als ze een getal geeft)', 'bv. sensor.stroomprijs')}
@@ -420,6 +457,16 @@ function scCardPanel(b, props) {
 
 const scItems = (b) => b.items.map(({ ref, entity, name, icon }) => ({ ref, entity, name, icon }));
 const scPowItems = (b) => b.items.map(({ entity, name, icon, speed, levels }) => ({ entity, name, icon, speed, levels }));
+
+async function scRemoteCmd(b, cmd) { // de eigenaar voert uit en antwoordt; zijn nieuwe stand komt met de volgende melding
+  if (!b.linked) throw new Error(`${b.peerName} is niet verbonden.`);
+  try {
+    await api('POST', 'link/cmd', { peer: b.peer, obj: b.obj, ...cmd });
+  } finally {
+    SC.force = true;
+    await refresh();
+  }
+}
 
 async function scSaveCard(b, patch) {
   try {
@@ -665,7 +712,7 @@ function scInner(list) {
   const shown = new Set(list.map((b) => b.key));
   const wires = !SC_WIRES ? '' : conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
   const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b)
-    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'card' ? scCard(b) : b.kind === 'panel' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
+    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'card' ? scCard(b) : b.kind === 'remote' ? scRemote(b) : b.kind === 'panel' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
   return `<g class="wires">${wires}</g>${blocks}<path id="sctemp" class="wire temp"/>`; // draden onder de blokken: anders liggen ze over de poorten
 }
 
@@ -725,7 +772,7 @@ function scTray() {
     return `<h2>${title}</h2>${all.map(item).join('') || '<div class="sub">Geen.</div>'}`;
   };
   return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Panelen', 'panel')
-    + part('NSPanel-kaarten', 'card') + part('Schermen', 'screen') + part('Tuya', 'tuya');
+    + part('NSPanel-kaarten', 'card') + part('Schermen', 'screen') + part('Tuya', 'tuya') + part('Andere installaties', 'remote');
 }
 
 function scPanel() {
@@ -738,7 +785,7 @@ function scPanel() {
   const pages = `<label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
   const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'switch' ? b.alias : b.name)}" placeholder="${esc(b.tech)}">
     <div class="sub">Technische naam: <code>${esc(b.tech)}</code></div>${pages}`;
-  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : b.kind === 'tuya' ? scTuyaPanel(b, props) : b.kind === 'card' ? scCardPanel(b, props) : scSwitchPanel(b, props);
+  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : b.kind === 'tuya' ? scTuyaPanel(b, props) : b.kind === 'card' ? scCardPanel(b, props) : b.kind === 'remote' ? scRemotePanel(b) : scSwitchPanel(b, props);
 }
 
 function scConnRow(b, c, i, dir) {
@@ -1024,7 +1071,8 @@ async function scWireCard(a, b) { // de uitgang van een kaart naar een paneel of
     if (!item) throw new Error('Trek de draad vanaf de uitgang van een kaart, of vanaf een knop van een rasterkaart.');
     const other = item === a ? b : a, card = scBlock(item.b), src = scBlock(other.b);
     const gang = SC_GANGED.includes(src.kind) && other.g !== undefined ? src.gangs[+other.g] : null;
-    if (src.kind === 'lamp') await scSetItem(card, item.i, { ref: src.key, entity: null });
+    if (src.kind === 'lamp' || (src.kind === 'remote' && src.sub === 'lamp')) await scSetItem(card, item.i, { ref: src.key, entity: null });
+    else if (src.kind === 'remote') throw new Error('Een Tuya-toestel van een andere installatie kies je bij een laadpaalkaart, in de zijbalk.');
     else if (gang && gang.entity) await scSetItem(card, item.i, { ref: null, entity: gang.entity });
     else if (gang) throw new Error('Deze gang loopt niet via Home Assistant. Sluit de knop aan op de lamp die hij schakelt.');
     else throw new Error('Een knop sluit je aan op een lamp, op een gang van een schakelaar, of op de uitgang van een kaart.');
@@ -1168,6 +1216,8 @@ const SC_ACTIONS = {
     else items.splice(+d.i, 1);
     return scSaveCard(b, { items });
   },
+  rtoggle: (d) => scRemoteCmd(scBlock(d.k), { op: 'toggle' }),
+  rcmd: (d) => scRemoteCmd(scBlock(d.k), { op: d.op }),
   delcard: async (d) => {
     if (!confirm('Deze kaart verwijderen? Ze verdwijnt van de panelen en de knoppen die erheen gingen verdwijnen ook.')) return;
     await api('DELETE', `cards/${d.id}`);
@@ -1371,7 +1421,7 @@ function scFinish(target) {
     dest = { b: p.b, lampRole: p.role, swRole: p.swRole, g: p.g, i: p.i };
   } else if (toBlock && toBlock.dataset.block !== from.b) {
     const tb = scBlock(toBlock.dataset.block);
-    if (tb.kind === 'lamp') dest = { b: tb.key, lampRole: null }; // losgelaten op de lamp zelf: de poort waar je begon beslist
+    if (tb.kind === 'lamp' || (tb.kind === 'remote' && from.swRole === 'citem')) dest = { b: tb.key, lampRole: null }; // losgelaten op de lamp zelf: de poort waar je begon beslist
     else if (tb.kind === 'panel' && from.swRole === 'cout') dest = { b: tb.key, swRole: 'pcard', i: 'new' }; // een kaart op een paneel: achteraan
     else if (tb.kind === 'card' && tb.type === 'grid' && from.swRole !== 'citem') dest = { b: tb.key, swRole: 'citem', i: 'new' };
   }
@@ -1561,6 +1611,12 @@ document.addEventListener('change', (ev) => {
     } else patch = { [d.spfield]: d.spfield === 'enabled' ? t.checked : d.spfield === 'start' ? t.value : +t.value };
     t.blur();
     act(() => scSaveSprinkler(b, patch))();
+  }
+  const remote = SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'remote' ? scBlock(SC.sel) : null;
+  if (t.dataset && t.dataset.rset && remote) {
+    const dp = t.dataset.rset, value = t.value;
+    t.blur();
+    act(() => scRemoteCmd(remote, { dp, value }))();
   }
   const card = SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'card' ? scBlock(SC.sel) : null;
   if (t.dataset && t.dataset.cdfield && card) {

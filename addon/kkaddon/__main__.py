@@ -16,6 +16,7 @@ from . import __version__, settings as cfg
 from .engine import Engine
 from .habridge import HaBridge
 from .hasphub import HaspHub
+from .linkhub import LinkHub
 from .model import Model
 from .mqttbridge import MqttBridge
 from .panelhub import PanelHub
@@ -52,10 +53,14 @@ async def run() -> None:
     screens.publish = mqtt.publish
     tuya = TuyaHub(s.data_dir, engine)
     panels.tuya = tuya  # de laadpaalkaart leest en stuurt de lader rechtstreeks
+    links = LinkHub(s.data_dir, engine, port=s.link_port)
+    links.tuya = tuya
+    panels.linkhub = links  # kaarten met een lamp of lader van een andere installatie
     mqtt.extras.append(tuya)
     tuya.changed = mqtt.resync
     tuya.start()
-    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya)
+    await links.start()
+    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links)
     runner = web.AppRunner(make_app(ctx), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", s.web_port).start()
@@ -74,7 +79,7 @@ async def run() -> None:
             engine.tick()
             await asyncio.sleep(0.01)
 
-    tasks = [asyncio.create_task(ticker()), asyncio.create_task(mqtt.run()), asyncio.create_task(ha.run()), asyncio.create_task(panels.run()), asyncio.create_task(screens.run())]
+    tasks = [asyncio.create_task(ticker()), asyncio.create_task(mqtt.run()), asyncio.create_task(ha.run()), asyncio.create_task(panels.run()), asyncio.create_task(screens.run()), asyncio.create_task(links.run())]
     await stop.wait()
     log.info("afsluiten")
     for t in tasks:
@@ -82,6 +87,7 @@ async def run() -> None:
     panels.close()
     screens.close()
     tuya.close()
+    await links.close()
     engine.close()  # zet het leren uit en bewaart de staat
     await asyncio.sleep(0.2)  # laat de Learn(uit)-frames nog weggaan
     transport.close()

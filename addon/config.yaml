@@ -1,5 +1,5 @@
 name: Huisconfig
-version: "0.11.0"
+version: "0.12.0"
 slug: kruisschakelaars
 description: Configuratie van het huis in blokken (schakelaars en lampen over ESP-NOW en Home Assistant, timers, tijd- en logicamodules)
 url: https://github.com/jorissynaeve/valevinagre_kruisschakelaar
@@ -28,6 +28,7 @@ options:
   mqtt_password: ""
   ha_url: ""
   ha_token: ""
+  link_port: 47490
   log_level: info
 schema:
   network_key: password?
@@ -42,4 +43,5 @@ schema:
   mqtt_password: password?
   ha_url: str?
   ha_token: password?
+  link_port: port?
   log_level: list(debug|info|warning|error)?

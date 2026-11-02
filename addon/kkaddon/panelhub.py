@@ -107,7 +107,7 @@ class _Env:
 
     def _live(self) -> _cards.Live:
         h = self.hub
-        return _cards.Live(h.engine.model, h.engine, h.tuya, h.ha.states.get)
+        return _cards.Live(h.engine.model, h.engine, h.tuya, h.ha.states.get, h.linkhub)
 
     def dynamic(self, entity: str, lang: str):
         return self._live().value(entity, lang)
@@ -122,6 +122,7 @@ class PanelHub(asyncio.DatagramProtocol):
                  clock: Callable[[], float] = time.monotonic, tuya=None) -> None:
         self.data_dir, self.ha, self.engine = data_dir, ha, engine
         self.tuya = tuya  # TuyaHub, voor de laadpaalkaart; kan later gezet worden
+        self.linkhub = None  # LinkHub: lampen en laders van andere installaties op een kaart
         self.port, self.panel_port, self._clock = port, panel_port, clock
         self.links: dict[str, Link] = {}
         self.forecasts: dict[str, list[dict]] = {}

@@ -17,6 +17,7 @@ import re
 from collections import Counter
 
 from . import cards as _cards
+from .link import split_ref
 from .logic import MODULE_TYPES, SPRINKLER_INPUTS, disable_ref
 from .model import MAX_SWITCH_GANGS, Model, ModelError, panel_relay_entity
 from .proto import is_virtual
@@ -167,13 +168,37 @@ def _panel_blocks(model: Model, snap: dict) -> list[dict]:
     return out
 
 
-def _card_item(model: Model, it: dict, by_key: dict) -> dict:
+def _remote_obj(snap: dict, ref: str) -> tuple[dict, dict] | None:
+    """(installatie, object) uit de status van de koppelingen, voor `r:<installatie>:<object>`."""
+    hit = split_ref(ref or "")
+    p = (snap.get("links") or {}).get("remote", {}).get(hit[0]) if hit else None
+    o = p["objects"].get(hit[1]) if p else None
+    return (p, o) if o else None
+
+
+def _remote_blocks(snap: dict) -> list[dict]:
+    """Wat andere installaties delen: alleen-lezen, te bedienen, en aan een kaart te hangen. Instellen gebeurt bij de eigenaar."""
+    out = []
+    for pid, p in ((snap.get("links") or {}).get("remote") or {}).items():
+        for obj, o in sorted(p["objects"].items()):
+            pts = [x for x in o.get("points") or [] if not x.get("hide") and not x.get("diag")]
+            lamp = o.get("kind") == "lamp"
+            out.append({"key": f"r:{pid}:{obj}", "kind": "remote", "source": "remote", "sub": o.get("kind"), "peer": pid, "peerName": p["name"], "obj": obj,
+                        "name": o.get("name") or obj, "tech": f"{p['name']} · {obj}", "alias": "", "room": "", "online": bool(p["online"] and o.get("online")),
+                        "linked": p["online"], "on": o.get("on"), "held": bool(o.get("held")), "points": pts, "rows": 1 if lamp else max(len(pts), 1)})
+    return out
+
+
+def _card_item(model: Model, it: dict, by_key: dict, snap: dict) -> dict:
     """Een knop van een kaart, met wat het blok erover laat zien."""
     ref, ent = it.get("ref"), it.get("entity")
     target = label = None
     if ref and ref.startswith("c:"):
         c = model.cards.get(ref[2:])
         target, label = ref, (f"→ {c['name']}" if c else "subpagina weg")
+    elif ref and ref.startswith("r:"):
+        hit = _remote_obj(snap, ref)
+        target, label = (ref if hit else None), (f"{hit[1].get('name')} ({hit[0]['name']})" if hit else "lamp van een andere installatie, weg")
     elif ref:
         name = _cards.lamp_name(model, ref)
         target, label = (ref if ref in by_key else None), name or "lamp weg"
@@ -189,11 +214,12 @@ def _card_blocks(model: Model, snap: dict, lamps: set[str]) -> list[dict]:
         b = {**c, "key": f"c:{cid}", "id": cid, "kind": "card", "source": "card", "tech": f"Kaart · {_cards.TYPES[c['type']]}", "alias": "", "room": "",
              "online": True, "users": _cards.users(model, cid)}
         if c["type"] == "grid":
-            b["items"] = [_card_item(model, it, lamps) for it in c["items"]]
+            b["items"] = [_card_item(model, it, lamps, snap) for it in c["items"]]
             b["rows"] = len(c["items"]) + (1 if len(c["items"]) < _cards.MAX_ITEMS[c["layout"]] else 0)
         elif c["type"] == "charger":
-            t = tuya.get(c["tuya"])
-            b["device"] = {"key": f"y:{t['id']}", "name": t["name"], "online": t["online"]} if t else None
+            t, r = tuya.get(c["tuya"]), _remote_obj(snap, c["tuya"])
+            b["device"] = ({"key": f"y:{t['id']}", "name": t["name"], "online": t["online"]} if t
+                           else {"key": c["tuya"], "name": f"{r[1].get('name')} ({r[0]['name']})", "online": bool(r[0]["online"] and r[1].get("online"))} if r else None)
             b["rows"] = 2
         elif c["type"] == "power":
             b["rows"] = max(len(c["items"]), 1)
@@ -247,7 +273,8 @@ def view(model: Model, snap: dict) -> dict:
     owners = _gang_owners(model, snap)
     lamps = _lamp_blocks(model, snap, owners)
     blocks = (_switch_blocks(model, snap, owners, states) + lamps + _timer_blocks(snap) + _module_blocks(snap) + _sprinkler_blocks(snap) + _panel_blocks(model, snap)
-              + _screen_blocks(snap) + _tuya_blocks(snap) + _card_blocks(model, snap, {b["key"] for b in lamps}))
+              + _screen_blocks(snap) + _tuya_blocks(snap) + _remote_blocks(snap))
+    blocks += _card_blocks(model, snap, {b["key"] for b in lamps})
     names = {b["key"]: b for b in blocks if b["kind"] in ("switch", "panel", "tuya")}
     for b in blocks:
         for c in b.get("inputs", []) + b.get("outputs", []):
@@ -456,7 +483,7 @@ def _height(b: dict) -> int:
         return HEAD + max(len(b["ports"]), len(b["zones"])) * ROW + FOOT
     if b["kind"] == "module":
         return HEAD + max(len(b["ports"]), 1) * ROW + FOOT
-    if b["kind"] == "card":
+    if b["kind"] in ("card", "remote"):
         return HEAD + b["rows"] * ROW + FOOT
     if b["kind"] == "panel":
         return HEAD + (len(b["gangs"]) + len(b["cards"]) + 1) * ROW + FOOT

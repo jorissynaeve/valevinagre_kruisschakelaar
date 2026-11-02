@@ -155,6 +155,7 @@ function viewSettings() {
     <div class="scroll"><table><thead><tr><th>Adres</th><th>Frames</th><th>Laatst</th></tr></thead><tbody>${peers}</tbody></table></div>
     <p class="sub">Peer-id van deze add-on: ${S.peer_id} (0x${S.peer_id.toString(16)}). ${S.mqtt.error ? `MQTT-fout: ${esc(S.mqtt.error)}` : ''}</p>
     <p class="sub">Home Assistant (externe apparaten): ${S.ha.connected ? 'verbonden' : S.ha.enabled ? `niet verbonden${S.ha.error ? ` (${esc(S.ha.error)})` : ''}` : 'niet ingesteld (nodig voor Tuya en andere HA-entiteiten)'}.</p>
+    <div id="linkbox">${viewLinks()}</div>
     <h2>Kringen</h2>
     <p class="sub">Importeer je oude AppDaemon-kringen: ze komen uitgeschakeld binnen en staan daarna als lampen op het schema. Zet een lamp daar <b>Actief</b> en dezelfde kring <b>in AppDaemon uit</b>, anders werken ze elkaar tegen.</p>
     <div class="row"><button class="btn" data-grp="import">AppDaemon-YAML importeren</button>
@@ -179,6 +180,7 @@ function render() {
     if (!$('#scsvg')) { $('#main').innerHTML = viewSchema(); SC.lastPanel = ''; }
     schemaUpdate();
   } else if (tab !== 'settings' || !$('#keybox')) $('#main').innerHTML = { nodes: viewNodes, log: viewLog, settings: viewSettings }[tab]();
+  else linksUpdate(); // de rest van Instellingen blijft staan, de verbindingen niet
   if (L) refreshPicks();
 }
 

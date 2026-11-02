@@ -32,5 +32,8 @@ configuration:
   ha_token:
     name: HA-token (alleen buiten Home Assistant)
     description: Long-lived access token.
+  link_port:
+    name: Poort voor koppelingen
+    description: TCP-poort waarop andere Huisconfig-installaties (in een ander subnet) verbinden. Zet hem open tussen de subnetten. Sleutel en adressen stel je in op het tabblad Instellingen.
   log_level:
     name: Logniveau
