@@ -160,7 +160,8 @@ entiteiten komen via MQTT in HA, dus de Mosquitto-broker en de MQTT-integratie z
 * **Eén verbinding**: veel toestellen laten maar één lokale verbinding toe. Haal een toestel eerst uit LocalTuya en sluit de SmartLife-app als het niet verbindt.
 * **IP-adres, automatisch**: Tuya-toestellen melden zich elke paar seconden met een UDP-broadcast (poort 6666 en 6667) en de add-on luistert
   mee. Toestellen die nog geen blok hebben, staan in de zijbalk onder *Op het netwerk gevonden*: kies er een en device-id en IP staan
-  ingevuld. Een leeg IP vult de add-on zelf in; krijgt een toestel van DHCP een ander adres, dan neemt hij het nieuwe over zolang hij het
+  ingevuld. Wat zich ooit meldde, onthoudt de add-on (30 dagen, in `/data/tuya.json`): een nieuw blok krijgt dan meteen het IP,
+  zonder op de volgende broadcast te wachten. Een leeg IP vult de add-on zelf in; krijgt een toestel van DHCP een ander adres, dan neemt hij het nieuwe over zolang hij het
   oude niet bereikt. Een vast IP via een DHCP-reservering blijft het betrouwbaarst. Broadcasts komen niet over routers of VLAN's heen.
 * De sleutels en het Access Secret staan in `/data/tuya.json`: ze zitten in de HA-back-up, niet in *Exporteer configuratie*. Op armv7 is deze functie niet beschikbaar.
 

@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 from . import discovery as d
@@ -83,6 +84,10 @@ FEYREE_PID = "zk1jkjhxqkfaaalp"
 PRODUCTS = {FEYREE_PID: ("Feyree EV-lader", FEYREE)}
 OLD_PROFILES = {"feyree": FEYREE_PID}  # tot 0.10.5 koos je dit zelf
 CLOUD_ID_RE = re.compile(r"^[A-Za-z0-9]{10,64}$")
+FOUND_MAX = 256
+FOUND_KEEP = 30 * 86400  # s: wat zo lang niet meer gemeld is, vergeten we
+FOUND_SAVE = 3600  # s: "laatst gezien" hoeft niet bij elke broadcast naar schijf
+LIVE = 120  # s: zo recent gemeld telt als nu op het netwerk
 
 
 def parse_model(text: str) -> dict:
@@ -119,7 +124,8 @@ class TuyaHub:
         self.devices: dict[str, dict] = {}
         self.cloud: dict = {"id": "", "secret": "", "region": "eu"}
         self.cloud_base: str | None = None  # alleen voor tests
-        self.found: dict[str, dict] = {}  # device-id -> {"ip", "version"}, uit de broadcasts
+        self.found: dict[str, dict] = {}  # device-id -> {"ip", "version", "seen"}, uit de broadcasts, bewaard over herstarts
+        self._found_saved: dict[str, float] = {}
         self._udp: list = []
         self.clients: dict[str, TuyaClient] = {}
         self.values: dict[str, dict] = {}
@@ -139,6 +145,11 @@ class TuyaHub:
                 old = dev.pop("profile", "")
                 if old in OLD_PROFILES and not dev.get("product"):
                     dev["product"] = OLD_PROFILES[old]
+            now = time.time()
+            for k, v in (raw.get("found") or {}).items():
+                if isinstance(v, dict) and ID_RE.match(k) and HOST_RE.match(str(v.get("ip") or "")) and isinstance(v.get("seen"), (int, float)) and now - v["seen"] < FOUND_KEEP:
+                    self.found[k] = {"ip": v["ip"], "version": v.get("version") if v.get("version") in VERSIONS else "", "seen": v["seen"]}
+                    self._found_saved[k] = v["seen"]
         except FileNotFoundError:
             pass
         except (ValueError, OSError, AttributeError) as e:
@@ -148,7 +159,7 @@ class TuyaHub:
         tmp = self.path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"devices": self.devices, "cloud": self.cloud}, f, ensure_ascii=False, indent=1)
+            json.dump({"devices": self.devices, "cloud": self.cloud, "found": self.found}, f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.path)
 
     # ------------------------------------------------------------ toestellen
@@ -170,14 +181,18 @@ class TuyaHub:
         if dev.get("version") not in VERSIONS:
             raise ModelError("versie moet auto, 3.3, 3.4 of 3.5 zijn")
 
-    @staticmethod
-    def _fields(dev: dict, b: dict) -> dict:
+    def _fields(self, dev: dict, b: dict) -> dict:
         new = dict(dev)
         for k in ("name", "device_id", "host", "version"):
             if k in b:
                 new[k] = str(b[k] or "").strip()
         if new.get("device_id") != dev.get("device_id"):
             new["product"] = ""  # een ander toestel: wat de cloud over het vorige zei, geldt niet meer
+        known = self.found.get(new.get("device_id") or "")
+        if known and not new.get("host"):  # al eens gemeld: niet wachten op de volgende broadcast
+            new["host"] = known["ip"]
+            if new.get("version") == "auto" and known["version"]:
+                new["version"] = known["version"]
         if b.get("key"):  # leeg bij bewerken: de sleutel blijft
             new["key"] = str(b["key"])
         if b.get("model"):
@@ -299,8 +314,17 @@ class TuyaHub:
         if not ID_RE.match(tid):
             return
         ip = found["ip"] if HOST_RE.match(found["ip"]) else src
-        new = tid not in self.found or self.found[tid]["ip"] != ip
-        self.found[tid] = {"ip": ip, "version": found["version"] if found["version"] in VERSIONS else ""}
+        version = found["version"] if found["version"] in VERSIONS else ""
+        now = time.time()
+        old = self.found.get(tid)
+        new = not old or old["ip"] != ip or old["version"] != version
+        was_live = bool(old) and now - old["seen"] < LIVE
+        self.found[tid] = {"ip": ip, "version": version, "seen": now}
+        if len(self.found) > FOUND_MAX:
+            del self.found[min(self.found, key=lambda k: self.found[k]["seen"])]
+        if new or now - self._found_saved.get(tid, 0) > FOUND_SAVE:
+            self._found_saved[tid] = now
+            self._save()
         for did, dev in self.devices.items():
             if dev.get("device_id") != tid or dev.get("host") == ip or (dev.get("host") and self._online(did)):
                 continue
@@ -310,12 +334,16 @@ class TuyaHub:
                 upd["version"] = self.found[tid]["version"]
             self._apply(did, upd)
             return
-        if new:
+        if new or not was_live:
             self._poke()
+
+    def _shown_found(self, tid: str) -> dict | None:
+        f = self.found.get(tid)
+        return f and {"id": tid, "ip": f["ip"], "version": f["version"], "seen": int(f["seen"]), "live": time.time() - f["seen"] < LIVE}
 
     def _unclaimed(self) -> list[dict]:
         used = {dev.get("device_id") for dev in self.devices.values()}
-        return [{"id": k, **v} for k, v in sorted(self.found.items(), key=lambda x: x[1]["ip"]) if k not in used]
+        return [self._shown_found(k) for k, v in sorted(self.found.items(), key=lambda x: x[1]["ip"]) if k not in used]
 
     def _start(self, did: str) -> None:
         dev = self.devices[did]
@@ -388,7 +416,7 @@ class TuyaHub:
                         "product": PRODUCTS[dev["product"]][0] if dev.get("product") in PRODUCTS else "", "has_key": bool(dev.get("key")), "configured": self._complete(dev),
                         "has_model": bool(dev.get("defs")) or dev.get("product") in PRODUCTS, "online": self._online(did), "error": c.last_error if c else "",
                         "points": points, "available": CRYPTO, "cloud": {"id": self.cloud["id"], "region": self.cloud["region"], "has_secret": bool(self.cloud["secret"])},
-                        "found": self.found.get(dev.get("device_id") or ""), "unclaimed": self._unclaimed()})
+                        "found": self._shown_found(dev.get("device_id") or ""), "unclaimed": self._unclaimed()})
         return out
 
     @staticmethod

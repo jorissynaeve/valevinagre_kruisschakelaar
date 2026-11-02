@@ -658,3 +658,22 @@ def test_listener_hears_a_real_datagram():
                 t.close()
         assert got == [(DEV, "127.0.0.1")]
     asyncio.run(go())
+
+
+def test_found_devices_are_remembered_and_fill_in_a_new_block(tmp_path):
+    async def go():
+        hub = TuyaHub(tmp_path, Rig(tmp_path).engine)
+        hub.on_broadcast({"id": DEV, "ip": "192.168.8.26", "version": "3.4", "product": ""}, "192.168.8.26")
+        hub.close()
+        raw = json.loads((tmp_path / "tuya.json").read_text(encoding="utf-8"))
+        raw["found"][DEV[:-1] + "o"] = {"ip": "192.168.8.40", "version": "", "seen": 1}  # lang geleden: vergeten
+        (tmp_path / "tuya.json").write_text(json.dumps(raw), encoding="utf-8")
+
+        hub = TuyaHub(tmp_path, Rig(tmp_path).engine)
+        assert list(hub.found) == [DEV]
+        u = hub._unclaimed()
+        assert [(f["id"], f["ip"], f["live"]) for f in u] == [(DEV, "192.168.8.26", True)]
+        did = hub.add({"name": "Lader", "device_id": DEV, "key": KEY.decode()})
+        assert hub.devices[did]["host"] == "192.168.8.26" and hub.devices[did]["version"] == "3.4" and did in hub.clients, "zonder op een broadcast te wachten"
+        hub.close()
+    asyncio.run(go())
