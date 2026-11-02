@@ -300,9 +300,43 @@ def test_other_device_types_get_their_own_ports(tmp_path):
         hub._on_dps(b, {"9": 120})
         hub._on_dps(c, {"5": 1})
         blocks = {x["key"]: x for x in schema.view(r.model, r.engine.snapshot())["blocks"]}
-        assert [p["name"] for p in blocks[f"y:{a}"]["pin"]] == ["switch_1"] and not blocks[f"y:{a}"]["pout"]
+        assert not blocks[f"y:{a}"]["pin"] and not blocks[f"y:{a}"]["pout"]  # een relais is een gang, geen instelling
+        assert [(g["label"], g["touch"], g["relay"], g["on"]) for g in blocks[f"y:{a}"]["gangs"]] == [("switch_1", True, True, True)]
         assert [p["name"] for p in blocks[f"y:{b}"]["pout"]] == ["power"] and not blocks[f"y:{b}"]["pin"]
         assert [p["name"] for p in blocks[f"y:{c}"]["pout"]] == ["Datapunt 5"] and not blocks[f"y:{c}"]["pin"]  # zonder datamodel: alleen lezen
+    asyncio.run(go())
+
+
+FOUR_GANG = {"services": [{"properties": [
+    *({"abilityId": n, "code": f"switch_{n}", "accessMode": "rw", "typeSpec": {"type": "bool"}} for n in range(1, 5)),
+    {"abilityId": 7, "code": "countdown_1", "accessMode": "rw", "typeSpec": {"type": "value", "min": 0, "max": 86400, "scale": 0}},
+    {"abilityId": 16, "code": "switch_backlight", "accessMode": "rw", "typeSpec": {"type": "bool"}},
+]}]}
+
+
+def test_relays_of_a_wall_switch_are_gangs_that_wire_to_a_lamp(tmp_path):
+    async def go():
+        r = Rig(tmp_path)
+        hub = TuyaHub(tmp_path, r.engine)
+        did = hub.add({"name": "Buitenkeuken", "model": json.dumps(FOUR_GANG)})
+        hub._on_dps(did, {"1": True, "2": False, "3": False, "4": False, "7": 0, "16": True})
+        b = {x["key"]: x for x in schema.view(r.model, r.engine.snapshot())["blocks"]}[f"y:{did}"]
+        assert b["nrelay"] == 4 and [g["entity"] for g in b["gangs"][:4]] == [f"switch.kk_tuya_{did}_{n}" for n in range(1, 5)]
+        assert all(g["touch"] and g["relay"] for g in b["gangs"][:4]) and not any(g["touch"] or g["relay"] for g in b["gangs"][4:])
+        assert [p["name"] for p in b["pin"]] == ["countdown_1", "switch_backlight"], "de backlight is geen relais"
+        assert len(b["gangs"]) == 6
+        disc = hub.discovery()
+        assert all(f"homeassistant/switch/kk_tuya_{did}_{n}/config" in disc for n in range(1, 5)), "dezelfde entiteit als in HA"
+
+        gid = r.model.add_group("Spots")
+        schema.wire(r.model, r.engine, f"g:{gid}", "in", {"entity": f"switch.kk_tuya_{did}_1"})
+        schema.wire(r.model, r.engine, f"g:{gid}", "out", {"entity": f"switch.kk_tuya_{did}_2"})
+        lamp = {x["key"]: x for x in schema.view(r.model, r.engine.snapshot())["blocks"]}[f"g:{gid}"]
+        assert [(c["sw"], c["gang"], c["swName"]) for c in lamp["inputs"]] == [(f"y:{did}", 0, "Buitenkeuken")]
+        assert [(c["sw"], c["gang"]) for c in lamp["outputs"]] == [(f"y:{did}", 1)]
+        res = schema.convert(r.model, r.engine.snapshot, [])
+        assert res["switches"] == 0 and not r.model.schema["switches"], "geen tweede HA-blok voor dezelfde relais"
+        hub.close()
     asyncio.run(go())
 
 

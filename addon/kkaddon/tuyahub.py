@@ -284,7 +284,7 @@ class TuyaHub:
                 scale = de.get("scale") or 0
                 # instelbaar is alleen wat `convert` ook echt toelaat: raw of een getal zonder grenzen niet
                 rw = de.get("access") == "rw" and not de.get("hide") and (de.get("type") == "bool" or (de.get("type") == "enum" and bool(de.get("options"))) or (de.get("type") == "value" and de.get("min") is not None and de.get("max") is not None))
-                points.append({"dp": dp, "name": de.get("name") or f"Datapunt {dp}", "value": self._shown(de, v), "unit": de.get("unit", ""), "rw": rw, "hide": bool(de.get("hide")) or de.get("type") == "raw", "diag": bool(de.get("diag")),
+                points.append({"dp": dp, "code": de.get("code") or "", "name": de.get("name") or f"Datapunt {dp}", "value": self._shown(de, v), "unit": de.get("unit", ""), "rw": rw, "hide": bool(de.get("hide")) or de.get("type") == "raw", "diag": bool(de.get("diag")),
                                "type": de.get("type") or "", "options": de.get("options") or [],
                                "min": de["min"] / 10 ** scale if rw and de.get("min") is not None else None, "max": de["max"] / 10 ** scale if rw and de.get("max") is not None else None, "step": 1 / 10 ** scale})
             out.append({"id": did, "name": dev["name"], "device_id": dev.get("device_id", ""), "host": dev.get("host", ""), "version": c.version if c else dev.get("version"), "profile": dev.get("profile", ""),

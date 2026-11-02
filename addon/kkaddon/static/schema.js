@@ -22,6 +22,7 @@ const clampN = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const SC_WIRES = false; // voorlopig geen lijnen: elke verbinding is een verwijzing, ook binnen een ruimte
 const SC_MARGIN = 200; // links van x=0: de verwijzingen en draden aan de touch-kant
 
+const SC_GANGED = ['switch', 'panel', 'tuya']; // blokken met gangen: per gang een touch en een relais
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
 const scW = (b) => (b.kind === 'lamp' ? LAMP_W : b.kind === 'tuya' ? TUYA_W : SW_W);
@@ -80,13 +81,9 @@ function scSwitch(b, tags) {
   const type = scType(b), sub = SC_TYPE_NL[type];
   const rows = b.gangs.map((g) => {
     const y = rowY(b, g.i);
-    const st = g.on === true ? 'on' : g.on === null ? 'unknown' : '';
     return `<line class="bkrule" x1="${b.x}" x2="${b.x + SW_W}" y1="${y - SC_ROW / 2}" y2="${y - SC_ROW / 2}"/>
       <text class="bkt" x="${b.x + SW_W / 2}" y="${y + 4}" text-anchor="middle">${esc(scCut(g.label, g.touch || g.relay ? 18 : 34))}</text>
-      ${g.touch ? `<circle class="pt tou" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="touch" data-g="${g.i}"><title>Touch: geeft de druk door (ingang)</title></circle><text class="ptl" x="${b.x + 11}" y="${y + 4}">touch</text>` : ''}
-      ${g.relay ? `<circle class="pt rel ${st}" cx="${b.x + SW_W}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="relay" data-g="${g.i}"><title>Relais: wordt geschakeld (uitgang)</title></circle><text class="ptl" x="${b.x + SW_W - 11}" y="${y + 4}" text-anchor="end">relais</text>` : ''}
-      ${(tags.get(`${b.key}|${g.i}|in`) || []).map((t, n) => `<text class="stub" x="${b.x - 11}" y="${y + 4 + n * 13}" text-anchor="end" data-sc="go" data-k="${esc(t.key)}">${esc(scCut(t.text, 28))} ←<title>${esc(t.text)}</title></text>`).join('')}
-      ${(tags.get(`${b.key}|${g.i}|out`) || []).map((t, n) => `<text class="stub" x="${b.x + SW_W + 11}" y="${y + 4 + n * 13}" data-sc="go" data-k="${esc(t.key)}">→ ${esc(scCut(t.text, 28))}<title>${esc(t.text)}</title></text>`).join('')}`;
+      ${scGangPorts(b, g, SW_W, tags)}`;
   }).join('');
   return `<g class="bk sw t-${type} ${sel ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
@@ -144,9 +141,23 @@ function scLamp(b) {
 
 const scTyValue = (p) => `${p.value === true ? 'aan' : p.value === false ? 'uit' : p.value}${p.unit ? ` ${p.unit}` : ''}`;
 
-function scTuya(b) { // links wat je kunt instellen, rechts wat het toestel meldt. Nog geen draden: de poorten tonen alleen wat er is
-  const row = (p, i, left) => {
-    const y = rowY(b, i), x = left ? b.x + 11 : b.x + TUYA_W - 11;
+function scGangPorts(b, g, w, tags) { // touch links, relais rechts, en de verwijzingen naar de lampen ernaast
+  const y = rowY(b, g.i);
+  const st = g.on === true ? 'on' : g.on === null ? 'unknown' : '';
+  return `${g.touch ? `<circle class="pt tou" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="touch" data-g="${g.i}"><title>Touch: geeft de druk door (ingang)</title></circle><text class="ptl" x="${b.x + 11}" y="${y + 4}">touch</text>` : ''}
+    ${g.relay ? `<circle class="pt rel ${st}" cx="${b.x + w}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="relay" data-g="${g.i}"><title>Relais: wordt geschakeld (uitgang)</title></circle><text class="ptl" x="${b.x + w - 11}" y="${y + 4}" text-anchor="end">relais</text>` : ''}
+    ${(tags.get(`${b.key}|${g.i}|in`) || []).map((t, n) => `<text class="stub" x="${b.x - 11}" y="${y + 4 + n * 13}" text-anchor="end" data-sc="go" data-k="${esc(t.key)}">${esc(scCut(t.text, 28))} ←<title>${esc(t.text)}</title></text>`).join('')}
+    ${(tags.get(`${b.key}|${g.i}|out`) || []).map((t, n) => `<text class="stub" x="${b.x + w + 11}" y="${y + 4 + n * 13}" data-sc="go" data-k="${esc(t.key)}">→ ${esc(scCut(t.text, 28))}<title>${esc(t.text)}</title></text>`).join('')}`;
+}
+
+function scTuya(b, tags) { // bovenaan de relais (touch en relais, zoals een schakelaar); daaronder links wat je kunt instellen, rechts wat het toestel meldt
+  const relays = b.gangs.slice(0, b.nrelay).map((g) => {
+    const y = rowY(b, g.i);
+    return `<line class="bkrule" x1="${b.x}" x2="${b.x + TUYA_W}" y1="${y - SC_ROW / 2}" y2="${y - SC_ROW / 2}"/>
+      <text class="bkt" x="${b.x + TUYA_W / 2}" y="${y + 4}" text-anchor="middle">${esc(scCut(g.label, 30))}</text>${scGangPorts(b, g, TUYA_W, tags)}`;
+  }).join('');
+  const row = (p, n, left) => {
+    const i = n + b.nrelay, y = rowY(b, i), x = left ? b.x + 11 : b.x + TUYA_W - 11;
     const tip = `${p.name}: ${scTyValue(p)}${left ? ' (instellen in de zijbalk)' : ''}`;
     return `<circle class="ptv ${left ? 'tou' : 'rel'}" cx="${left ? b.x : b.x + TUYA_W}" cy="${y}" r="5"><title>${esc(tip)}</title></circle>
       <text class="bkt" x="${x}" y="${y + 4}" ${left ? '' : 'text-anchor="end"'}><title>${esc(tip)}</title>${esc(scCut(p.name, left ? 17 : 21))} <tspan class="tyv">${esc(scCut(scTyValue(p), left ? 14 : 12))}</tspan></text>`;
@@ -157,7 +168,7 @@ function scTuya(b) { // links wat je kunt instellen, rechts wat het toestel meld
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 44))}</text>
     <text class="bks" x="${b.x + 12}" y="${b.y + 34}">${esc(SC_TYPE_NL.tuya)}${b.online ? '' : ' · offline'}</text>
     ${b.note ? `<text class="bkt" x="${b.x + TUYA_W / 2}" y="${rowY(b, 0) + 4}" text-anchor="middle">${esc(b.note)}</text>` : ''}
-    ${b.pin.map((p, i) => row(p, i, true)).join('')}${b.pout.map((p, i) => row(p, i, false)).join('')}</g>`;
+    ${relays}${b.pin.map((p, i) => row(p, i, true)).join('')}${b.pout.map((p, i) => row(p, i, false)).join('')}</g>`;
 }
 
 function scTimer(b) {
@@ -222,7 +233,7 @@ function scModule(b) {
 
 function scGangOf(entity) { // welk relais van welk schakelaar-blok hoort bij deze entiteit
   for (const s of scBlocks()) {
-    if (s.kind !== 'switch' && s.kind !== 'panel') continue;
+    if (!SC_GANGED.includes(s.kind)) continue;
     const g = s.gangs.find((x) => x.entity === entity);
     if (g) return { s, g };
   }
@@ -338,6 +349,7 @@ function scTuyaPanel(b, props) {
   const controls = b.points.filter((p) => p.rw && !p.hide).map((p) => `<label>${esc(p.name)}${p.unit ? ` (${esc(p.unit)})` : ''}</label>${control(p)}`).join('');
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scTuyaState(b))}</span></div>
     ${props}
+    ${b.nrelay ? `<h2>Relais</h2>${scGangRows(b)}<div class="sub">Sleep een <b>touch</b> naar de ingang van een lamp, of een <b>relais</b> naar de uitgang. De knop op het toestel schakelt altijd zijn eigen relais; staat de touch op een lamp, dan volgt de rest van die lamp mee.</div>` : ''}
     ${controls ? `<h2>Bedienen</h2>${controls}<div class="sub">Een wijziging gaat meteen naar het toestel.</div>` : ''}
     <h2>Toestel</h2>
     <label>Device-id</label><input type="text" maxlength="40" data-tyfield="device_id" spellcheck="false" autocomplete="off" value="${esc(b.device_id)}">
@@ -495,7 +507,7 @@ function scInner(list) {
   }
   const shown = new Set(list.map((b) => b.key));
   const wires = !SC_WIRES ? '' : conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
-  const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b) : b.kind === 'tuya' ? scTuya(b) : scSwitch(b, tags))).join('');
+  const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b) : b.kind === 'tuya' ? scTuya(b, tags) : scSwitch(b, tags))).join('');
   return `<g class="wires">${wires}</g>${blocks}<path id="sctemp" class="wire temp"/>`; // draden onder de blokken: anders liggen ze over de poorten
 }
 
@@ -530,7 +542,7 @@ function scPortPos(p) {
   if (b.kind === 'module') return p.role === 'min' ? [b.x, rowY(b, +p.i)] : [b.x + SW_W, rowY(b, 0)];
   if (p.role === 'disable') return [b.x, rowY(b, scRows(b) - 1)];
   if (p.role === 'control') return [b.x, rowY(b, scRows(b) - 2)];
-  if (b.kind === 'switch' || b.kind === 'panel') return [p.role === 'relay' ? b.x + SW_W : b.x, rowY(b, +p.g)];
+  if (SC_GANGED.includes(b.kind)) return [p.role === 'relay' ? b.x + scW(b) : b.x, rowY(b, +p.g)];
   const n = p.role === 'in' ? b.inputs.length : b.outputs.length;
   return [p.role === 'in' ? b.x : b.x + LAMP_W, rowY(b, p.i === 'new' ? n : +p.i)];
 }
@@ -607,7 +619,7 @@ function scAddEntity(b, dir) { // aansluiten zonder schakelaar-blok
 function scAddSelect(b, dir) {
   if (dir === 'out' && b.source === 'node') return '';
   const taken = new Set((dir === 'in' ? b.inputs : b.outputs).map((c) => `${c.sw}|${c.gang}`));
-  const groups = scBlocks().filter((s) => s.kind === 'switch').map((s) => {
+  const groups = scBlocks().filter((s) => s.kind === 'switch' || s.kind === 'tuya').map((s) => {
     const gangs = s.gangs.filter((g) => !taken.has(`${s.key}|${g.i}`) && (dir === 'in' ? g.touch : g.relay) && (b.source !== 'ha' || g.entity));
     return gangs.length ? `<optgroup label="${esc(s.name)}">${gangs.map((g) => `<option value="${esc(s.key)}|${g.i}">${esc(g.label)}</option>`).join('')}</optgroup>` : '';
   }).join('');
@@ -675,16 +687,20 @@ function scConnSelect(s, g) { // een verwijzing maken vanaf de schakelaar: de la
   return `<select data-scconn="${esc(s.key)}|${g.i}"><option value="">+ verbinden met een lamp…</option><optgroup label="Touch als ingang">${opt('in')}</optgroup><optgroup label="Relais als uitgang">${opt('out')}</optgroup></select>`;
 }
 
-function scSwitchPanel(b, pages) {
+function scGangRows(b) { // per gang: waar hij op aangesloten is, en een keuze om er een lamp bij te zetten
   const conns = scConns().filter((x) => x.sw && x.sw.key === b.key);
   const free = b.source === 'node' ? S.free_relays.filter((f) => f.node === b.node) : [];
-  const rows = b.gangs.map((g) => {
+  return b.gangs.filter((g) => g.touch || g.relay || b.kind !== 'tuya').map((g) => {
     const to = conns.filter((x) => x.c.gang === g.i);
     return `<div class="scc"><div><b>${esc(g.label)}</b>${g.entity ? `<div class="sub"><code>${esc(g.entity)}</code></div>` : ''}
       ${to.map((x) => `<div class="sub"><a href="#" data-sc="go" data-k="${esc(x.lamp.key)}">${x.dir === 'in' ? 'touch →' : 'relais ←'} ${esc(x.lamp.name)}</a></div>`).join('') || '<div class="sub">niet aangesloten</div>'}
       ${scConnSelect(b, g)}
       ${free.some((f) => f.relay === g.i) ? `<button class="btn small" data-act="addlight" data-n="${b.node}" data-r="${g.i}">Als lamp toevoegen</button>` : ''}</div></div>`;
   }).join('');
+}
+
+function scSwitchPanel(b, pages) {
+  const rows = scGangRows(b);
   const tail = b.source === 'ha'
     ? `<button class="btn small" data-sc="editswitch" data-id="${esc(b.id)}">Bewerken</button><button class="btn small danger" data-sc="delswitch" data-id="${esc(b.id)}">Blok verwijderen</button>`
     : b.source === 'virtual' ? `<button class="btn small" data-act="vedit" data-n="${b.node}">Bewerken</button>`
@@ -807,7 +823,7 @@ async function scWireLogic(a, b) { // van de uitgang van een timer of module naa
 async function scWireZone(a, b) { // van een zone van een sprinkler naar een relais
   const zone = a.role === 'zout' ? a : b, rel = zone === a ? b : a;
   const sp = scBlock(zone.b), sw = scBlock(rel.b);
-  if ((sw.kind !== 'switch' && sw.kind !== 'panel') || rel.role !== 'relay') throw new Error('Een zone sluit je aan op het relais van een schakelaar.');
+  if (!SC_GANGED.includes(sw.kind) || rel.role !== 'relay') throw new Error('Een zone sluit je aan op het relais van een schakelaar.');
   const gang = sw.gangs[+rel.g];
   if (!gang.entity) throw new Error('Dit relais loopt niet via Home Assistant; een sprinkler kan het nog niet aansturen.');
   const zones = sp.zones.map((z, i) => (i === +zone.i ? { ...z, entity: gang.entity } : z));

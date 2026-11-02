@@ -26,6 +26,7 @@ HEAD, ROW, FOOT, GAP = 42, 24, 10, 24
 COL_IN, COL_LAMP, COL_OUT = 40, 460, 920
 GRID_X, GRID_STEP, GRID_COLS = 20, 600, 2  # een pagina zonder lampen (Centraal): een raster, met naast elk blok plaats voor de verwijzingen
 NOT_A_GANG = re.compile(r"(^|_)(led|leds|all|all_relays|status|backlight|buzzer)(_|$)")  # zoals in de import van app.js
+TUYA_RELAY = re.compile(r"^switch(_\d+)?$")
 NUMBER_END = re.compile(r"_?(?:relay|relais|gang|channel|ch|switch|lamp|light|output|r|l)?_?\d+$")
 
 
@@ -51,12 +52,18 @@ def _short_labels(entities: list[str]) -> dict[str, str]:
 # ---------------------------------------------------------------- van model naar blokken
 
 
-def _gang_owners(model: Model) -> dict[str, tuple[str, int]]:
-    """Entiteit -> (blok, gang). Een extern apparaat gaat voor: zo verhuist een gang vanzelf mee als je een toestel importeert."""
+def _tuya_owners(snap: dict) -> dict[str, tuple[str, int]]:
+    return {tuya_entity(t["id"], p["dp"]): (f"y:{t['id']}", i) for t in snap.get("tuya", []) for i, p in enumerate(_tuya_relays(t))}
+
+
+def _gang_owners(model: Model, snap: dict) -> dict[str, tuple[str, int]]:
+    """Entiteit -> (blok, gang). Een extern apparaat of Tuya-toestel gaat voor: zo verhuist een gang vanzelf mee als je een toestel importeert."""
     own: dict[str, tuple[str, int]] = {}
     for vid, gangs in model.virtual.items():
         for i, g in enumerate(gangs):
             own.setdefault(g["entity"], (f"n{vid}", i))
+    for e, o in _tuya_owners(snap).items():
+        own.setdefault(e, o)
     for sid, s in model.schema["switches"].items():
         for i, g in enumerate(s["gangs"]):
             own.setdefault(g["entity"], (f"d:{sid}", i))
@@ -161,26 +168,40 @@ def _screen_blocks(snap: dict) -> list[dict]:
             for s in snap.get("screens", [])]
 
 
+def _tuya_relays(t: dict) -> list[dict]:
+    """De relais van een Tuya-toestel: `switch` of `switch_<n>`, schrijfbaar aan/uit. Niet `switch_backlight` en dergelijke."""
+    return [p for p in t["points"] if p["rw"] and p["type"] == "bool" and not p["hide"] and TUYA_RELAY.match(p.get("code") or "")]
+
+
+def tuya_entity(did: str, dp: str) -> str:
+    return f"switch.kk_tuya_{did}_{dp}"  # zoals tuyahub.discovery hem aanmaakt
+
+
 def _tuya_blocks(snap: dict) -> list[dict]:
-    """Elk toestel zijn eigen poorten, uit zijn datamodel: links wat je kunt instellen, rechts wat het alleen meldt. Diagnose staat alleen in de zijbalk."""
+    """Elk toestel zijn eigen poorten, uit zijn datamodel. Bovenaan de relais, als gangen met een touch en een relais zoals bij een
+    schakelaar; daaronder links wat je kunt instellen, rechts wat het alleen meldt. Diagnose staat alleen in de zijbalk."""
     out = []
     for t in snap.get("tuya", []):
-        shown = [p for p in t["points"] if not p["hide"] and not p["diag"]]
+        relays = _tuya_relays(t)
+        shown = [p for p in t["points"] if not p["hide"] and not p["diag"] and p not in relays]
         pin = [p for p in shown if p["rw"]]
         pout = [p for p in shown if not p["rw"]]
-        rows = max(len(pin), len(pout), 1)
-        note = "" if shown else "Nog geen waarden" if t["configured"] else "Nog niet ingesteld"
+        gangs = [{"i": i, "label": p["name"], "entity": tuya_entity(t["id"], p["dp"]), "touch": True, "relay": True, "on": p["value"] if isinstance(p["value"], bool) else None}
+                 for i, p in enumerate(relays)]
+        rest = max(len(pin), len(pout), 0 if gangs else 1)
+        gangs += [{"i": len(gangs) + i, "label": "", "entity": None, "touch": False, "relay": False, "on": None} for i in range(rest)]
+        note = "" if relays or shown else "Nog geen waarden" if t["configured"] else "Nog niet ingesteld"
         out.append({**t, "key": f"y:{t['id']}", "kind": "tuya", "source": "tuya", "tech": "Tuya", "alias": "", "room": "", "pin": pin, "pout": pout, "note": note,
-                    "gangs": [{"i": i, "label": "", "entity": None, "touch": False, "relay": False, "on": None} for i in range(rows)]})
+                    "nrelay": len(relays), "gangs": gangs})
     return out
 
 
 def view(model: Model, snap: dict) -> dict:
     """Alles wat de pagina nodig heeft om het schema te tekenen."""
     states = {m["entity"]: m["on"] for g in snap["groups"] for m in g["members"]}
-    owners = _gang_owners(model)
+    owners = _gang_owners(model, snap)
     blocks = _switch_blocks(model, snap, owners, states) + _lamp_blocks(model, snap, owners) + _timer_blocks(snap) + _module_blocks(snap) + _sprinkler_blocks(snap) + _panel_blocks(snap) + _screen_blocks(snap) + _tuya_blocks(snap)
-    names = {b["key"]: b for b in blocks if b["kind"] in ("switch", "panel")}
+    names = {b["key"]: b for b in blocks if b["kind"] in ("switch", "panel", "tuya")}
     for b in blocks:
         for c in b.get("inputs", []) + b.get("outputs", []):
             sw = names.get(c["sw"])
@@ -347,11 +368,12 @@ def remove_switch(model: Model, sid: str) -> bool:
 # ---------------------------------------------------------------- het huidige omzetten
 
 
-def _new_switches(model: Model, devices: list[dict]) -> tuple[dict, dict]:
+def _new_switches(model: Model, devices: list[dict], snap: dict) -> tuple[dict, dict]:
     """Maakt een schakelaar-blok voor elke entiteit van een kring die er nog geen heeft. Uit het HA-apparatenregister,
     of (zonder register) op de naam van de entiteit. Geeft ook terug in welke ruimte elk nieuw blok hoort."""
     switches = copy.deepcopy(model.schema["switches"])
-    claimed = {g["entity"] for gs in model.virtual.values() for g in gs} | {g["entity"] for s in switches.values() for g in s["gangs"]}
+    claimed = ({g["entity"] for gs in model.virtual.values() for g in gs} | {g["entity"] for s in switches.values() for g in s["gangs"]}
+               | set(_tuya_owners(snap)))
     needed = [e for g in model.groups.values() for e in g["entities"] if e not in claimed]
     wanted = set(needed)
     rooms = {f"d:{_slug(str(d['id']))[:80]}": d.get("area") or "" for d in devices}  # ook van blokken die al bestaan
@@ -448,7 +470,7 @@ def convert(model: Model, engine_snapshot, devices: list[dict] | None = None, ar
     """Zet wat er nu is om naar blokken en pagina's. Raakt geen enkele schakeling, kan opnieuw (blokken die al staan
     blijven staan) en plaatst alleen wat iets doet: een los toestel zonder draden blijft in de lijst."""
     devices = devices or []
-    switches, rooms = _new_switches(model, devices)
+    switches, rooms = _new_switches(model, devices, engine_snapshot())
     added = len(switches) - len(model.schema["switches"])
     trial = copy.deepcopy(model.schema)
     trial["switches"] = switches
