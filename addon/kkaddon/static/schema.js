@@ -356,6 +356,9 @@ function scTuyaPanel(b, props) {
     <label>Device-id</label><input type="text" maxlength="40" data-tyfield="device_id" spellcheck="false" autocomplete="off" value="${esc(b.device_id)}">
     <label>IP-adres</label><input type="text" maxlength="253" data-tyfield="host" spellcheck="false" autocomplete="off" placeholder="${b.device_id ? 'wordt ingevuld zodra het toestel zich meldt' : '192.168.8.26'}" value="${esc(b.host)}">
     ${b.found && b.found.ip !== b.host ? `<div class="sub">Het toestel meldt zich op ${esc(b.found.ip)}.</div>` : ''}
+    ${b.device_id && !b.host && !b.found ? `<div class="sub">${b.listening.length
+    ? `Nog niet gehoord op het netwerk. De add-on luistert op UDP ${b.listening.join(', ')} en vraagt elke minuut wie er is; ${b.heard} toestel${b.heard === 1 ? '' : 'len'} bekend. Een toestel dat al verbonden is met LocalTuya of een andere koppeling meldt zich vaak niet: koppel het daar los, of vul het IP zelf in (in de router bij de DHCP-leases).`
+    : 'De add-on kan niet luisteren op UDP 6666, 6667 en 7000 (zie het logboek). Vul het IP zelf in.'}</div>` : ''}
     <div class="sub">Device-id: in de SmartLife-app → toestel → ✎ → <i>Apparaatinformatie</i> (<i>Virtuele ID</i>), of in het Tuya IoT Platform onder <i>Devices</i>.</div>
     <label>Local key</label><input type="password" maxlength="16" data-tyfield="key" autocomplete="new-password" placeholder="${b.has_key ? 'ingesteld, leeg laten om te behouden' : '16 tekens, of haal hem op uit de cloud'}">
     <label>Protocol</label><select data-tyfield="version">${opt('auto', b.version, 'automatisch zoeken')}${['3.5', '3.4', '3.3'].map((v) => opt(v, b.version, v)).join('')}</select>

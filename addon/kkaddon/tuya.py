@@ -211,15 +211,19 @@ def _json(o) -> bytes:
 
 # ------------------------------------------------------------ broadcasts op het LAN
 
-UDP_PORTS = (6666, 6667)  # 6666: oude toestellen, onversleuteld; 6667: 3.3 en hoger, met een vaste sleutel
+UDP_PORTS = (6666, 6667, 7000)  # 6666: oude toestellen, leesbaar; 6667: 3.3 en hoger; 7000: antwoorden op onze vraag
+APP_PORT = 7000  # hier vraagt de app wie er is: 3.5-toestellen melden zich vaak pas dan
+REQ_DEVINFO = 0x25
 UDP_KEY = hashlib.md5(b"yGAdlopoPVldABfn").digest()
 
 
 def parse_broadcast(data: bytes) -> dict | None:
-    """{"id", "ip", "version", "product"} uit de broadcast van een toestel, of None als het er geen is."""
+    """{"id", "ip", "version", "product"} uit de broadcast van een toestel, of None als het er geen is (ook onze eigen vraag)."""
     try:
-        if frame_length(data) != len(data):
+        n = frame_length(data)
+        if n is None or n > len(data):
             return None
+        data = data[:n]
         plain = data[:4] == P55 and b"{" in (data[HDR55:HDR55 + 1], data[HDR55 + 4:HDR55 + 5])
         if plain:  # 6666: leesbaar, eventueel achter een retourcode
             if struct.unpack(">I", data[-8:-4])[0] != binascii.crc32(data[:-8]) & 0xFFFFFFFF:
@@ -235,28 +239,58 @@ def parse_broadcast(data: bytes) -> dict | None:
     return {"id": j["gwId"], "ip": j["ip"], "version": str(j.get("version") or ""), "product": str(j.get("productKey") or "")}
 
 
+def discovery_request(local_ip: str) -> bytes:
+    """De vraag die de app op UDP 7000 broadcast; toestellen antwoorden met hun gegevens. Zoals tinytuya het doet."""
+    payload = _json({"from": "app", "ip": local_ip})
+    iv = os.urandom(12)
+    hdr = P66 + struct.pack(">HIII", 0, 0, REQ_DEVINFO, 12 + len(payload) + 16)
+    return hdr + iv + AESGCM(UDP_KEY).encrypt(iv, payload, hdr[4:]) + S66
+
+
+def local_ip() -> str:
+    """Het eigen adres op het LAN (een UDP-'verbinding' verstuurt niets)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        return s.getsockname()[0]
+    except OSError:
+        return "0.0.0.0"
+    finally:
+        s.close()
+
+
 class _Listener(asyncio.DatagramProtocol):
-    def __init__(self, on_found: Callable[[dict, str], None]) -> None:
-        self.on_found = on_found
+    def __init__(self, port: int, on_found: Callable[[dict, str], None], on_other: Callable[[int, str, int], None] | None) -> None:
+        self.port, self.on_found, self.on_other = port, on_found, on_other
 
     def datagram_received(self, data: bytes, addr) -> None:
         found = parse_broadcast(data)
         if found:
             self.on_found(found, addr[0])
+        elif self.on_other:
+            self.on_other(self.port, addr[0], len(data))
 
 
-async def listen(on_found: Callable[[dict, str], None], ports=UDP_PORTS) -> list[asyncio.DatagramTransport]:
-    """Luistert naar de broadcasts. Een poort die bezet is (LocalTuya zonder reuse_port) slaan we over."""
+async def listen(on_found: Callable[[dict, str], None], ports=UDP_PORTS, on_other=None) -> dict[int, asyncio.DatagramTransport]:
+    """Luistert naar de broadcasts. Een poort die bezet is (een andere koppeling zonder reuse_port) slaan we over."""
     loop = asyncio.get_running_loop()
-    out = []
+    out = {}
     for port in ports:
         try:
-            t, _ = await loop.create_datagram_endpoint(lambda: _Listener(on_found), local_addr=("0.0.0.0", port),
-                                                       reuse_port=hasattr(socket, "SO_REUSEPORT") or None)
-            out.append(t)
+            t, _ = await loop.create_datagram_endpoint(lambda p=port: _Listener(p, on_found, on_other), local_addr=("0.0.0.0", port),
+                                                       reuse_port=hasattr(socket, "SO_REUSEPORT") or None, allow_broadcast=True)
+            out[port] = t
         except OSError as e:
             log.warning("UDP %d niet beschikbaar voor het zoeken van Tuya-toestellen: %s", port, e)
     return out
+
+
+def ask(transport: asyncio.DatagramTransport, port: int = APP_PORT, target: str = "255.255.255.255") -> None:
+    """Vraag op het LAN wie er is."""
+    try:
+        transport.sendto(discovery_request(local_ip()), (target, port))
+    except OSError as e:
+        log.debug("zoekvraag niet verstuurd: %s", e)
 
 
 # ------------------------------------------------------------ verbinding

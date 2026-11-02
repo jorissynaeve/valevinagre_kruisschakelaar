@@ -535,7 +535,7 @@ def fake_cloud(seen, product="p" * 16, key="k" * 16):
             return web.json_response({"success": False, "msg": "token invalid"})
         if request.path.endswith("/model"):
             return web.json_response({"success": True, "result": {"model": json.dumps(MODEL)}})
-        return web.json_response({"success": True, "result": {"local_key": key, "product_id": product, "name": "Buitenkeuken", "ip": "81.1.2.3"}})
+        return web.json_response({"success": True, "result": {"local_key": key, "product_id": product, "name": "Wi-Fi Smart Switch", "custom_name": "Buitenkeuken", "ip": "81.1.2.3"}})
 
     app = web.Application()
     app.router.add_get("/{tail:.*}", handle)
@@ -654,7 +654,7 @@ def test_listener_hears_a_real_datagram():
             await _until(lambda: got, "broadcast ontvangen")
             out.close()
         finally:
-            for t in ts:
+            for t in ts.values():
                 t.close()
         assert got == [(DEV, "127.0.0.1")]
     asyncio.run(go())
@@ -676,4 +676,34 @@ def test_found_devices_are_remembered_and_fill_in_a_new_block(tmp_path):
         did = hub.add({"name": "Lader", "device_id": DEV, "key": KEY.decode()})
         assert hub.devices[did]["host"] == "192.168.8.26" and hub.devices[did]["version"] == "3.4" and did in hub.clients, "zonder op een broadcast te wachten"
         hub.close()
+    asyncio.run(go())
+
+
+def test_we_ask_like_the_app_and_ignore_our_own_question():
+    import struct
+    req = tuya.discovery_request("192.168.8.2")
+    assert req[:4] == tuya.P66 and struct.unpack(">I", req[10:14])[0] == tuya.REQ_DEVINFO
+    assert json.loads(tuya.unpack("3.5", tuya.UDP_KEY, req)[1]) == {"from": "app", "ip": "192.168.8.2"}
+    assert tuya.parse_broadcast(req) is None
+    answer = tuya.pack("3.5", tuya.UDP_KEY, 0, tuya.REQ_DEVINFO, json.dumps({**ANNOUNCE, "version": "3.5"}).encode())
+    assert tuya.parse_broadcast(answer + b"\x00\x00")["version"] == "3.5", "rommel achter het frame mag"
+
+
+def test_question_goes_out_and_the_answer_is_heard():
+    import socket
+
+    async def go():
+        got = []
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        ts = await tuya.listen(lambda f, src: got.append(f), ports=(port,), on_other=lambda p, src, n: got.append(("vraag", p)))
+        try:
+            tuya.ask(ts[port], port, "127.0.0.1")
+            await _until(lambda: got, "vraag ontvangen")
+        finally:
+            for t in ts.values():
+                t.close()
+        assert got == [("vraag", port)]
     asyncio.run(go())

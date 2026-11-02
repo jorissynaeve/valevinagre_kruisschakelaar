@@ -158,8 +158,9 @@ entiteiten komen via MQTT in HA, dus de Mosquitto-broker en de MQTT-integratie z
 * Voor bekende toestellen (nu de *Feyree EV-lader*) heeft de add-on een ingebouwd datamodel met nette namen; dat gebruikt hij vanzelf als
   de cloud dat product meldt.
 * **Eén verbinding**: veel toestellen laten maar één lokale verbinding toe. Haal een toestel eerst uit LocalTuya en sluit de SmartLife-app als het niet verbindt.
-* **IP-adres, automatisch**: Tuya-toestellen melden zich elke paar seconden met een UDP-broadcast (poort 6666 en 6667) en de add-on luistert
-  mee. Toestellen die nog geen blok hebben, staan in de zijbalk onder *Op het netwerk gevonden*: kies er een en device-id en IP staan
+* **IP-adres, automatisch**: Tuya-toestellen melden zich met een UDP-broadcast (poort 6666 en 6667) en de add-on luistert mee.
+  Nieuwere toestellen (3.5) melden zich vaak pas als iemand vraagt wie er is; de add-on doet dat zoals de app, elke minuut op UDP 7000,
+  zolang een toestel geen IP heeft of onbereikbaar is. Een toestel dat al verbonden is met LocalTuya meldt zich vaak niet. Toestellen die nog geen blok hebben, staan in de zijbalk onder *Op het netwerk gevonden*: kies er een en device-id en IP staan
   ingevuld. Wat zich ooit meldde, onthoudt de add-on (30 dagen, in `/data/tuya.json`): een nieuw blok krijgt dan meteen het IP,
   zonder op de volgende broadcast te wachten. Een leeg IP vult de add-on zelf in; krijgt een toestel van DHCP een ander adres, dan neemt hij het nieuwe over zolang hij het
   oude niet bereikt. Een vast IP via een DHCP-reservering blijft het betrouwbaarst. Broadcasts komen niet over routers of VLAN's heen.

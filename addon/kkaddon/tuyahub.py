@@ -19,7 +19,7 @@ from pathlib import Path
 from . import discovery as d
 from .engine import Engine
 from .model import ModelError
-from .tuya import CRYPTO, TuyaClient, listen
+from .tuya import CRYPTO, TuyaClient, ask, listen
 from .tuyacloud import REGIONS, TuyaCloud
 
 log = logging.getLogger("kk.tuya")
@@ -88,6 +88,7 @@ FOUND_MAX = 256
 FOUND_KEEP = 30 * 86400  # s: wat zo lang niet meer gemeld is, vergeten we
 FOUND_SAVE = 3600  # s: "laatst gezien" hoeft niet bij elke broadcast naar schijf
 LIVE = 120  # s: zo recent gemeld telt als nu op het netwerk
+ASK_EVERY = 60  # s: zolang een toestel geen IP heeft of onbereikbaar is, vragen we op UDP 7000 wie er is
 
 
 def parse_model(text: str) -> dict:
@@ -126,7 +127,8 @@ class TuyaHub:
         self.cloud_base: str | None = None  # alleen voor tests
         self.found: dict[str, dict] = {}  # device-id -> {"ip", "version", "seen"}, uit de broadcasts, bewaard over herstarts
         self._found_saved: dict[str, float] = {}
-        self._udp: list = []
+        self._udp: dict = {}  # poort -> transport
+        self._odd: set[str] = set()  # bronnen met onleesbare pakketten, één keer gelogd
         self.clients: dict[str, TuyaClient] = {}
         self.values: dict[str, dict] = {}
         self.tasks: dict[str, asyncio.Task] = {}
@@ -232,6 +234,8 @@ class TuyaHub:
         reconnect = any(dev.get(k) != self.devices[did].get(k) for k in ("device_id", "host", "version", "key"))
         self.devices[did] = dev
         self._save()
+        if dev.get("device_id") and not dev.get("host"):
+            self.ask()  # niet wachten tot het toestel zich uit zichzelf meldt
         if reconnect:
             self._stop(did)
             self.values.pop(did, None)
@@ -278,8 +282,9 @@ class TuyaHub:
         dev["product"] = str(info.get("product_id") or "")
         if model:
             dev["defs"] = parse_model(model)
-        if dev.get("name") in ("", "Tuya") and info.get("name"):
-            dev["name"] = str(info["name"])[:60]
+        name = info.get("custom_name") or info.get("name")  # custom_name is de naam uit de app, name die van het product
+        if dev.get("name") in ("", "Tuya") and name:
+            dev["name"] = str(name)[:60]
         self._check(dev)
         self._apply(did, dev)
 
@@ -304,7 +309,22 @@ class TuyaHub:
             self.tasks["_listen"] = asyncio.get_running_loop().create_task(self._listen())
 
     async def _listen(self) -> None:
-        self._udp = await listen(self.on_broadcast)
+        self._udp = await listen(self.on_broadcast, on_other=self._on_other)
+        self._poke()
+        while True:
+            if any(dev.get("device_id") and not (dev.get("host") and self._online(did)) for did, dev in self.devices.items()) or not self.found:
+                self.ask()
+            await asyncio.sleep(ASK_EVERY)
+
+    def ask(self) -> None:
+        t = self._udp.get(7000) or next(iter(self._udp.values()), None)
+        if t:
+            ask(t)
+
+    def _on_other(self, port: int, src: str, size: int) -> None:
+        if port != 7000 and src not in self._odd and len(self._odd) < 32:  # op 7000 ook de vragen van apps (en van onszelf)
+            self._odd.add(src)
+            log.info("onleesbaar Tuya-pakket op UDP %d van %s (%d bytes)", port, src, size)
 
     # ------------------------------------------------------------ zoeken op het LAN
 
@@ -313,6 +333,8 @@ class TuyaHub:
         tid = found["id"]
         if not ID_RE.match(tid):
             return
+        if tid not in self.found:
+            log.info("Tuya-toestel %s gehoord op %s (protocol %s)", tid, found["ip"], found["version"] or "?")
         ip = found["ip"] if HOST_RE.match(found["ip"]) else src
         version = found["version"] if found["version"] in VERSIONS else ""
         now = time.time()
@@ -367,9 +389,9 @@ class TuyaHub:
     def close(self) -> None:
         for did in list(self.tasks):
             self._stop(did)
-        for t in self._udp:
+        for t in self._udp.values():
             t.close()
-        self._udp = []
+        self._udp = {}
 
     def _on_version(self, did: str, version: str) -> None:
         if did in self.devices:
@@ -416,7 +438,7 @@ class TuyaHub:
                         "product": PRODUCTS[dev["product"]][0] if dev.get("product") in PRODUCTS else "", "has_key": bool(dev.get("key")), "configured": self._complete(dev),
                         "has_model": bool(dev.get("defs")) or dev.get("product") in PRODUCTS, "online": self._online(did), "error": c.last_error if c else "",
                         "points": points, "available": CRYPTO, "cloud": {"id": self.cloud["id"], "region": self.cloud["region"], "has_secret": bool(self.cloud["secret"])},
-                        "found": self._shown_found(dev.get("device_id") or ""), "unclaimed": self._unclaimed()})
+                        "found": self._shown_found(dev.get("device_id") or ""), "listening": sorted(self._udp), "heard": len(self.found), "unclaimed": self._unclaimed()})
         return out
 
     @staticmethod
