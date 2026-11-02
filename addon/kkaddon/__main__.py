@@ -59,6 +59,7 @@ async def run() -> None:
     links.attach_ha(ha)  # de gangen van deze installatie: hun stand en ze schakelen voor een andere
     engine.points = Points(tuya, links)  # Tuya-datapunten voor de logica, de routines en de kaarten, hier of bij een andere installatie
     panels.linkhub = links  # kaarten met een lamp of lader van een andere installatie
+    screens.tuya, screens.linkhub = tuya, links  # dezelfde kaarten op de schermen met openHASP
     mqtt.extras.append(tuya)
     tuya.changed = mqtt.resync
     tuya.start()

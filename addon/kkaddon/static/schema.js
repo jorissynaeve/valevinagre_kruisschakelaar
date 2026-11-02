@@ -26,7 +26,7 @@ const SC_GANGED = ['switch', 'panel', 'tuya', 'remote']; // blokken met gangen: 
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
 const scW = (b) => (b.kind === 'lamp' ? LAMP_W : b.kind === 'tuya' || (b.kind === 'remote' && b.sub === 'tuya') ? TUYA_W : SW_W);
-const scRows = (b) => (b.kind === 'card' || b.kind === 'remote' || b.kind === 'action' ? b.rows : b.kind === 'panel' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
+const scRows = (b) => (b.kind === 'card' || b.kind === 'remote' || b.kind === 'action' ? b.rows : b.kind === 'panel' || b.kind === 'screen' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
 const scH = (b) => SC_HEAD + scRows(b) * SC_ROW + SC_FOOT;
 const rowY = (b, i) => b.y + SC_HEAD + i * SC_ROW + SC_ROW / 2;
 const scPageName = (id) => (S.schema.pages.find((p) => p.id === id) || {}).name || '';
@@ -94,7 +94,7 @@ function scSwitch(b, tags) {
 
 const scPageNo = (b, n) => b.cards.slice(0, n).filter((c) => c.type !== 'saver').length + 1; // de screensaver is geen pagina
 
-function scPanelBlock(b, tags) { // de relais zoals bij een schakelaar, daaronder de kaarten in volgorde
+function scPanelBlock(b, tags) { // de relais zoals bij een schakelaar (een scherm heeft er geen), daaronder de kaarten in volgorde
   const rows = b.cards.map((c, n) => {
     const y = rowY(b, b.gangs.length + n);
     return `<line class="bkrule" x1="${b.x}" x2="${b.x + SW_W}" y1="${y - SC_ROW / 2}" y2="${y - SC_ROW / 2}"/>
@@ -148,7 +148,7 @@ function scCard(b) {
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 28))}</text>
     <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Kaart · ${SC_CARD_NL[b.type]}${b.type === 'grid' && b.layout === 'list' ? ' (lijst)' : ''}</text>${rows}
-    <circle class="pt crd ${b.users.length ? '' : 'free'}" cx="${b.x + SW_W}" cy="${y0}" r="6" data-b="${esc(b.key)}" data-role="cout" data-g="0"><title>Uitgang: sleep naar een paneel (pagina) of naar een knop van een rasterkaart (subpagina)</title></circle>
+    <circle class="pt crd ${b.users.length ? '' : 'free'}" cx="${b.x + SW_W}" cy="${y0}" r="6" data-b="${esc(b.key)}" data-role="cout" data-g="0"><title>Uitgang: sleep naar een paneel of scherm (pagina) of naar een knop van een rasterkaart (subpagina)</title></circle>
     ${b.users.map((u, n) => `<text class="stub" x="${b.x + SW_W + 11}" y="${y0 + 4 + n * 13}" data-sc="go" data-k="${esc(u.key)}">→ ${esc(scCut(u.name, 22))} ${u.as === 'page' ? `(${b.type === 'saver' ? 'start' : `pagina ${u.i + 1}`})` : '(sub)'}<title>${esc(u.name)}</title></text>`).join('')}</g>`;
 }
 
@@ -191,7 +191,7 @@ function scRemotePanel(b) {
     body = rw.length ? `<h2>Bedienen</h2>${rw.map((p) => `<label>${esc(p.name)}${p.unit ? ` (${esc(p.unit)})` : ''}</label>${control(p)}`).join('')}<div class="sub">Een wijziging gaat via ${esc(b.peerName)} naar het toestel.</div>` : '';
   }
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${b.linked ? (b.online ? 'online' : 'toestel offline') : `${esc(b.peerName)} niet verbonden`}</span></div>
-    <div class="sub">Van de installatie <b>${esc(b.peerName)}</b>. Instellen en hernoemen doe je daar; hier kun je het bedienen${b.sub === 'gang' ? ' en op een lamp aansluiten' : ` en aan een NSPanel-kaart hangen${b.sub === 'lamp' ? ' (sleep een knop van een rasterkaart naar dit blok)' : ' (kies het bij een laadpaalkaart)'}`}.</div>
+    <div class="sub">Van de installatie <b>${esc(b.peerName)}</b>. Instellen en hernoemen doe je daar; hier kun je het bedienen${b.sub === 'gang' ? ' en op een lamp aansluiten' : ` en aan een kaart hangen${b.sub === 'lamp' ? ' (sleep een knop van een rasterkaart naar dit blok)' : ' (kies het bij een laadpaalkaart)'}`}.</div>
     <label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
     ${body}
     <h2>Gebruikt door</h2>${users.map((c) => `<div class="sub"><a href="#" data-sc="go" data-k="${esc(c.key)}">${esc(c.name)}</a></div>`).join('') || '<div class="sub">Nog geen kaart.</div>'}`;
@@ -500,17 +500,25 @@ function scPanelState(b) {
   return [b.greeted ? 'online' : 'online, wacht op HA', b.temperature != null ? `${b.temperature.toFixed(1)} °C` : ''].filter(Boolean).join(' · ');
 }
 
+function scCardList(b) { // de kaarten van een paneel of een scherm in volgorde, en een keuzelijst om er een bij te hangen
+  const have = new Set(b.cards.map((c) => c.id)), screen = b.kind === 'screen';
+  const free = scBlocks().filter((c) => c.kind === 'card' && !have.has(c.id) && !(c.type === 'saver' && (screen || b.cards.some((x) => x.type === 'saver'))));
+  const page = (c) => c && c.type !== 'saver';
+  const btn = (n, op, label, title) => `<button class="btn small ${op === 'del' ? 'danger' : ''}" type="button" data-sc="pncard" data-k="${esc(b.key)}" data-n="${n}" data-op="${op}" title="${title}">${label}</button>`;
+  const list = b.cards.map((c, n) => `<div class="scc"><a href="#" data-sc="go" data-k="${esc(c.key)}">${c.type === 'saver' ? 'Startscherm:' : `${scPageNo(b, n)}.`} ${esc(c.name)}</a><span class="row">
+      ${page(c) && page(b.cards[n - 1]) ? btn(n, 'up', '↑', 'Naar voren') : ''}${page(c) && page(b.cards[n + 1]) ? btn(n, 'down', '↓', 'Naar achter') : ''}
+      ${btn(n, 'del', '✕', `Van dit ${screen ? 'scherm' : 'paneel'} halen (de kaart blijft bestaan)`)}</span></div>`).join('');
+  return `<h2>Kaarten</h2>${list || '<div class="sub">Nog geen kaarten.</div>'}
+    ${free.length ? `<select data-pnadd="${esc(b.key)}"><option value="">+ kaart toevoegen…</option>${free.map((c) => `<option value="${esc(c.id)}">${esc(c.name)} (${esc(SC_CARD_NL[c.type])})</option>`).join('')}</select>` : ''}
+    ${b.error ? `<div class="sub" style="color:var(--warn)">${esc(b.error)}</div>` : ''}`;
+}
+
+const scSaveCards = (b, cards) => (b.kind === 'screen' ? scSaveScreen(b, { cards }) : scSavePanel(b.id, { cards }));
+
 function scPanelPanel(b, props) {
   const draft = SC.panelDraft[b.id] || {};
   const hub = location.hostname;
   const relays = b.gangs.map((g) => `<button class="btn small" type="button" data-sc="pnrelay" data-id="${esc(b.id)}" data-n="${g.i + 1}" data-on="${g.on ? 0 : 1}" ${g.on === null ? 'disabled' : ''}>${esc(g.label)}: ${g.on === null ? '?' : g.on ? 'aan' : 'uit'}</button>`).join('');
-  const have = new Set(b.cards.map((c) => c.id));
-  const free = scBlocks().filter((c) => c.kind === 'card' && !have.has(c.id) && !(c.type === 'saver' && b.cards.some((x) => x.type === 'saver')));
-  const page = (c) => c && c.type !== 'saver';
-  const list = b.cards.map((c, n) => `<div class="scc"><a href="#" data-sc="go" data-k="${esc(c.key)}">${c.type === 'saver' ? 'Startscherm:' : `${scPageNo(b, n)}.`} ${esc(c.name)}</a><span class="row">
-      ${page(c) && page(b.cards[n - 1]) ? `<button class="btn small" type="button" data-sc="pncard" data-id="${esc(b.id)}" data-n="${n}" data-op="up" title="Naar voren">↑</button>` : ''}
-      ${page(c) && page(b.cards[n + 1]) ? `<button class="btn small" type="button" data-sc="pncard" data-id="${esc(b.id)}" data-n="${n}" data-op="down" title="Naar achter">↓</button>` : ''}
-      <button class="btn small danger" type="button" data-sc="pncard" data-id="${esc(b.id)}" data-n="${n}" data-op="del" title="Van dit paneel halen (de kaart blijft bestaan)">✕</button></span></div>`).join('');
   const num = (f, lo, hi, label) => `<label>${label}</label><input type="number" min="${lo}" max="${hi}" step="1" data-pnset="${f}" data-id="${esc(b.id)}" value="${esc(b[f])}">`;
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scPanelState(b))}</span>${b.rssi != null ? `<span class="sub">${b.rssi} dBm</span>` : ''}</div>
     ${props}
@@ -518,10 +526,8 @@ function scPanelPanel(b, props) {
     <div class="row" style="margin-top:6px"><button class="btn small primary" type="button" data-sc="pnsave" data-id="${esc(b.id)}">Opslaan</button>${Object.keys(draft).length ? '<span class="sub">niet opgeslagen</span>' : ''}</div>
     ${b.notes.length ? `<h2>Omgezet uit de YAML</h2><ul class="sub" style="padding-left:18px;margin:4px 0">${b.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
       <div class="row"><button class="btn small" type="button" data-sc="pnnotes" data-id="${esc(b.id)}">Gelezen</button></div>` : ''}
-    <h2>Kaarten</h2>${list || '<div class="sub">Nog geen kaarten.</div>'}
-    ${free.length ? `<select data-pnadd="${esc(b.id)}"><option value="">+ kaart toevoegen…</option>${free.map((c) => `<option value="${esc(c.id)}">${esc(c.name)} (${esc(SC_CARD_NL[c.type])})</option>`).join('')}</select>` : ''}
-    ${b.error ? `<div class="sub" style="color:var(--warn)">${esc(b.error)}</div>` : ''}
-    <div class="sub">Of sleep de uitgang van een kaart naar <b>+ kaart</b> op het blok. Een screensaver is het startscherm; de andere kaarten zijn de pagina's, in deze volgorde. Een kaart aan een knop van een rasterkaart wordt daar een subpagina. Nieuwe kaarten: <b>+ Module → NSPanel-kaarten</b>.</div>
+    ${scCardList(b)}
+    <div class="sub">Of sleep de uitgang van een kaart naar <b>+ kaart</b> op het blok. Een screensaver is het startscherm; de andere kaarten zijn de pagina's, in deze volgorde. Een kaart aan een knop van een rasterkaart wordt daar een subpagina. Nieuwe kaarten: <b>+ Module → Kaarten</b>.</div>
     <h2>Scherm</h2>
     <label>Taal</label><select data-pnset="locale" data-id="${esc(b.id)}"><option value="nl" ${b.locale === 'nl' ? 'selected' : ''}>Nederlands</option><option value="en" ${b.locale === 'en' ? 'selected' : ''}>Engels</option></select>
     ${num('timeout', 0, 3600, 'Terug naar de screensaver na (seconden, 0 = nooit)')}${num('bright', 0, 100, 'Helderheid (0–100)')}${num('dim', 0, 100, 'Helderheid van de screensaver (0–100)')}
@@ -610,7 +616,7 @@ function scCardPanel(b, props) {
       ${b.security === 'nopass' ? '' : tx('password', 'Wachtwoord')}<div class="sub">Het wachtwoord staat leesbaar op het scherm, net als in de QR-code.</div>`;
   }
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge">Kaart · ${esc(SC_CARD_NL[b.type])}</span></div><div class="sub">${esc(SC_CARD_HELP[b.type])}</div>
-    ${props}<h2>Hangt aan</h2>${users || '<div class="sub">Nog nergens: sleep de uitgang (rechts) naar <b>+ kaart</b> op een paneel.</div>'}
+    ${props}<h2>Hangt aan</h2>${users || '<div class="sub">Nog nergens: sleep de uitgang (rechts) naar <b>+ kaart</b> op een paneel of scherm.</div>'}
     ${body}
     <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="delcard" data-id="${esc(b.id)}">Kaart verwijderen</button></div>`;
 }
@@ -653,23 +659,18 @@ function scScreenState(b) {
 }
 
 function scScreenPanel(b, props) {
-  scLoadEnts();
-  const pages = b.pages.map((p, pi) => `<div class="tmd"><div class="row sp"><b>Pagina ${pi + 1}</b>
-      ${b.pages.length > 1 ? `<button class="btn small danger" type="button" data-sc="hsdelpage" data-k="${esc(b.key)}" data-p="${pi}" title="Pagina weghalen">✕</button>` : ''}</div>
-    <label>Titel</label><input type="text" maxlength="60" data-hstitle="${pi}" value="${esc(p.title)}">
-    ${p.buttons.map((x, i) => `<div class="row sp" style="margin-top:6px"><b>Knop ${i + 1}</b><button class="btn small danger" type="button" data-sc="hsdelbtn" data-k="${esc(b.key)}" data-p="${pi}" data-i="${i}" title="Knop weghalen">✕</button></div>
-      <label>Tekst</label><input type="text" maxlength="60" data-hslabel="${pi}" data-i="${i}" value="${esc(x.label)}">
-      <label>Bedient</label>${scEntSelect(`data-hsent="${pi}" data-i="${i}"`, x.entity, 'niets')}`).join('')}
-    ${p.buttons.length < 4 ? `<div class="row" style="margin-top:6px"><button class="btn small" type="button" data-sc="hsaddbtn" data-k="${esc(b.key)}" data-p="${pi}">+ Knop</button></div>` : ''}</div>`).join('');
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scScreenState(b))}</span>${b.uptime ? `<span class="sub">aan sinds ${esc(b.uptime)}</span>` : ''}</div>
     ${props}
     <label>Naam op de firmware</label><input type="text" maxlength="32" data-hsfield="plate" list="hsplates" spellcheck="false" autocomplete="off" placeholder="bv. scherm01" value="${esc(b.plate)}">
     <datalist id="hsplates">${b.plates.map((p) => `<option value="${esc(p)}"></option>`).join('')}</datalist>
     <div class="sub">Een scherm heeft één eigenaar. Haal het eerst uit de pyscript-config, anders sturen beide tegelijk.</div>
-    <label>Scherm donker na (seconden, 0 = nooit)</label><input type="number" min="0" max="3600" step="1" data-hsfield="timeout" value="${b.timeout}">
     ${b.missing.length ? `<div class="sub"><b>Niet in Home Assistant:</b> ${b.missing.map((e) => `<code>${esc(e)}</code>`).join(', ')}. Deze knoppen blijven grijs.</div>` : ''}
-    <h2>Pagina's</h2>${pages}
-    <div class="row" style="margin-top:6px">${b.pages.length < 12 ? `<button class="btn small" type="button" data-sc="hsaddpage" data-k="${esc(b.key)}">+ Pagina</button>` : ''}<button class="btn small danger" type="button" data-sc="delscreen" data-id="${esc(b.id)}">Scherm verwijderen</button></div>`;
+    ${scCardList(b)}
+    <div class="sub">Of sleep de uitgang van een kaart naar <b>+ kaart</b> op het blok. Dezelfde kaarten als op een NSPanel: elke kaart is een pagina, in deze volgorde, en een kaart met meer dan 4 knoppen loopt door op een volgende pagina. Een kaart aan een knop van een rasterkaart wordt daar een subpagina met een knop terug. Een screensaver kan hier niet. Nieuwe kaarten: <b>+ Module → Kaarten</b>.</div>
+    <h2>Scherm</h2>
+    <label>Taal</label><select data-hsfield="locale"><option value="nl" ${b.locale === 'nl' ? 'selected' : ''}>Nederlands</option><option value="en" ${b.locale === 'en' ? 'selected' : ''}>Engels</option></select>
+    <label>Scherm donker na (seconden, 0 = nooit)</label><input type="number" min="0" max="3600" step="1" data-hsfield="timeout" value="${b.timeout}">
+    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="delscreen" data-id="${esc(b.id)}">Scherm verwijderen</button></div>`;
 }
 
 async function scSaveScreen(b, patch) {
@@ -836,7 +837,7 @@ const SC_MENU = [
   ['Vergelijken', [['between', 'Tussen', '1 tussen twee tijden'], ['after', 'Na', '1 na een tijd'], ['before', 'Voor', '1 voor een tijd'], ['above', 'Groter dan', '1 boven een grens'], ['below', 'Kleiner dan', '1 onder een grens']]],
   ['Logica', [['and', 'En', '1 als beide 1 zijn'], ['or', 'Of', '1 als een van beide 1 is']]],
   ['Routines', [['sprinkler', 'Sprinkler', 'zones na elkaar, in cycli'], ['action', 'Tuya instellen', 'een 0/1 zet een datapunt']]],
-  ['NSPanel-kaarten', [['card-grid', 'Knoppen', 'lampen, schakelaars, subpagina\'s'], ['card-charger', 'Laadpaal', 'start/stop, kWh en prijs'], ['card-saver', 'Screensaver', 'klok en weer'],
+  ['Kaarten', [['card-grid', 'Knoppen', 'lampen, schakelaars, subpagina\'s'], ['card-charger', 'Laadpaal', 'start/stop, kWh en prijs'], ['card-saver', 'Screensaver', 'klok en weer'],
     ['card-power', 'Energie', 'verbruik en opbrengst'], ['card-qr', 'Wifi (QR)', 'gastnetwerk']]],
 ];
 
@@ -874,7 +875,7 @@ function scInner(list) {
   const shown = new Set(list.map((b) => b.key));
   const wires = !SC_WIRES ? '' : conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
   const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b)
-    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'card' ? scCard(b) : b.kind === 'action' ? scAction(b) : b.kind === 'remote' ? scRemote(b, tags) : b.kind === 'panel' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
+    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'card' ? scCard(b) : b.kind === 'action' ? scAction(b) : b.kind === 'remote' ? scRemote(b, tags) : b.kind === 'panel' || b.kind === 'screen' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
   return `<g class="wires">${wires}</g>${blocks}<path id="sctemp" class="wire temp"/>`; // draden onder de blokken: anders liggen ze over de poorten
 }
 
@@ -910,7 +911,7 @@ function scPortPos(p) {
   if (b.kind === 'action') return [b.x, rowY(b, 0)];
   if (p.role === 'pval' || p.role === 'pset') return [p.role === 'pval' ? b.x + TUYA_W : b.x, rowY(b, +p.i)];
   if (b.kind === 'card') return p.role === 'cout' ? [b.x + SW_W, rowY(b, 0)] : p.role === 'cdout' ? [b.x + SW_W, rowY(b, 1)] : [b.x, rowY(b, p.i === 'new' ? b.items.length : +p.i)];
-  if (b.kind === 'panel' && p.role === 'pcard') return [b.x, rowY(b, b.gangs.length + (p.i === 'new' ? b.cards.length : +p.i))];
+  if ((b.kind === 'panel' || b.kind === 'screen') && p.role === 'pcard') return [b.x, rowY(b, b.gangs.length + (p.i === 'new' ? b.cards.length : +p.i))];
   if (p.role === 'disable') return [b.x, rowY(b, scRows(b) - 1)];
   if (p.role === 'control') return [b.x, rowY(b, scRows(b) - 2)];
   if (SC_GANGED.includes(b.kind)) return [p.role === 'relay' ? b.x + scW(b) : b.x, rowY(b, +p.g)];
@@ -936,7 +937,7 @@ function scTray() {
     return `<h2>${title}</h2>${all.map(item).join('') || '<div class="sub">Geen.</div>'}`;
   };
   return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Tuya instellen', 'action') + part('Panelen', 'panel')
-    + part('NSPanel-kaarten', 'card') + part('Schermen', 'screen') + part('Tuya', 'tuya') + part('Andere installaties', 'remote');
+    + part('Kaarten', 'card') + part('Schermen', 'screen') + part('Tuya', 'tuya') + part('Andere installaties', 'remote');
 }
 
 function scPanel() {
@@ -1227,10 +1228,10 @@ async function scWireCard(a, b) { // de uitgang van een kaart naar een paneel of
     if (sink.role === 'pcard') {
       const list = to.cards.map((c) => c.id).filter((id) => id !== card.id);
       list.splice(sink.i === 'new' ? list.length : Math.min(+sink.i, list.length), 0, card.id);
-      await api('PUT', `panels/${to.id}`, { cards: list });
+      await api('PUT', `${to.kind === 'screen' ? 'screens' : 'panels'}/${to.id}`, { cards: list });
     } else if (sink.role === 'citem') {
       await scSetItem(to, sink.i, { ref: card.key, entity: null });
-    } else throw new Error('Een kaart hang je aan een paneel (links, onder de relais) of aan een knop van een rasterkaart.');
+    } else throw new Error('Een kaart hang je aan een paneel of een scherm (links, + kaart) of aan een knop van een rasterkaart.');
     sel = to.key;
   } else {
     const item = [a, b].find((p) => p.role === 'citem');
@@ -1388,13 +1389,13 @@ const SC_ACTIONS = {
     await api('POST', `panels/${d.id}/relay/${d.n}`, { on: d.on === '1' });
   },
   pncard: (d) => {
-    const b = scBlock(`p:${d.id}`), list = b.cards.map((c) => c.id), n = +d.n;
+    const b = scBlock(d.k), list = b.cards.map((c) => c.id), n = +d.n;
     if (d.op === 'del') list.splice(n, 1);
     else {
       const to = d.op === 'up' ? n - 1 : n + 1;
       [list[n], list[to]] = [list[to], list[n]];
     }
-    return scSavePanel(d.id, { cards: list });
+    return scSaveCards(b, list);
   },
   pnnotes: (d) => scSavePanel(d.id, { notes: [] }),
   pnyaml: async (d) => {
@@ -1436,7 +1437,7 @@ const SC_ACTIONS = {
     await refresh();
   },
   delcard: async (d) => {
-    if (!confirm('Deze kaart verwijderen? Ze verdwijnt van de panelen en de knoppen die erheen gingen verdwijnen ook.')) return;
+    if (!confirm('Deze kaart verwijderen? Ze verdwijnt van de panelen en schermen, en de knoppen die erheen gingen verdwijnen ook.')) return;
     await api('DELETE', `cards/${d.id}`);
     SC.sel = null;
     await refresh();
@@ -1447,22 +1448,6 @@ const SC_ACTIONS = {
     delete SC.panelDraft[d.id];
     SC.sel = null;
     await refresh();
-  },
-  hsaddpage: (d) => {
-    const b = scBlock(d.k);
-    return scSaveScreen(b, { pages: [...b.pages, { title: `Pagina ${b.pages.length + 1}`, buttons: [] }] });
-  },
-  hsdelpage: (d) => {
-    const b = scBlock(d.k);
-    return scSaveScreen(b, { pages: b.pages.filter((_, i) => i !== +d.p) });
-  },
-  hsaddbtn: (d) => {
-    const b = scBlock(d.k);
-    return scSaveScreen(b, { pages: b.pages.map((p, i) => (i === +d.p ? { ...p, buttons: [...p.buttons, { label: '', entity: null }] } : p)) });
-  },
-  hsdelbtn: (d) => {
-    const b = scBlock(d.k);
-    return scSaveScreen(b, { pages: b.pages.map((p, i) => (i === +d.p ? { ...p, buttons: p.buttons.filter((_, j) => j !== +d.i) } : p)) });
   },
   delscreen: async (d) => {
     if (!confirm('Dit scherm verwijderen? Op het scherm zelf blijft het ontwerp staan tot het opnieuw opstart.')) return;
@@ -1639,7 +1624,7 @@ function scFinish(target) {
   } else if (toBlock && toBlock.dataset.block !== from.b) {
     const tb = scBlock(toBlock.dataset.block);
     if (tb.kind === 'lamp' || (tb.kind === 'remote' && from.swRole === 'citem')) dest = { b: tb.key, lampRole: null }; // losgelaten op de lamp zelf: de poort waar je begon beslist
-    else if (tb.kind === 'panel' && from.swRole === 'cout') dest = { b: tb.key, swRole: 'pcard', i: 'new' }; // een kaart op een paneel: achteraan
+    else if ((tb.kind === 'panel' || tb.kind === 'screen') && from.swRole === 'cout') dest = { b: tb.key, swRole: 'pcard', i: 'new' }; // een kaart op een paneel of scherm: achteraan
     else if (tb.kind === 'card' && tb.type === 'grid' && from.swRole !== 'citem') dest = { b: tb.key, swRole: 'citem', i: 'new' };
   }
   if (dest && dest.b === from.b && dest.g === from.g && dest.i === from.i && dest.swRole === from.swRole) dest = null;
@@ -1919,9 +1904,9 @@ document.addEventListener('change', (ev) => {
     act(() => scSavePanel(t.dataset.id, { [f]: value }))();
   }
   if (t.dataset && t.dataset.pnadd && t.value) {
-    const b = scBlock(`p:${t.dataset.pnadd}`), cid = t.value;
+    const b = scBlock(t.dataset.pnadd), cid = t.value;
     t.blur();
-    act(() => scSavePanel(b.id, { cards: [...b.cards.map((c) => c.id), cid] }))();
+    act(() => scSaveCards(b, [...b.cards.map((c) => c.id), cid]))();
   }
   if (t.dataset && t.dataset.tyset && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'tuya') {
     const b = scBlock(SC.sel), dp = t.dataset.tyset, value = t.value;
@@ -1960,20 +1945,10 @@ document.addEventListener('change', (ev) => {
       })();
     }
   }
-  if (t.dataset && (t.dataset.hsfield || t.dataset.hstitle !== undefined || t.dataset.hslabel !== undefined || t.dataset.hsent !== undefined) && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'screen') {
-    const b = scBlock(SC.sel), d = t.dataset;
-    const button = (pi, patch) => b.pages.map((p, i) => (i === +pi ? { ...p, buttons: p.buttons.map((x, j) => (j === +d.i ? { ...x, ...patch(x) } : x)) } : p));
-    let patch;
-    if (d.hsfield) patch = { [d.hsfield]: d.hsfield === 'timeout' ? +t.value : t.value.trim() };
-    else if (d.hstitle !== undefined) patch = { pages: b.pages.map((p, i) => (i === +d.hstitle ? { ...p, title: t.value } : p)) };
-    else if (d.hslabel !== undefined) patch = { pages: button(d.hslabel, () => ({ label: t.value })) };
-    else {
-      const entity = t.value.trim() || null;
-      const known = (SC.haEnts || []).find((e) => e.entity_id === entity);
-      patch = { pages: button(d.hsent, (x) => ({ entity, label: x.label || (known ? known.name : '') })) }; // een lege knop krijgt de naam uit HA
-    }
+  if (t.dataset && t.dataset.hsfield && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'screen') {
+    const b = scBlock(SC.sel), f = t.dataset.hsfield;
     t.blur();
-    act(() => scSaveScreen(b, patch))();
+    act(() => scSaveScreen(b, { [f]: f === 'timeout' ? +t.value : t.value.trim() }))();
   }
   if (t.id === 'scctl') {
     const k = t.dataset.k, source = t.value || null;

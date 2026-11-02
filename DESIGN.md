@@ -508,6 +508,7 @@ Code: `hasp.py` (ontwerp en aanrakingen, puur), `hasphub.py` (MQTT, HA-standen, 
 - **Navigatie via de hub**, net als de pyscript-app: dat werkt op deze schermen. `action` op het scherm zou de 12 firmwarepagina's rondgaan, ook de lege.
 - **Wakker maken**: de eerste aanraking op een donker scherm schakelt niets. De volgorde van `state/backlight` en het `down`-event is niet bekend, daarom ook een marge van 0,7 s na een melding "aan".
 - **Kleuren** gaan elke 120 s opnieuw, omdat de brug met QoS 0 publiceert.
+- **Kaarten (0.16)**: een scherm hangt aan dezelfde kaartblokken als een NSPanel (`model.screens[sid].cards`, `cards.screen_pages`). `hasp.expand` maakt van de uitvoer van `cards._card` firmwarepagina's: 4 tegels per pagina, een kaart met meer rijen loopt door ("Titel (1/2)"), lege plekken achteraan vallen weg. Rijen `kk.*` lezen en schakelen via `cards.Live` (lampen, kringen, lampen van een andere installatie, Tuya-waarden, laadpaal), net als op het paneel; `iText.*` is alleen tekst, een sensor toont zijn waarde. Subpagina's komen na de hoofdpagina's; hun middelste navigatieknop is **Terug**, naar de pagina waar je vandaan kwam (bijgehouden in `Screen`). Tekst en kleur van een tegel horen niet in de hash (ze gaan als `.text`/`.bg_color`), zodat een naam die van een andere installatie verandert geen nieuw ontwerp vraagt. De hub roept `sync()` elke seconde aan (alleen verschillen gaan weg). Meer dan 12 pagina's: `LayoutError`, in de status als `error`, en het scherm wordt niet aangeraakt. Geen screensaver op een scherm (`cards.SCREEN_TYPES`). De oude eigen pagina's worden eenmalig rasterkaarten (`model._old_screen`); een knop naar een domein dat het oude scherm niet kon bedienen wordt een lege plek.
 
 ### Niet getest / open
 - Getest: de hub tegen nagebootste schermberichten en een nagebootste HA, en de zijbalk in een browser.
@@ -515,7 +516,7 @@ Code: `hasp.py` (ontwerp en aanrakingen, puur), `hasphub.py` (MQTT, HA-standen, 
 - Getest in huis op `scherm01` en `scherm03` (0.9.1): aanraken op het echte scherm is in orde bevonden, en bij de herstart van de add-on is geen geknipper gezien. Na een herstart van HA stonden beide schermen online en kwamen de kleuren overeen met HA (29 van de 30 knoppen uitgelezen, alle gecontroleerde lampen uit; "aan" is daarbij dus niet uitgelezen).
 - De firmware rondt kleuren af: `#DDE3E8` komt terug als `#dee2ee`. Vergelijk dus niet letterlijk met wat je hebt gestuurd.
 - Niet gemeten: de precieze volgorde van `state/backlight` en het `down`-event bij het wakker maken.
-- Niet ondersteund: de poort (komt als `script.*` of `button.*` in HA; het model en de hub kennen die domeinen, de keuzelijst nog niet), camera's, de Pool-pagina, dimmen.
+- Niet ondersteund: camera's, de Pool-pagina, dimmen, een QR-code (de wifi-kaart is tekst), pictogrammen per knop (alle schakelknoppen krijgen het lamppictogram). Niet getest op een echt scherm (0.16): de tekst met een regeleinde (`\n`) in een knop, en of `.text` met een pictogram goed overkomt.
 
 ## 28. Tuya rechtstreeks
 

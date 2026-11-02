@@ -16,10 +16,11 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from . import cards as _cards
 from . import discovery as d
 from .engine import Engine
 from .habridge import HaBridge
-from .hasp import MARKER, Screen, chunks
+from .hasp import MARKER, LayoutError, Screen, chunks
 
 log = logging.getLogger("kk.hasp")
 
@@ -38,9 +39,11 @@ class Link:
     id: str
     name: str
     plate: str
-    pages: list
+    pages: list  # de kaarten zoals cards.screen_pages ze geeft
     timeout: int
+    locale: str = "nl"
     screen: Screen | None = None
+    error: str = ""
     online: bool = False
     phase: str = "idle"  # idle, query, push, ready
     query_at: float = 0.0
@@ -61,10 +64,23 @@ class _Env:
         if not self.hub.ha.call_service(domain, service, data):
             log.warning("%s.%s niet verstuurd: geen verbinding met HA", domain, service)
 
+    def _live(self) -> _cards.Live:
+        h = self.hub
+        return _cards.Live(h.engine.model, h.engine, h.tuya, h.ha.states.get, h.linkhub)
+
+    def dynamic(self, entity: str, lang: str):
+        return self._live().value(entity, lang)
+
+    def press(self, entity: str, kind: str, value: str | None) -> None:
+        if not self._live().press(entity, kind, value):
+            log.info("druk op %s (%s) deed niets", entity, kind)
+
 
 class HaspHub:
     def __init__(self, ha: HaBridge, engine: Engine, clock: Callable[[], float] = time.monotonic, settle: tuple[float, float, float] = (1.0, 3.0, 0.05)) -> None:
         self.ha, self.engine, self._clock = ha, engine, clock
+        self.tuya = None  # TuyaHub: Tuya-waarden en de laadpaal op een kaart
+        self.linkhub = None  # LinkHub: lampen en laders van andere installaties op een kaart
         self.settle = settle  # s: na `idle off`, na `clearpage`, tussen twee stukken ontwerp
         self.publish: Callable[[str, str], bool] = lambda _t, _p: False  # de MQTT-brug
         self.changed: Callable[[], None] | None = None
@@ -79,34 +95,40 @@ class HaspHub:
     # ------------------------------------------------------------ de configuratie staat in het model
 
     def _sync(self) -> None:
-        screens = self.engine.model.screens
+        model = self.engine.model
         changed = False
-        for sid in [s for s in self.links if s not in screens]:
+        for sid in [s for s in self.links if s not in model.screens]:
             self._cancel(self.links.pop(sid))
             changed = True
-        for sid, s in screens.items():
+        for sid, s in model.screens.items():
+            pages = _cards.screen_pages(model, sid)
             link = self.links.get(sid)
             if link is None:
-                link = self.links[sid] = Link(sid, s["name"], "", [], s["timeout"])
+                link = self.links[sid] = Link(sid, s["name"], "", [], s["timeout"], "")
                 changed = True
             if link.name != s["name"] or link.timeout != s["timeout"]:
                 link.name, link.timeout, changed = s["name"], s["timeout"], True
                 if link.screen:
                     link.screen.timeout = s["timeout"]
-            if (link.plate, link.pages) != (s["plate"], s["pages"]):
-                self._rebuild(link, s["plate"], s["pages"])
+            if (link.plate, link.pages, link.locale) != (s["plate"], pages, s["locale"]):
+                self._rebuild(link, s["plate"], pages, s["locale"])
                 changed = True
         if changed:
             self._poke()
 
-    def _rebuild(self, link: Link, plate: str, pages: list) -> None:
+    def _rebuild(self, link: Link, plate: str, pages: list, locale: str) -> None:
         self._cancel(link)
         same_plate = link.plate == plate
-        link.plate, link.pages = plate, pages
-        link.screen = Screen(pages, link.timeout, self._env, lambda cmd, payload, l=link: self._cmd(l, cmd, payload)) if plate else None
+        link.plate, link.pages, link.locale, link.screen, link.error = plate, pages, locale, None, ""
+        try:
+            screen = Screen(pages, link.timeout, self._env, lambda cmd, payload, l=link: self._cmd(l, cmd, payload), locale)
+        except LayoutError as e:
+            link.error = str(e)
+            screen = None
+        link.screen = screen if plate else None
         link.online = bool(plate) and self.seen.get(plate, False)
         link.phase = "idle"
-        if link.online:
+        if link.online and link.screen:
             if same_plate:
                 self._start_push(link)  # we weten al dat het ontwerp verschilt
             else:
@@ -127,7 +149,7 @@ class HaspHub:
         out = []
         for l in self.links.values():
             missing = sorted(e for e in l.screen.entities() if e not in self.ha.states) if l.screen and self.ha.connected else []
-            out.append({"id": l.id, "name": l.name, "plate": l.plate, "timeout": l.timeout, "pages": l.pages, "online": l.online, "phase": l.phase,
+            out.append({"id": l.id, "name": l.name, "plate": l.plate, "timeout": l.timeout, "locale": l.locale, "online": l.online, "phase": l.phase, "error": l.error,
                         "missing": missing, "uptime": l.uptime, "received": l.received, "plates": plates})
         return out
 
@@ -192,6 +214,8 @@ class HaspHub:
                 if now - l.last_resend >= RESEND:
                     l.last_resend = now
                     l.screen.sync(force=True)
+                else:
+                    l.screen.sync()  # lampen, waarden en de laadpaal uit de add-on: alleen wat veranderd is gaat naar het scherm
 
     async def run(self) -> None:
         while True:
@@ -237,7 +261,9 @@ class HaspHub:
             return
         link.online = online
         if online:
-            if link.phase != "push":  # soms komt "online" vlak na elkaar: een lopend ontwerp gewoon afmaken
+            if link.screen is None:  # de kaarten passen niet (zie error): het scherm houdt wat het heeft
+                pass
+            elif link.phase != "push":  # soms komt "online" vlak na elkaar: een lopend ontwerp gewoon afmaken
                 self._query(link)
         else:
             self._cancel(link)

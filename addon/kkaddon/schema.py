@@ -277,12 +277,16 @@ def _card_blocks(model: Model, snap: dict, lamps: set[str]) -> list[dict]:
     return out
 
 
-def _screen_blocks(snap: dict) -> list[dict]:
-    """Een scherm bedient entiteiten uit zijn eigen configuratie: geen poorten, wel een rij per pagina op het blok."""
-    return [{**{k: s[k] for k in ("id", "name", "plate", "timeout", "pages", "online", "phase", "missing", "uptime", "plates")},
-             "key": f"h:{s['id']}", "kind": "screen", "source": "screen", "tech": "openHASP", "alias": "", "room": "",
-             "gangs": [{"i": i, "label": p["title"] or f"Pagina {i + 1}", "entity": None, "touch": False, "relay": False, "on": None} for i, p in enumerate(s["pages"])]}
-            for s in snap.get("screens", [])]
+def _screen_blocks(model: Model, snap: dict) -> list[dict]:
+    """Zoals een paneel zonder relais: de kaarten in volgorde, links een ingang per kaart en één vrije."""
+    out = []
+    for s in snap.get("screens", []):
+        m = model.screens.get(s["id"]) or {}
+        cards = [{"key": f"c:{c}", "id": c, "name": model.cards[c]["name"], "type": model.cards[c]["type"]} for c in m.get("cards", []) if c in model.cards]
+        out.append({**{k: s.get(k) for k in ("id", "name", "plate", "timeout", "online", "phase", "error", "missing", "uptime", "plates")},
+                    "locale": m.get("locale", "nl"), "cards": cards, "key": f"h:{s['id']}", "kind": "screen", "source": "screen", "tech": "openHASP",
+                    "alias": "", "room": "", "gangs": []})
+    return out
 
 
 def _tuya_relays(t: dict) -> list[dict]:
@@ -319,7 +323,7 @@ def view(model: Model, snap: dict) -> dict:
     owners = _gang_owners(model, snap)
     lamps = _lamp_blocks(model, snap, owners)
     blocks = (_switch_blocks(model, snap, owners, states) + lamps + _timer_blocks(snap) + _module_blocks(snap) + _sprinkler_blocks(snap) + _panel_blocks(model, snap)
-              + _screen_blocks(snap) + _tuya_blocks(snap) + _remote_blocks(snap) + _action_blocks(snap))
+              + _screen_blocks(model, snap) + _tuya_blocks(snap) + _remote_blocks(snap) + _action_blocks(snap))
     blocks += _card_blocks(model, snap, {b["key"] for b in lamps})
     names = {b["key"]: b for b in blocks if b["kind"] in ("switch", "panel", "tuya") or (b["kind"] == "remote" and b["sub"] == "gang")}
     for b in blocks:
@@ -533,7 +537,7 @@ def _height(b: dict) -> int:
         return HEAD + max(len(b["ports"]), 1) * ROW + FOOT
     if b["kind"] in ("card", "remote", "action"):
         return HEAD + b["rows"] * ROW + FOOT
-    if b["kind"] == "panel":
+    if b["kind"] in ("panel", "screen"):
         return HEAD + (len(b["gangs"]) + len(b["cards"]) + 1) * ROW + FOOT
     rows = len(b["gangs"]) if b["kind"] in ("switch", "screen", "tuya") else max(len(b["inputs"]), len(b["outputs"])) + (3 if b["source"] == "ha" else 1)
     return HEAD + rows * ROW + FOOT

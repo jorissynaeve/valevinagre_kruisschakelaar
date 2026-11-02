@@ -578,39 +578,78 @@ def _panels(raw, cards: dict[str, dict]) -> tuple[dict[str, dict], dict[str, dic
 
 
 def _screen(sid, v) -> dict:
+    """Een scherm met openHASP: zoals een paneel een lijst kaarten in volgorde (zie hasp.py), zonder screensaver."""
     if not isinstance(sid, str) or not re.fullmatch(r"[a-z0-9_]{1,40}", sid) or not isinstance(v, dict):
         raise ModelError(f"scherm: ongeldig id {sid!r}")
     plate = v.get("plate") or ""
     if not isinstance(plate, str) or (plate.strip() and not SCREEN_PLATE_RE.fullmatch(plate.strip())):
         raise ModelError("scherm: de naam op de firmware mag alleen letters, cijfers, - en _ bevatten")
-    pages = v.get("pages")
-    if not isinstance(pages, list) or not 1 <= len(pages) <= MAX_SCREEN_PAGES:
-        raise ModelError(f"scherm: 1 tot {MAX_SCREEN_PAGES} pagina's")
-    clean = []
-    for page in pages:
-        buttons = page.get("buttons") if isinstance(page, dict) else None
-        if not isinstance(buttons, list) or len(buttons) > MAX_SCREEN_BUTTONS:
-            raise ModelError(f"scherm: maximaal {MAX_SCREEN_BUTTONS} knoppen per pagina")
-        row = []
-        for b in buttons:
-            if not isinstance(b, dict):
-                raise ModelError("scherm: ongeldige knop")
-            ent = b.get("entity") or None
-            if ent is not None and (not isinstance(ent, str) or not SCREEN_ENTITY_RE.fullmatch(ent) or ent.split(".")[0] not in SCREEN_DOMAINS):
-                raise ModelError(f"scherm: een knop kan {ent!r} niet bedienen")
-            row.append({"label": _name(b.get("label"), "knop.label"), "entity": ent})
-        clean.append({"title": _name(page.get("title"), "pagina.title"), "buttons": row})
-    return {"name": _name(v.get("name"), "scherm.name") or sid, "plate": plate.strip(), "timeout": _int(v.get("timeout", 30), 0, MAX_SCREEN_TIMEOUT, "scherm.timeout"), "pages": clean}
+    raw = v.get("cards") or []
+    if not isinstance(raw, list) or len(raw) > MAX_PANEL_CARDS or any(not isinstance(c, str) or not CARD_ID_RE.fullmatch(c) for c in raw):
+        raise ModelError(f"scherm: maximaal {MAX_PANEL_CARDS} kaarten")
+    if len(set(raw)) != len(raw):
+        raise ModelError("scherm: een kaart staat er twee keer op")
+    locale = v.get("locale", "nl")
+    if locale not in ("nl", "en"):
+        raise ModelError("scherm: taal nl of en")
+    return {"name": _name(v.get("name"), "scherm.name") or sid, "plate": plate.strip(), "timeout": _int(v.get("timeout", 30), 0, MAX_SCREEN_TIMEOUT, "scherm.timeout"),
+            "cards": list(raw), "locale": locale}
 
 
-def _screens(raw) -> dict[str, dict]:
+def _old_screen(sid, v, cards: dict[str, dict]) -> tuple[dict, dict[str, dict]]:
+    """Tot 0.16 had een scherm eigen pagina's met knoppen. Elke pagina wordt eenmalig een rasterkaart. Geeft (scherm, nieuwe kaarten)."""
+    pages = v.get("pages") if isinstance(v, dict) else None
+    rest = {k: x for k, x in v.items() if k != "pages"} if isinstance(v, dict) else v
+    if not isinstance(pages, list) or (isinstance(v, dict) and v.get("cards")):
+        return _screen(sid, rest), {}
+    name = _name(v.get("name"), "scherm.name") or sid
+    taken, new, order = set(cards), {}, []
+    for i, page in enumerate(pages[:MAX_SCREEN_PAGES]):
+        if not isinstance(page, dict):
+            continue
+        title = str(page.get("title") or (name if len(pages) == 1 else f"{name} {i + 1}")).replace("~", "-")[:MAX_NAME]
+        base = re.sub(r"[^a-z0-9_]+", "_", title.lower()).strip("_")[:30] or "kaart"
+        cid, n = base, 2
+        while cid in taken:
+            cid, n = f"{base}_{n}", n + 1
+        taken.add(cid)
+        items = []
+        for b in (page.get("buttons") or [])[:MAX_SCREEN_BUTTONS]:
+            b = b if isinstance(b, dict) else {}
+            ent = b.get("entity")
+            ok = isinstance(ent, str) and SCREEN_ENTITY_RE.fullmatch(ent) and ent.split(".")[0] in SCREEN_DOMAINS
+            items.append({"ref": None, "entity": ent if ok else None, "name": str(b.get("label") or "").replace("~", "-").strip()[:MAX_NAME], "icon": ""})
+        new[cid] = _card(cid, {"type": "grid", "name": title, "layout": "grid", "items": items})
+        order.append(cid)
+    return _screen(sid, {**rest, "cards": order}), new
+
+
+def _check_screens(screens: dict[str, dict], cards: dict[str, dict]) -> None:
+    for s in screens.values():
+        missing = [c for c in s["cards"] if c not in cards]
+        if missing:
+            raise ModelError(f"scherm {s['name']}: onbekende kaart {missing[0]}")
+        if any(cards[c]["type"] not in _cards.SCREEN_TYPES for c in s["cards"]):
+            raise ModelError(f"scherm {s['name']}: een screensaver kan niet op een scherm met openHASP")
+
+
+def _screens(raw, cards: dict[str, dict]) -> tuple[dict[str, dict], dict[str, dict], dict[str, list[str]]]:
+    """(schermen, alle kaarten, de kaarten die per scherm uit oude pagina's zijn gemaakt)."""
     if raw in (None, {}):
-        return {}
+        return {}, cards, {}
     if not isinstance(raw, dict) or len(raw) > MAX_SCREENS:
         raise ModelError(f"schermen: maximaal {MAX_SCREENS}")
-    out = {k: _screen(k, v) for k, v in raw.items()}
+    out, cards, made = {}, dict(cards), {}
+    for k, v in raw.items():
+        s, new = _old_screen(k, v, cards)
+        if len(cards) + len(new) > MAX_CARDS:
+            raise ModelError(f"kaarten: maximaal {MAX_CARDS}")
+        cards.update(new)
+        out[k] = s
+        if new:
+            made[k] = list(new)
     _unique_plates(out)
-    return out
+    return out, cards, made
 
 
 def _unique_plates(screens: dict[str, dict]) -> None:
@@ -888,7 +927,7 @@ class Model:
         self.panels: dict[str, dict] = {}  # NSPanels: id -> {name, host, cards, locale, timeout, bright, dim, notes}
         self.cards: dict[str, dict] = {}  # kaarten voor de NSPanels: id -> {type, name, ...} (zie cards.py)
         self.actions: dict[str, dict] = {}  # Tuya instellen: id -> {name, enabled, device, dp, on_value, off_value, interval, inputs}
-        self.screens: dict[str, dict] = {}  # schermen met openHASP: id -> {name, plate, timeout, pages}
+        self.screens: dict[str, dict] = {}  # schermen met openHASP: id -> {name, plate, timeout, cards, locale}
         self.rev = 0
         self._listeners: list[Callable[[], None]] = []
         if self.path and self.path.exists():
@@ -990,7 +1029,7 @@ class Model:
         modules = _modules(d.get("modules"))
         sprinklers = _sprinklers(d.get("sprinklers"))
         panels, cards, old_yaml = _panels(d.get("panels"), _load_cards(d.get("cards")))
-        screens = _screens(d.get("screens"))
+        screens, cards, old_pages = _screens(d.get("screens"), cards)
         actions = _actions(d.get("actions"))
         if save:  # bij het opstarten nooit weigeren, bij een import wel
             _conflicts(groups, virtual, sprinklers)
@@ -998,6 +1037,7 @@ class Model:
             _check_sprinklers(sprinklers, modules, timers)
             _check_cards(cards)
             _check_panels(panels, cards)
+            _check_screens(screens, cards)
             _check_actions(actions, modules, timers)
             for g in groups.values():
                 for key in ("disable", "control"):
@@ -1005,6 +1045,7 @@ class Model:
                         _check_disable(g[key], modules, timers)
         else:  # wat niet (meer) klopt valt weg in plaats van het opstarten te breken
             panels = {k: {**p, "cards": [c for c in p["cards"] if c in cards]} for k, p in panels.items()}
+            screens = {k: {**s, "cards": [c for c in s["cards"] if c in cards and cards[c]["type"] in _cards.SCREEN_TYPES]} for k, s in screens.items()}
             for c in cards.values():
                 if c["type"] == "grid":
                     c["items"] = [it for it in c["items"] if not (it["ref"] or "").startswith("c:") or (it["ref"][2:] in cards and cards[it["ref"][2:]]["type"] != "saver")]
@@ -1013,15 +1054,19 @@ class Model:
         if old_yaml:
             self._keep_yaml(old_yaml)
             for pid in old_yaml:
-                self.place_cards_near(pid, [c for c in cards if c not in (d.get("cards") or {})])
+                made = {c for cs in old_pages.values() for c in cs}
+                self.place_cards_near(pid, [c for c in cards if c not in (d.get("cards") or {}) and c not in made])
+        for sid, cids in old_pages.items():
+            self.place_cards_near(sid, cids, block=f"h:{sid}")
+            log.info("scherm %s: %d pagina('s) omgezet naar kaarten", sid, len(cids))
         if save:
             self._changed()
-        elif old_yaml:
+        elif old_yaml or old_pages:
             self.save()  # de omzetting meteen bewaren: anders gebeurt ze bij elke start opnieuw
 
-    def place_cards_near(self, pid: str, cids: list[str]) -> None:
-        """Nieuwe kaarten in een kolom links van het paneel, als dat op het schema staat. Alleen weergave."""
-        pos = self.schema["blocks"].get(f"p:{pid}")
+    def place_cards_near(self, pid: str, cids: list[str], block: str | None = None) -> None:
+        """Nieuwe kaarten in een kolom links van het paneel (of het scherm), als dat op het schema staat. Alleen weergave."""
+        pos = self.schema["blocks"].get(block or f"p:{pid}")
         todo = [c for c in cids if f"c:{c}" not in self.schema["blocks"]]
         if not pos or not todo:
             return
@@ -1300,6 +1345,7 @@ class Model:
         cards = {**self.cards, cid: _card(cid, {**old, **fields})}
         _check_cards(cards)
         _check_panels(self.panels, cards)  # bv. een tweede screensaver kan niet: maar het type verandert hier nooit
+        _check_screens(self.screens, cards)
         self.cards = cards
         self._changed()
 
@@ -1310,6 +1356,7 @@ class Model:
         ref = f"c:{cid}"
         self.cards = {k: ({**c, "items": [it for it in c["items"] if it.get("ref") != ref]} if c["type"] == "grid" else c) for k, c in self.cards.items() if k != cid}
         self.panels = {k: {**p, "cards": [c for c in p["cards"] if c != cid]} for k, p in self.panels.items()}
+        self.screens = {k: {**s, "cards": [c for c in s["cards"] if c != cid]} for k, s in self.screens.items()}
         self.schema = {**self.schema, "blocks": {k: v for k, v in self.schema["blocks"].items() if k != ref}}
         self._changed()
         return True
@@ -1330,22 +1377,23 @@ class Model:
         sid, label, n = slug, base, 2
         while sid in self.screens:
             sid, label, n = f"{slug}_{n}", f"{base} {n}", n + 1
-        new = {**self.screens, sid: _screen(sid, {"name": label, "plate": plate, "pages": [{"title": label, "buttons": []}]})}
+        new = {**self.screens, sid: _screen(sid, {"name": label, "plate": plate})}
         _unique_plates(new)
         self.screens = new
         self._changed()
         return sid
 
     def set_screen(self, sid: str, **fields) -> None:
-        """Alleen wat je meegeeft verandert."""
+        """Alleen wat je meegeeft verandert. `cards` is de hele lijst in volgorde."""
         old = self.screens.get(sid)
         if old is None:
             raise ModelError("onbekend scherm")
-        unknown = set(fields) - {"name", "plate", "timeout", "pages"}
+        unknown = set(fields) - {"name", "plate", "timeout", "cards", "locale"}
         if unknown:
             raise ModelError(f"scherm: onbekend veld {sorted(unknown)[0]}")
         new = {**self.screens, sid: _screen(sid, {**old, **fields})}
         _unique_plates(new)
+        _check_screens(new, self.cards)
         self.screens = new
         self._changed()
 

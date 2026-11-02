@@ -31,7 +31,7 @@ function viewLinks() {
       ${rows}</div>`;
   }).join('');
   return `<h2>Andere installaties</h2>
-    <p class="sub">Een Huisconfig in een ander subnet (met een eigen Home Assistant) biedt zijn lampen, gangen (touch en relais van een schakelaar) en Tuya-toestellen aan, en omgekeerd. Je kiest per installatie wat je wilt gebruiken; dat verschijnt op het schema als blok dat je kunt bedienen, aan een NSPanel-kaart kunt hangen, of (een gang) op een lamp kunt aansluiten. Instellen doe je bij de installatie waar het toestel hangt.</p>
+    <p class="sub">Een Huisconfig in een ander subnet (met een eigen Home Assistant) biedt zijn lampen, gangen (touch en relais van een schakelaar) en Tuya-toestellen aan, en omgekeerd. Je kiest per installatie wat je wilt gebruiken; dat verschijnt op het schema als blok dat je kunt bedienen, aan een kaart kunt hangen, of (een gang) op een lamp kunt aansluiten. Instellen doe je bij de installatie waar het toestel hangt.</p>
     <label for="lkname">Naam van deze installatie</label>
     <div class="row"><input type="text" id="lkname" maxlength="60" placeholder="bv. Hoofdhuis" value="${esc(me.name)}"><button class="btn small" type="button" data-lk="name">Opslaan</button></div>
     ${me.id ? `<div class="sub">Id: <code>${esc(me.id)}</code>. Die blijft, ook als je de naam verandert: de andere installaties verwijzen ermee naar deze.</div>` : '<div class="sub">Nodig om te koppelen. Elke installatie een andere naam.</div>'}

@@ -108,8 +108,11 @@ switch:
 
 * **Eén eigenaar**: haal een scherm eerst uit de pyscript-config (en herstart pyscript) voor je het hier koppelt, anders sturen beide tegelijk.
 * **Naam op de firmware**: bv. `scherm01`. Schermen die de broker kent, staan als suggestie in de lijst.
-* **Pagina's**: elke pagina heeft een titel en tot 4 knoppen die een entiteit uit HA bedienen. Met twee pagina's of meer komen er knoppen onderaan: vorige, eerste, volgende.
-* **Kleur**: geel is aan, lichtgrijs is uit en donkergrijs is een stand die niet bekend is. Knoppen naar een entiteit die HA niet kent, worden in de zijbalk opgesomd.
+* **Kaarten**: dezelfde kaarten als op een NSPanel (zie hieronder). Sleep de uitgang van een kaart naar **+ kaart** op het scherm; elke kaart is een pagina, in die volgorde. Eén kaart mag op een paneel én een scherm hangen. Knoppen, laadpaal, energie en wifi kunnen; een screensaver niet (de wifi-kaart toont netwerk en wachtwoord als tekst, zonder QR-code).
+* **Pagina's**: 4 knoppen per pagina. Een kaart met meer knoppen loopt door op een volgende pagina ("Licht (1/2)", "Licht (2/2)"). Met twee pagina's of meer komen er knoppen onderaan: vorige, eerste, volgende. Een subpagina (een kaart aan een knop van een rasterkaart) heeft onderaan **Terug**, naar de pagina waar je vandaan kwam. Het scherm heeft 12 pagina's; passen de kaarten niet, dan zegt de zijbalk dat en blijft het scherm zoals het was.
+* **Lampen uit de add-on**: een lamp of kring van het schema, of een lamp van een andere installatie, leest zijn stand uit de add-on en schakelt rechtstreeks, zoals op een NSPanel.
+* **Kleur**: geel is aan, lichtgrijs is uit en donkergrijs is een stand die niet bekend is. Knoppen naar een entiteit die HA niet kent, worden in de zijbalk opgesomd. Een sensor toont zijn waarde.
+* **Van 0.15 naar 0.16**: de eigen pagina's van een scherm worden bij de eerste start eenmalig rasterkaarten, naast het scherm op het schema.
 * **Donker**: na de ingestelde tijd gaat het scherm uit. De eerste aanraking maakt het alleen wakker en schakelt niets.
 * **Wijzigen**: een andere indeling wist het scherm en stuurt het ontwerp opnieuw (ongeveer 5 seconden). Een herstart van de add-on laat het scherm met rust.
 
@@ -121,7 +124,7 @@ Zonder de add-on of HA doen de knoppen niets; de lampen zelf blijven werken. In 
 
 ### Kaarten
 
-Wat er op het scherm staat, bouw je uit **kaarten**: eigen blokken op het schema (*+ Module → NSPanel-kaarten*), die je met een draad aan het paneel hangt. Sleep de **uitgang** van een kaart (rechts) naar **+ kaart** op het paneel. De volgorde op het paneel is de volgorde van de pagina's; in de zijbalk van het paneel kun je ze verschuiven (↑ ↓) of weghalen. Eén kaart mag aan meerdere panelen hangen.
+Wat er op het scherm staat, bouw je uit **kaarten**: eigen blokken op het schema (*+ Module → Kaarten*), die je met een draad aan het paneel hangt. Sleep de **uitgang** van een kaart (rechts) naar **+ kaart** op het paneel. De volgorde op het paneel is de volgorde van de pagina's; in de zijbalk van het paneel kun je ze verschuiven (↑ ↓) of weghalen. Eén kaart mag aan meerdere panelen hangen.
 
 | Kaart | Wat ze toont |
 |---|---|

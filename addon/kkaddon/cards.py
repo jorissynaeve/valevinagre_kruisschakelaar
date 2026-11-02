@@ -1,4 +1,5 @@
-"""Kaarten voor het NSPanel: eigen blokken op het schema (`c:<id>`), met een draad aan een paneel of aan een rasterkaart.
+"""Kaarten voor het NSPanel en de schermen met openHASP (hasp.py): eigen blokken op het schema (`c:<id>`), met een draad aan
+een paneel, een scherm of een rasterkaart.
 
   * Een kaart aan een **paneel** is een hoofdpagina; de volgorde staat op het paneel. Een screensaver-kaart is het
     startscherm, niet een pagina.
@@ -24,6 +25,7 @@ from .points import Points
 log = logging.getLogger("kk.cards")
 
 TYPES = {"grid": "Knoppen", "charger": "Laadpaal", "saver": "Screensaver", "power": "Energie", "qr": "Wifi (QR)"}
+SCREEN_TYPES = {"grid", "charger", "power", "qr"}  # wat op een scherm met openHASP kan (hasp.py): een screensaver heeft daar geen tegenhanger
 LAYOUTS = {"grid": "cardGrid", "list": "cardEntities"}
 MAX_ITEMS = {"grid": 8, "list": 4}  # een raster met meer dan 6 wordt het brede raster; een lijst toont er 4
 MAX_POWER = 6
@@ -88,10 +90,11 @@ def wifi_code(ssid: str, password: str, security: str) -> str:
 # ---------------------------------------------------------------- welke kaarten hangen waar
 
 
-def pages_of(model, pid: str) -> tuple[str | None, list[str], list[str]]:
-    """(screensaver, hoofdpagina's, subpagina's) van een paneel. Een subpagina is elke kaart die via een rasterknop bereikbaar is."""
+def pages_of(model, pid: str, screen: bool = False) -> tuple[str | None, list[str], list[str]]:
+    """(screensaver, hoofdpagina's, subpagina's) van een paneel (of een scherm met openHASP). Een subpagina is elke kaart die via
+    een rasterknop bereikbaar is."""
     cards = model.cards
-    order = [c for c in model.panels[pid]["cards"] if c in cards]
+    order = [c for c in (model.screens if screen else model.panels)[pid]["cards"] if c in cards]
     saver = next((c for c in order if cards[c]["type"] == "saver"), None)
     pages = [c for c in order if cards[c]["type"] != "saver"]
     seen, hidden, todo = set(pages), [], list(pages)
@@ -113,6 +116,7 @@ def users(model, cid: str) -> list[dict]:
         pages = [c for c in p["cards"] if model.cards.get(c, {}).get("type") != "saver"]
         return pages.index(cid) if cid in pages else 0
     out = [{"key": f"p:{pid}", "name": p["name"], "i": page(p), "as": "page"} for pid, p in model.panels.items() if cid in p["cards"]]
+    out += [{"key": f"h:{sid}", "name": s["name"], "i": s["cards"].index(cid), "as": "page"} for sid, s in model.screens.items() if cid in s["cards"]]
     for gid, g in model.cards.items():
         if g["type"] == "grid":
             out += [{"key": f"c:{gid}", "name": g["name"], "i": i, "as": "sub"} for i, it in enumerate(g["items"]) if it.get("ref") == f"c:{cid}"]
@@ -143,6 +147,14 @@ def config(model, pid: str) -> dict:
     if saver:
         out["screensaver"] = _saver(model.cards[saver])
     return out
+
+
+def screen_pages(model, sid: str) -> list[dict]:
+    """De kaarten van een scherm met openHASP: [{title, key, entities, sub}], in de vorm van `_card` (zie hasp.py). Eerst de
+    hoofdpagina's in volgorde, dan de subpagina's (via een rasterknop)."""
+    lang = model.screens[sid]["locale"]
+    _, pages, hidden = pages_of(model, sid, screen=True)
+    return [{**_card(model, c, lang), "sub": c in hidden} for c in pages + hidden]
 
 
 def _card(model, cid: str, lang: str) -> dict:
@@ -262,7 +274,7 @@ class Live:
                 return None
             ref = items[i]["ref"]
             on = self.lamp_on(ref)
-            out = {"kind": "switch", "value": 1 if on else 0, "color": ON_COLOR if on else DEFAULT_COLOR}
+            out = {"kind": "switch", "value": 1 if on else 0, "color": ON_COLOR if on else DEFAULT_COLOR, "known": on is not None}
             if ref.startswith("r:"):
                 r = self._remote(ref)
                 o = r[2] if r else None

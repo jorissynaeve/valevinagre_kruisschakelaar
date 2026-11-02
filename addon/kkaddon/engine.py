@@ -836,7 +836,7 @@ class Engine:
                                                                   "temperature": None, "rssi": None} for k, p in self.model.panels.items()],
             "tuya": self.tuya_view() if self.tuya_view else [],
             "links": self.link_view() if self.link_view else {"me": {"id": "", "name": "", "port": 0, "has_key": False, "listening": False, "error": ""}, "peers": [], "remote": {}},
-            "screens": self.screen_view() if self.screen_view else [{"id": k, **s, "online": False, "phase": "idle", "missing": [], "uptime": None, "received": 0, "plates": []}
+            "screens": self.screen_view() if self.screen_view else [{"id": k, **s, "online": False, "phase": "idle", "error": "", "missing": [], "uptime": None, "received": 0, "plates": []}
                                                                     for k, s in self.model.screens.items()],
             "clock": self._clock_view(),
             "stats": dict(self.stats),
