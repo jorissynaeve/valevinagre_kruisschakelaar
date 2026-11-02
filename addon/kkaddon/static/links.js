@@ -18,19 +18,20 @@ function viewLinks() {
   const peers = lk.peers.map((p) => `<tr><td><code>${esc(p.host)}:${p.port}</code></td><td>${lkState(p)}</td>
       <td><button class="btn small danger" type="button" data-lk="rmpeer" data-host="${esc(p.host)}" data-port="${p.port}" title="Adres weghalen">✕</button></td></tr>`).join('')
     || '<tr><td colspan="3" class="sub">Nog geen adressen. Eén kant opgeven volstaat: de verbinding werkt in beide richtingen.</td></tr>';
-  const kind = { lamp: 'Lamp', tuya: 'Tuya' };
+  const kind = { lamp: 'Lamp', tuya: 'Tuya', gang: 'Gang (touch en relais)' };
   const known = Object.entries(lk.remote).map(([id, r]) => {
-    const offer = Object.entries(r.catalog || {});
+    const order = { tuya: 0, lamp: 1, gang: 2 };
+    const offer = Object.entries(r.catalog || {}).sort(([, a], [, b]) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9) || a.name.localeCompare(b.name, 'nl'));
     const used = offer.filter(([, o]) => o.used).length;
     const rows = offer.map(([obj, o]) => `<label style="display:flex;gap:8px;align-items:center;margin:2px 0;color:var(--ink);cursor:pointer">
-        <input type="checkbox" data-lkuse="${esc(obj)}" data-peer="${esc(id)}" ${o.used ? 'checked' : ''}> ${esc(o.name)} <span class="sub">${kind[o.kind] || esc(o.kind)}</span></label>`).join('');
+        <input type="checkbox" data-lkuse="${esc(obj)}" data-peer="${esc(id)}" ${o.used ? 'checked' : ''}> ${esc(o.name)} <span class="sub">${kind[o.kind] || esc(o.kind)}${o.busy ? ' · bezet in een kring daar' : ''}</span></label>`).join('');
     return `<div class="tmd"><div class="row sp"><b>${esc(r.name)} <span class="sub">(${esc(id)})</span></b><span class="row">${r.online ? '<span class="badge ok">online</span>' : '<span class="badge">offline</span>'}
         ${r.online ? '' : `<button class="btn small danger" type="button" data-lk="forget" data-peer="${esc(id)}" title="Haar blokken weghalen">Vergeten</button>`}</span></div>
       <div class="sub">${offer.length ? `${used} van ${offer.length} in gebruik. Vink aan wat je hier wilt gebruiken: alleen dat wordt een blok, en alleen daarvan komt de stand over de lijn.` : 'Biedt nog niets aan.'}</div>
       ${rows}</div>`;
   }).join('');
   return `<h2>Andere installaties</h2>
-    <p class="sub">Een Huisconfig in een ander subnet (met een eigen Home Assistant) biedt zijn lampen en Tuya-toestellen aan, en omgekeerd. Je kiest per installatie wat je wilt gebruiken; dat verschijnt op het schema als blok dat je kunt bedienen en aan een NSPanel-kaart kunt hangen. Instellen doe je bij de installatie waar het toestel hangt.</p>
+    <p class="sub">Een Huisconfig in een ander subnet (met een eigen Home Assistant) biedt zijn lampen, gangen (touch en relais van een schakelaar) en Tuya-toestellen aan, en omgekeerd. Je kiest per installatie wat je wilt gebruiken; dat verschijnt op het schema als blok dat je kunt bedienen, aan een NSPanel-kaart kunt hangen, of (een gang) op een lamp kunt aansluiten. Instellen doe je bij de installatie waar het toestel hangt.</p>
     <label for="lkname">Naam van deze installatie</label>
     <div class="row"><input type="text" id="lkname" maxlength="60" placeholder="bv. Hoofdhuis" value="${esc(me.name)}"><button class="btn small" type="button" data-lk="name">Opslaan</button></div>
     ${me.id ? `<div class="sub">Id: <code>${esc(me.id)}</code>. Die blijft, ook als je de naam verandert: de andere installaties verwijzen ermee naar deze.</div>` : '<div class="sub">Nodig om te koppelen. Elke installatie een andere naam.</div>'}

@@ -72,6 +72,10 @@ def _gang_owners(model: Model, snap: dict) -> dict[str, tuple[str, int]]:
     for pid in model.panels:
         for i in range(2):
             own.setdefault(panel_relay_entity(pid, i + 1), (f"p:{pid}", i))
+    for pid, p in ((snap.get("links") or {}).get("remote") or {}).items():  # een gang van een andere installatie: het lid is het blok zelf
+        for obj, o in p["objects"].items():
+            if o.get("kind") == "gang":
+                own.setdefault(f"r:{pid}:{obj}", (f"r:{pid}:{obj}", 0))
     return own
 
 
@@ -182,10 +186,13 @@ def _remote_blocks(snap: dict) -> list[dict]:
     for pid, p in ((snap.get("links") or {}).get("remote") or {}).items():
         for obj, o in sorted(p["objects"].items()):
             pts = [x for x in o.get("points") or [] if not x.get("hide") and not x.get("diag")]
-            lamp = o.get("kind") == "lamp"
-            out.append({"key": f"r:{pid}:{obj}", "kind": "remote", "source": "remote", "sub": o.get("kind"), "peer": pid, "peerName": p["name"], "obj": obj,
+            kind, key = o.get("kind"), f"r:{pid}:{obj}"
+            # een gang: touch en relais zoals een schakelaar, met de verwijzing zelf als entiteit (een lid van een kring)
+            gangs = [{"i": 0, "label": o.get("name") or obj, "entity": key, "touch": True, "relay": True, "on": o.get("on")}] if kind == "gang" else []
+            out.append({"key": key, "kind": "remote", "source": "remote", "sub": kind, "peer": pid, "peerName": p["name"], "obj": obj,
                         "name": o.get("name") or obj, "tech": f"{p['name']} · {obj}", "alias": "", "room": "", "online": bool(p["online"] and o.get("online")),
-                        "linked": p["online"], "on": o.get("on"), "held": bool(o.get("held")), "points": pts, "rows": 1 if lamp else max(len(pts), 1)})
+                        "linked": p["online"], "on": o.get("on"), "held": bool(o.get("held")), "busy": bool(o.get("busy")), "points": pts, "gangs": gangs,
+                        "rows": 1 if kind in ("lamp", "gang") else max(len(pts), 1)})
     return out
 
 
@@ -275,7 +282,7 @@ def view(model: Model, snap: dict) -> dict:
     blocks = (_switch_blocks(model, snap, owners, states) + lamps + _timer_blocks(snap) + _module_blocks(snap) + _sprinkler_blocks(snap) + _panel_blocks(model, snap)
               + _screen_blocks(snap) + _tuya_blocks(snap) + _remote_blocks(snap))
     blocks += _card_blocks(model, snap, {b["key"] for b in lamps})
-    names = {b["key"]: b for b in blocks if b["kind"] in ("switch", "panel", "tuya")}
+    names = {b["key"]: b for b in blocks if b["kind"] in ("switch", "panel", "tuya") or (b["kind"] == "remote" and b["sub"] == "gang")}
     for b in blocks:
         for c in b.get("inputs", []) + b.get("outputs", []):
             sw = names.get(c["sw"])
@@ -283,7 +290,7 @@ def view(model: Model, snap: dict) -> dict:
                 c["sw"] = c["gang"] = None
             elif c["gang"] < len(sw["gangs"]):
                 c["label"] = sw["gangs"][c["gang"]]["label"]
-                c["swName"] = sw["name"]
+                c["swName"] = sw["peerName"] if sw["kind"] == "remote" else sw["name"]  # een gang van een andere installatie: "Atelier · Touch poort · links"
         pos = model.schema["blocks"].get(b["key"])
         b.update(pos if pos else {"page": None, "x": 0, "y": 0})
     return {"pages": model.schema["pages"], "blocks": sorted(blocks, key=lambda b: (b["kind"], b["name"].lower()))}
@@ -343,6 +350,8 @@ def _wire_light(model: Model, engine, node: int, relay: int, direction: str, ref
         raise ModelError("De uitgang van dit licht ligt vast: het is het relais van de node zelf.")
     src = (ref.get("node"), ref.get("btn"))
     if "entity" in ref:
+        if str(ref["entity"]).startswith("r:"):
+            raise ModelError("Een gang van een andere installatie kan alleen op een lamp via Home Assistant (een kring), niet op een licht op het netwerk.")
         src = _virtual_gang_of(model, ref["entity"])
         if src is None:
             raise ModelError("Dit toestel staat nog niet op het netwerk. Importeer het eerst als extern apparaat (tabblad Nodes).")

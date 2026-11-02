@@ -152,6 +152,7 @@ body.linking .sctab:not(.add) { color: var(--ink); outline: 1px dashed var(--acc
 .wirehit { fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: pointer; }
 .scc { display: flex; gap: 6px; justify-content: space-between; align-items: center; padding: 2px 0; font-size: 13.5px; }
 .scc code { word-break: break-all; font-size: 11.5px; }
+.scc > a, .scc > div { min-width: 0; overflow-wrap: anywhere; } /* een lange naam breekt af in plaats van de knoppen uit beeld te duwen */
 #scpanel a { color: var(--accent); text-decoration: none; }
 #scpanel select, #scpanel input[type=text], #scpanel input[type=password] { margin-top: 3px; }
 #scpanel label { margin: 4px 0 0; }

@@ -22,7 +22,7 @@ const clampN = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const SC_WIRES = false; // voorlopig geen lijnen: elke verbinding is een verwijzing, ook binnen een ruimte
 const SC_MARGIN = 200; // links van x=0: de verwijzingen en draden aan de touch-kant
 
-const SC_GANGED = ['switch', 'panel', 'tuya']; // blokken met gangen: per gang een touch en een relais
+const SC_GANGED = ['switch', 'panel', 'tuya', 'remote']; // blokken met gangen: per gang een touch en een relais (remote: alleen een gang van een andere installatie)
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
 const scW = (b) => (b.kind === 'lamp' ? LAMP_W : b.kind === 'tuya' ? TUYA_W : SW_W);
@@ -135,9 +135,11 @@ function scCard(b) {
     ${b.users.map((u, n) => `<text class="stub" x="${b.x + SW_W + 11}" y="${y0 + 4 + n * 13}" data-sc="go" data-k="${esc(u.key)}">→ ${esc(scCut(u.name, 22))} ${u.as === 'page' ? `(${b.type === 'saver' ? 'start' : `pagina ${u.i + 1}`})` : '(sub)'}<title>${esc(u.name)}</title></text>`).join('')}</g>`;
 }
 
-function scRemote(b) { // een lamp of Tuya-toestel van een andere installatie: alleen-lezen, te bedienen
+function scRemote(b, tags) { // een lamp, gang of Tuya-toestel van een andere installatie: alleen-lezen, te bedienen
   const st = b.on === true ? 'on' : b.on === null || b.on === undefined ? 'unknown' : '';
-  const rows = b.sub === 'lamp'
+  const rows = b.sub === 'gang'
+    ? `<text class="bkt" x="${b.x + SW_W / 2}" y="${rowY(b, 0) + 4}" text-anchor="middle">${b.on === true ? 'aan' : b.on === false ? 'uit' : 'onbekend'}${b.busy ? ' · bezet' : ''}</text>${scGangPorts(b, b.gangs[0], SW_W, tags)}`
+    : b.sub === 'lamp'
     ? `<circle class="bulb ${st}" cx="${b.x + 22}" cy="${rowY(b, 0)}" r="9" data-sc="rtoggle" data-k="${esc(b.key)}"><title>Aan of uit zetten (via ${esc(b.peerName)})</title></circle>
        <text class="bkt" x="${b.x + 40}" y="${rowY(b, 0) + 4}">${b.on === true ? 'aan' : b.on === false ? 'uit' : 'onbekend'}${b.held ? ' · vastgehouden' : ''}</text>`
     : b.points.length ? b.points.map((p, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}"><title>${esc(`${p.name}: ${scTyValue(p)}`)}</title>${esc(scCut(p.name, 20))} <tspan class="tyv">${esc(scCut(scTyValue(p), 14))}</tspan></text>`).join('')
@@ -146,14 +148,20 @@ function scRemote(b) { // een lamp of Tuya-toestel van een andere installatie: a
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 28))}</text>
-    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">↔ ${esc(scCut(b.peerName, 16))} · ${b.sub === 'lamp' ? 'Lamp' : 'Tuya'}${b.online ? '' : ' · offline'}</text>${rows}</g>`;
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">↔ ${esc(scCut(b.peerName, 16))} · ${{ lamp: 'Lamp', gang: 'Gang', tuya: 'Tuya' }[b.sub] || b.sub}${b.online ? '' : ' · offline'}</text>${rows}</g>`;
 }
 
 function scRemotePanel(b) {
   const opt = (v, cur, text) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(text)}</option>`;
   const users = scBlocks().filter((c) => c.kind === 'card' && ((c.items || []).some((it) => it.ref === b.key) || c.tuya === b.key));
   let body;
-  if (b.sub === 'lamp') {
+  if (b.sub === 'gang') {
+    body = `<div class="row"><button class="btn small" type="button" data-sc="rcmd" data-k="${esc(b.key)}" data-op="on" ${b.linked && !b.busy ? '' : 'disabled'}>Aan</button>
+      <button class="btn small" type="button" data-sc="rcmd" data-k="${esc(b.key)}" data-op="off" ${b.linked && !b.busy ? '' : 'disabled'}>Uit</button></div>
+      ${b.busy ? `<div class="sub" style="color:var(--warn)">Bezet: deze gang zit bij ${esc(b.peerName)} in een actieve kring. Daar beslist die kring; een bevel van hier wordt geweigerd.</div>` : ''}
+      <h2>Aansluiten</h2>${scGangRows(b)}
+      <div class="sub">Sleep de <b>touch</b> naar de ingang van een lamp, of het <b>relais</b> naar de uitgang. De kring draait hier; de druk komt via ${esc(b.peerName)}. Valt de koppeling weg, dan doet deze gang niet mee; komt ze terug, dan neemt de touch de stand van de lamp over.</div>`;
+  } else if (b.sub === 'lamp') {
     body = `<div class="row"><button class="btn small" type="button" data-sc="rcmd" data-k="${esc(b.key)}" data-op="on" ${b.linked ? '' : 'disabled'}>Aan</button>
       <button class="btn small" type="button" data-sc="rcmd" data-k="${esc(b.key)}" data-op="off" ${b.linked ? '' : 'disabled'}>Uit</button></div>
       ${b.held ? '<div class="sub">Deze lamp wordt bij de eigenaar vastgehouden door haar aan/uit-ingang: een bevel wordt geweigerd.</div>' : ''}`;
@@ -165,7 +173,7 @@ function scRemotePanel(b) {
     body = rw.length ? `<h2>Bedienen</h2>${rw.map((p) => `<label>${esc(p.name)}${p.unit ? ` (${esc(p.unit)})` : ''}</label>${control(p)}`).join('')}<div class="sub">Een wijziging gaat via ${esc(b.peerName)} naar het toestel.</div>` : '';
   }
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${b.linked ? (b.online ? 'online' : 'toestel offline') : `${esc(b.peerName)} niet verbonden`}</span></div>
-    <div class="sub">Van de installatie <b>${esc(b.peerName)}</b>. Instellen, hernoemen en aansluiten op touches doe je daar; hier kun je het bedienen en aan een NSPanel-kaart hangen${b.sub === 'lamp' ? ' (sleep een knop van een rasterkaart naar dit blok)' : ' (kies het bij een laadpaalkaart)'}.</div>
+    <div class="sub">Van de installatie <b>${esc(b.peerName)}</b>. Instellen en hernoemen doe je daar; hier kun je het bedienen${b.sub === 'gang' ? ' en op een lamp aansluiten' : ` en aan een NSPanel-kaart hangen${b.sub === 'lamp' ? ' (sleep een knop van een rasterkaart naar dit blok)' : ' (kies het bij een laadpaalkaart)'}`}.</div>
     <label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
     ${body}
     <h2>Gebruikt door</h2>${users.map((c) => `<div class="sub"><a href="#" data-sc="go" data-k="${esc(c.key)}">${esc(c.name)}</a></div>`).join('') || '<div class="sub">Nog geen kaart.</div>'}`;
@@ -712,7 +720,7 @@ function scInner(list) {
   const shown = new Set(list.map((b) => b.key));
   const wires = !SC_WIRES ? '' : conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
   const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b)
-    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'card' ? scCard(b) : b.kind === 'remote' ? scRemote(b) : b.kind === 'panel' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
+    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'card' ? scCard(b) : b.kind === 'remote' ? scRemote(b, tags) : b.kind === 'panel' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
   return `<g class="wires">${wires}</g>${blocks}<path id="sctemp" class="wire temp"/>`; // draden onder de blokken: anders liggen ze over de poorten
 }
 
@@ -827,7 +835,7 @@ function scAddEntity(b, dir) { // aansluiten zonder schakelaar-blok
 function scAddSelect(b, dir) {
   if (dir === 'out' && b.source === 'node') return '';
   const taken = new Set((dir === 'in' ? b.inputs : b.outputs).map((c) => `${c.sw}|${c.gang}`));
-  const groups = scBlocks().filter((s) => s.kind === 'switch' || s.kind === 'tuya').map((s) => {
+  const groups = scBlocks().filter((s) => s.kind === 'switch' || s.kind === 'tuya' || (s.kind === 'remote' && s.sub === 'gang' && b.source === 'ha')).map((s) => {
     const gangs = s.gangs.filter((g) => !taken.has(`${s.key}|${g.i}`) && (dir === 'in' ? g.touch : g.relay) && (b.source !== 'ha' || g.entity));
     return gangs.length ? `<optgroup label="${esc(s.name)}">${gangs.map((g) => `<option value="${esc(s.key)}|${g.i}">${esc(g.label)}</option>`).join('')}</optgroup>` : '';
   }).join('');
@@ -888,7 +896,8 @@ async function scSaveTimer(b, days, name = b.name) {
 const scDaysCopy = (b) => JSON.parse(JSON.stringify(b.days));
 
 function scConnSelect(s, g) { // een verwijzing maken vanaf de schakelaar: de lamp mag in elke ruimte staan
-  const lamps = scBlocks().filter((l) => l.kind === 'lamp' && (l.source !== 'ha' || g.entity));
+  const far = g.entity && g.entity.startsWith('r:'); // een gang van een andere installatie: alleen een lamp via HA (een kring)
+  const lamps = scBlocks().filter((l) => l.kind === 'lamp' && (l.source !== 'ha' || g.entity) && (!far || l.source === 'ha'));
   const opt = (dir) => lamps.filter((l) => (dir === 'in' ? g.touch : g.relay && l.source === 'ha'))
     .filter((l) => !(dir === 'in' ? l.inputs : l.outputs).some((c) => c.sw === s.key && c.gang === g.i))
     .map((l) => `<option value="${esc(l.key)}|${dir}">${esc(l.name)}</option>`).join('');

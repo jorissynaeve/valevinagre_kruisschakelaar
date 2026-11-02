@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import cards as _cards
-from .link import split_ref
+from .link import GANG_REF_RE, split_ref
 from .logic import BOOL, MODULE_TYPES, NUMBER, SPRINKLER_INPUTS, TIME, disable_ref
 from .logic import minutes as _minutes
 from .hasp import DOMAINS as SCREEN_DOMAINS
@@ -132,7 +132,7 @@ def _group(gid, v) -> dict:
         raise ModelError(f"kring {gid}: maximaal {MAX_GROUP_ENTITIES} entiteiten")
     ents = []
     for e in raw:
-        if not isinstance(e, str) or not ENTITY_RE.match(e):
+        if not isinstance(e, str) or not (ENTITY_RE.match(e) or GANG_REF_RE.match(e)):  # r:<installatie>:e:<entiteit> = een gang van een andere installatie
             raise ModelError(f"kring {gid}: ongeldige entiteit {e!r}")
         if e in ents:
             raise ModelError(f"kring {gid}: {e} komt twee keer voor")
@@ -606,7 +606,7 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]], sprinkle
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|c:[a-z0-9_]{1,40}|r:[a-z0-9_]{1,40}:(?:g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80})|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|c:[a-z0-9_]{1,40}|r:[a-z0-9_]{1,40}:(?:g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80}|e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190})|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
 
 
 def _switch_gangs(raw) -> list[dict]:

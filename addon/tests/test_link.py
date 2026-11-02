@@ -245,3 +245,106 @@ def test_what_0_12_already_used_on_the_schema_or_a_card_stays_chosen(tmp_path):
     hub.set_use("atelier", "g:hal", False)
     again = LinkHub(tmp_path, Engine(KEY, m, lambda raw: None))
     assert again.use["atelier"] == ["y:lader"], "een keuze die je daarna maakt, blijft"
+
+
+class OwnHa:
+    """De HA van een installatie, zoals linkhub en sync hem zien: standen, luisteraars, en een bevel dat als stand terugkomt."""
+
+    def __init__(self, engine, states):
+        self.engine, self.states, self.calls, self.state_listeners = engine, {k: (v, {}) for k, v in states.items()}, [], []
+        engine.virt.set_link(True)
+        engine.ha_call = self.call
+        engine.ha_snapshot({k: v for k, v in states.items()})
+
+    def call(self, entity, on):
+        self.calls.append((entity, on))
+        asyncio.get_running_loop().call_soon(self.press, entity, "on" if on else "off")  # de echo komt even later, zoals uit HA
+        return True
+
+    def press(self, entity, st):
+        """Een stand die in HA verandert: een druk op de touch, of de echo van een bevel."""
+        self.states[entity] = (st, {})
+        if entity in self.engine.ha_entities():
+            self.engine.ha_state(entity, st)
+        for cb in self.state_listeners:
+            cb(entity)
+
+
+def test_a_touch_in_one_house_switches_a_lamp_in_the_other_and_the_lamp_wins_after_an_outage(tmp_path):
+    async def go():
+        hh, at = House(tmp_path, "hoofdhuis"), House(tmp_path, "atelier")
+        TOUCH, LAMP = "switch.touch_poort", "switch.lamp_oprit"
+        at.engine.model.set_schema({**at.engine.model.schema, "switches": {"poort": {"name": "Touch poort", "gangs": [{"entity": TOUCH, "name": "links"}]}}})
+        ha_at, ha_hh = OwnHa(at.engine, {TOUCH: "off"}), OwnHa(hh.engine, {LAMP: "off"})
+        at.hub.attach_ha(ha_at)
+        await hh.start()
+        await at.start()
+        try:
+            hh.hub.add_peer("127.0.0.1", at.hub.port)
+            await until(lambda: f"e:{TOUCH}" in hh.hub.status()["remote"].get("atelier", {}).get("catalog", {}), what="de gang staat in het aanbod")
+            assert hh.hub.status()["remote"]["atelier"]["catalog"][f"e:{TOUCH}"] == {"kind": "gang", "name": "Touch poort · links", "busy": False, "used": False}
+            hh.hub.set_use("atelier", f"e:{TOUCH}", True)
+            ref = f"r:atelier:e:{TOUCH}"
+            m = hh.engine.model
+            m.set_groups([{"id": "oprit", "name": "Oprit", "entities": [LAMP, ref]}])
+            m.set_group("oprit", enabled=True, lamp=[LAMP])  # de lamp hier, de touch in het atelier
+            hh.engine.ha_snapshot({LAMP: ha_hh.states[LAMP][0]})  # zoals habridge na een modelwijziging de standen opnieuw ophaalt
+            touch = lambda: next(x for x in hh.engine.groups.members["oprit"] if x.entity == ref)
+            await until(lambda: touch().avail and touch().known is False, what="de stand van de touch komt via de koppeling")
+
+            ha_at.press(TOUCH, "on")  # iemand drukt op de touch in het atelier
+            await until(lambda: (LAMP, True) in ha_hh.calls, what="de lamp in het hoofdhuis gaat aan")
+            await asyncio.sleep(0.3)
+            assert ha_at.calls == [], "de touch zelf krijgt geen bevel terug: hij staat al goed"
+
+            ha_hh.press(LAMP, "off")  # de lamp wordt hier uitgezet (in HA of met een andere touch)
+            await until(lambda: (TOUCH, False) in ha_at.calls, what="de touch in het atelier volgt de lamp")
+
+            hh.hub.remove_peer("127.0.0.1", at.hub.port)  # de koppeling valt weg
+            await hh.hub.conns["atelier"].ws.close()
+            await until(lambda: not touch().avail, what="de touch is niet meer beschikbaar")
+            ha_at.press(TOUCH, "on")  # tijdens de uitval: de touch schakelt zijn eigen relais, de lamp hier merkt niets
+            await asyncio.sleep(0.3)
+            assert ha_hh.calls[-1] == (LAMP, True) and ha_hh.states[LAMP][0] == "off", "de lamp blijft zoals ze stond"
+            calls_before = len(ha_hh.calls)
+
+            hh.hub.add_peer("127.0.0.1", at.hub.port)  # de koppeling is terug
+            await until(lambda: ha_at.calls[-1] == (TOUCH, False), what="de touch neemt de stand van de lamp over")
+            await asyncio.sleep(0.3)
+            assert len(ha_hh.calls) == calls_before, "de lamp gaat niet vanzelf aan: zij heeft gelijk"
+            assert any(e["t"] == "sync" and e.get("what") == "aligned" for e in hh.engine.log)
+
+            at.engine.model.set_groups([{"id": "poort", "name": "Poort", "entities": [TOUCH, "switch.iets"]}])
+            at.engine.model.set_group("poort", enabled=True)  # het atelier stuurt de touch nu zelf: bezet
+            await until(lambda: hh.hub.status()["remote"]["atelier"]["catalog"][f"e:{TOUCH}"]["busy"], what="bezet in het aanbod")
+            with pytest.raises(link.LinkError, match="actieve kring"):
+                await hh.hub.command("atelier", f"e:{TOUCH}", op="on")
+        finally:
+            await hh.stop()
+            await at.stop()
+
+    run(go())
+
+
+def test_a_remote_gang_is_a_block_with_a_touch_and_a_relay_and_can_be_an_input_of_a_lamp(tmp_path):
+    from kkaddon import schema
+
+    h = House(tmp_path, "hoofdhuis")
+    h.hub.known = {"atelier": {"name": "Atelier", "objects": {"e:switch.touch_poort": {"kind": "gang", "name": "Touch poort · links", "busy": False}}}}
+    h.hub.use = {"atelier": ["e:switch.touch_poort"]}
+    m, ref = h.engine.model, "r:atelier:e:switch.touch_poort"
+    m.set_groups([{"id": "oprit", "name": "Oprit", "entities": ["switch.lamp_oprit", "switch.iets"]}])
+    blocks = {b["key"]: b for b in schema.view(m, h.engine.snapshot())["blocks"]}
+    b = blocks[ref]
+    assert b["kind"] == "remote" and b["sub"] == "gang" and b["online"] is False, "offline tot de koppeling er is, met de bewaarde naam"
+    assert b["gangs"] == [{"i": 0, "label": "Touch poort · links", "entity": ref, "touch": True, "relay": True, "on": None}]
+    schema.wire(m, h.engine, "g:oprit", "in", {"entity": ref})
+    assert ref in m.groups["oprit"]["entities"], "een lid van de kring, zoals een HA-entiteit"
+    lamp = {b["key"]: b for b in schema.view(m, h.engine.snapshot())["blocks"]}["g:oprit"]
+    c = next(c for c in lamp["inputs"] if c["ref"]["entity"] == ref)
+    assert c["sw"] == ref and (c["swName"], c["label"]) == ("Atelier", "Touch poort · links"), "de lamp verwijst naar het blok van de andere installatie"
+    m.set_light(5, 1, name="Plafond")
+    with pytest.raises(ModelError, match="lamp via Home Assistant"):
+        schema.wire(m, h.engine, "l5.1", "in", {"entity": ref})
+    with pytest.raises(ModelError, match="ongeldige entiteit"):
+        m.set_group("oprit", entities=["r:atelier:y:lader"])  # een Tuya-toestel is geen gang

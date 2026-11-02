@@ -144,6 +144,7 @@ class Engine:
         self.learn: Learn | None = None
         self.relay_cb: Callable[[bytes, Any], None] | None = None  # hub: frame doorgeven aan andere peers
         self.ha_call: Callable[[str, bool], bool] | None = None  # HA-entiteit aan/uit zetten (habridge.py); False = mislukt
+        self.remote_call: Callable[[str, bool], bool] | None = None  # een gang van een andere installatie (r:...:e:...) via de koppeling (linkhub.py)
 
         self._replay = ReplayTable()
         self._btn_seen: OrderedDict[tuple[int, int, int, int], None] = OrderedDict()
@@ -204,6 +205,12 @@ class Engine:
         return entry
 
     # ------------------------------------------------------------ van HA (habridge.py)
+
+    def call_entity(self, entity: str, on: bool) -> bool:
+        """Een lid van een kring aan of uit: via HA, of via de koppeling als het een gang van een andere installatie is. False = niet verstuurd."""
+        if entity.startswith("r:"):
+            return bool(self.remote_call and self.remote_call(entity, on))
+        return bool(self.virt.link and self.ha_call and self.ha_call(entity, on))
 
     def ha_entities(self) -> set[str]:
         """Alle HA-entiteiten die we volgen: gangen van externe apparaten en leden van kringen."""

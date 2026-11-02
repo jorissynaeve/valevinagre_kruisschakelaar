@@ -10,6 +10,12 @@ Elke installatie
     dezelfde regels als in de eigen UI (een lamp met een aan/uit-ingang laat zich niet schakelen, een Tuya-datapunt alleen binnen
     zijn datamodel).
 
+Een **gang** (`e:<HA-entiteit>`: de touch en het relais van een schakelaar, een Tuya-relais, een relais van een NSPanel) kan lid
+worden van een kring bij een andere installatie: een touch hier bedient een lamp daar, of omgekeerd. Een wijziging van zo'n gang
+gaat meteen weg (niet pas bij de volgende tik), want het is een druk. Een gang die hier in een actieve kring zit is bezet: een
+andere installatie kan ze kiezen om te tonen, maar de eigenaar weigert er bevelen voor (één eigenaar per entiteit, zoals in
+model._conflicts).
+
 Wat je van een andere installatie kiest, verschijnt hier als alleen-lezen blok (`r:<installatie>:<object>`), te bedienen en aan een
 kaart te hangen. Instellen gebeurt bij de eigenaar. Valt de verbinding weg, dan blijft het blok staan met de laatst bekende
 naam, als offline; een bevel gaat dan niet weg en wordt ook niet bewaard.
@@ -35,7 +41,8 @@ from aiohttp import web
 
 from .engine import Engine
 from .link import ID_RE, MAX_MESSAGE, OBJ_RE, LinkError, Session, derive, open_hello, seal_hello, split_ref
-from .model import ModelError
+from .model import ModelError, panel_relay_entity
+from .schema import _tuya_relays, tuya_entity
 
 log = logging.getLogger("kk.link")
 
@@ -82,6 +89,7 @@ class LinkHub:
         self.engine, self.model = engine, engine.model
         self.port, self.retry, self._clock = port, retry, clock
         self.tuya = None  # TuyaHub: zijn toestellen delen en bedienen
+        self.ha = None  # HaBridge: de stand van de gangen, en ze schakelen (attach_ha)
         self.me = {"id": "", "name": ""}
         self.key_text = ""
         self.addresses: list[Address] = []
@@ -89,12 +97,15 @@ class LinkHub:
         self.use: dict[str, list[str]] = {}  # installatie -> wat deze installatie van haar gebruikt
         self.remote: dict[str, dict] = {}  # installatie -> {obj: stand}, alleen zolang verbonden
         self.conns: dict[str, Conn] = {}
+        self._fed: dict[str, str] = {}  # r:<installatie>:e:<entiteit> -> laatst aan de kringen gegeven stand
         self.listening, self.error = False, ""
         self._runner: web.AppRunner | None = None
         self._tasks: set[asyncio.Task] = set()
         self._seq = 0
         self._load()
         engine.link_view = self.status
+        engine.remote_call = self._remote_call
+        engine.subscribe(self._on_engine)
 
     # ------------------------------------------------------------ bestand
 
@@ -230,6 +241,8 @@ class LinkHub:
         self.use[pid] = sorted(cur)
         if not on:
             self.remote.get(pid, {}).pop(obj, None)
+            if obj.startswith("e:"):
+                self.engine.ha_state(f"r:{pid}:{obj}", "unavailable")
         self._save()
         conn = self.conns.get(pid)
         if conn is not None:
@@ -313,6 +326,39 @@ class LinkHub:
 
     # ------------------------------------------------------------ wat deze installatie deelt
 
+    def attach_ha(self, ha) -> None:
+        """De gangen van deze installatie staan in haar HA: hun stand lezen, ze schakelen, en een wijziging meteen doorgeven."""
+        self.ha = ha
+        ha.state_listeners.append(self._on_ha_state)
+
+    def _on_ha_state(self, entity: str | None) -> None:
+        obj = f"e:{entity}" if entity else None
+        for c in list(self.conns.values()):
+            if obj is None or obj in c.want:
+                self._spawn(self._push_safe(c))  # een druk op een touch: niet wachten op de volgende tik
+
+    def gangs(self) -> dict[str, str]:
+        """Entiteit -> naam van elke gang die deze installatie aanbiedt: schakelaars uit HA, externe apparaten, Tuya-relais, NSPanel-relais."""
+        m, out = self.model, {}
+        for vid, gs in sorted(m.virtual.items()):
+            for i, g in enumerate(gs):
+                out.setdefault(g["entity"], f"{m.node_name(vid)} · {g['name'] or f'Gang {i + 1}'}")
+        for sid, s in sorted(m.schema["switches"].items()):
+            dev = m.schema["names"].get(f"d:{sid}") or s["name"]
+            for g in s["gangs"]:
+                out.setdefault(g["entity"], f"{dev} · {g['name'] or g['entity']}")
+        for t in (self.tuya.status() if self.tuya else []):
+            for p in _tuya_relays(t):
+                out.setdefault(tuya_entity(t["id"], p["dp"]), f"{t['name']} · {p['name']}")
+        for pid, p in sorted(m.panels.items()):
+            for n in (1, 2):
+                out.setdefault(panel_relay_entity(pid, n), f"{p['name']} · Relais {n}")
+        return out
+
+    def _busy(self) -> set[str]:
+        """Entiteiten in een actieve kring van deze installatie: die stuurt hier al iemand."""
+        return {x for g in self.model.groups.values() if g["enabled"] for x in g["entities"]}
+
     def export(self) -> dict[str, dict]:
         e, out = self.engine, {}
         for g in e.groups.view():
@@ -325,6 +371,11 @@ class LinkHub:
         for t in (self.tuya.status() if self.tuya else []):
             pts = [{k: p[k] for k in ("dp", "code", "name", "value", "unit", "rw", "type", "options", "min", "max", "step", "hide", "diag")} for p in t["points"]]
             out[f"y:{t['id']}"] = {"kind": "tuya", "name": t["name"], "online": t["online"], "product": t["product"], "points": pts}
+        states, busy = (self.ha.states if self.ha else {}), self._busy()
+        for ent, name in self.gangs().items():
+            st = states.get(ent)
+            up = st is not None and st[0] not in ("unavailable", "unknown")
+            out[f"e:{ent}"] = {"kind": "gang", "name": name[:60], "on": (st[0] == "on") if up else None, "online": up, "busy": ent in busy}
         return out
 
     def _execute(self, conn: Conn, m: dict) -> str | None:
@@ -346,6 +397,18 @@ class LinkHub:
         if op not in ("on", "off", "toggle"):
             return "ongeldig bevel"
         on = None if op == "toggle" else op == "on"
+        if obj.startswith("e:"):
+            ent = obj[2:]
+            if ent not in self.gangs():
+                return "onbekende gang"
+            if ent in self._busy():
+                return "deze gang hoort bij een actieve kring van die installatie"
+            st = self.ha.states.get(ent) if self.ha else None
+            if on is None:
+                if st is None or st[0] not in ("on", "off"):
+                    return "stand van de gang onbekend"
+                on = st[0] != "on"
+            return None if (self.ha and self.ha.call(ent, on)) else "geen verbinding met HA"
         if obj.startswith("g:"):
             gid = obj[2:]
             if gid not in self.model.groups:
@@ -508,6 +571,7 @@ class LinkHub:
             if self.conns.get(pid) is conn:
                 del self.conns[pid]
                 log.info("koppeling met %s weg", name)
+                self._feed(pid)  # haar gangen in onze kringen: niet beschikbaar
                 self._poke()
             for f in conn.futures.values():
                 if not f.done():
@@ -521,7 +585,8 @@ class LinkHub:
     async def _push(self, conn: Conn) -> None:
         """De catalogus aan iedereen; de stand alleen van wat de andere kant gekozen heeft. Telkens alleen als er iets veranderd is."""
         objs = self.export()
-        catalog = json.dumps({k: {"kind": v["kind"], "name": v["name"]} for k, v in objs.items()}, sort_keys=True, ensure_ascii=False)
+        catalog = json.dumps({k: {"kind": v["kind"], "name": v["name"], **({"busy": v["busy"]} if "busy" in v else {})} for k, v in objs.items()},
+                             sort_keys=True, ensure_ascii=False)
         if catalog != conn.sent_catalog:
             conn.sent_catalog = catalog
             await self._send(conn, {"t": "catalog", "objects": json.loads(catalog)})
@@ -536,12 +601,14 @@ class LinkHub:
             objs = m.get("objects")
             if not isinstance(objs, dict) or len(objs) > MAX_OBJECTS:
                 return
-            clean = {k: v for k, v in objs.items() if isinstance(k, str) and OBJ_RE.match(k) and isinstance(v, dict) and v.get("kind") in ("lamp", "tuya")}
+            clean = {k: v for k, v in objs.items() if isinstance(k, str) and OBJ_RE.match(k) and isinstance(v, dict) and v.get("kind") in ("lamp", "tuya", "gang")}
             if t == "state":
                 use = self.used(conn.peer)
                 self.remote[conn.peer] = {k: v for k, v in clean.items() if k in use}
+                self._feed(conn.peer)
             else:
-                catalog = {k: {"kind": v["kind"], "name": str(v.get("name") or k)[:60]} for k, v in clean.items()}
+                catalog = {k: {"kind": v["kind"], "name": str(v.get("name") or k)[:60], **({"busy": bool(v.get("busy"))} if v["kind"] == "gang" else {})}
+                           for k, v in clean.items()}
                 if catalog != self.known.get(conn.peer, {}).get("objects"):
                     self.known.setdefault(conn.peer, {"name": conn.peer})["objects"] = catalog
                     self._save()
@@ -576,6 +643,32 @@ class LinkHub:
         for c in list(self.conns.values()):
             if not c.ws.closed:
                 self._spawn(self._push_safe(c))
+
+    def _feed(self, pid: str) -> None:
+        """De stand van de gekozen gangen van een installatie naar de kringen, zoals een stand uit HA (sync.py herkent een druk)."""
+        up = pid in self.conns
+        for obj in self.used(pid):
+            if not obj.startswith("e:"):
+                continue
+            o = self.remote.get(pid, {}).get(obj) if up else None
+            st = "unavailable" if not o or not o.get("online") or o.get("on") is None else ("on" if o["on"] else "off")
+            ref = f"r:{pid}:{obj}"
+            if self._fed.get(ref) != st:
+                self._fed[ref] = st
+                self.engine.ha_state(ref, st)
+
+    def _on_engine(self, ev: dict) -> None:
+        """Het model veranderd (bv. een remote gang net aan een kring gehangen): elk lid opnieuw zijn stand geven. Een lid dat al
+        een stand had merkt niets; een nieuw lid neemt zo meteen de stand van de lamp over (sync._align)."""
+        if ev.get("t") == "model":
+            self._fed.clear()
+            for pid in list(self.use):
+                self._feed(pid)
+
+    def _remote_call(self, ref: str, on: bool) -> bool:
+        """Een kring zet een gang van een andere installatie: het bevel gaat naar de eigenaar. False zonder verbinding."""
+        hit = split_ref(ref)
+        return bool(hit and self.send(hit[0], hit[1], op="on" if on else "off"))
 
     async def _push_safe(self, c: Conn) -> None:
         try:

@@ -55,6 +55,7 @@ async def run() -> None:
     panels.tuya = tuya  # de laadpaalkaart leest en stuurt de lader rechtstreeks
     links = LinkHub(s.data_dir, engine, port=s.link_port)
     links.tuya = tuya
+    links.attach_ha(ha)  # de gangen van deze installatie: hun stand en ze schakelen voor een andere
     panels.linkhub = links  # kaarten met een lamp of lader van een andere installatie
     mqtt.extras.append(tuya)
     tuya.changed = mqtt.resync

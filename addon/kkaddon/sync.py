@@ -14,6 +14,10 @@ touch drukt, dan krijgen de andere dezelfde stand (absoluut, dus ook als er eent
   * Een entiteit die niet beschikbaar is wordt overgeslagen; een bevel dat niet wordt opgevolgd wordt gemeld.
   * Geeft de `control`-bron (aan/uit-ingang) van een actieve kring 0 of 1, dan staat de lamp op die stand en blijft hij daar:
     wat afwijkt wordt teruggezet, ook een druk op een touch. Geeft ze onbekend, dan werkt de lamp gewoon. Control gaat voor op disable.
+  * Een lid kan een gang van een andere installatie zijn (`r:<installatie>:e:<entiteit>`, zie linkhub.py). Zijn stand komt via de
+    koppeling, een bevel gaat via de eigenaar. Valt de koppeling weg, dan is het lid niet beschikbaar en wordt het overgeslagen.
+    Komt het terug, dan nemen de touches de stand van de lamp over (`_align`): de lamp heeft gelijk, en er gaat niets vanzelf aan
+    of uit. Dat rechtzetten gebeurt alleen na de terugkeer van zo'n lid; voor leden in dit subnet blijft de regel hierboven.
   * Geeft de `disable`-bron (timer of module) van een kring 1, dan bedient een touch de lamp niet. Zijn eigen relais is dan al omgezet
     (dat doet het toestel zelf), dus dat zetten we terug op de stand van de lamp. Bedienen via de UI of HA blijft kunnen.
 
@@ -79,6 +83,8 @@ class EntityGroups:
         changed = False
         for ms in self.members.values():
             for m in ms:
+                if m.entity.startswith("r:"):
+                    continue  # komt via de koppeling, niet uit HA
                 before = (m.avail, m.known)
                 m.avail, m.known = parse_state(states.get(m.entity))
                 changed |= before != (m.avail, m.known)
@@ -103,6 +109,9 @@ class EntityGroups:
         prev, m.known = m.known, on
         if before != (m.avail, on):
             self.e._emit("grp", log=False, group=gid)  # de pagina ververst zichzelf
+        if prev is None and not before[0] and entity.startswith("r:"):
+            self._align(gid)  # terug van een andere installatie: de touches nemen de stand van de lamp over
+            return
         if prev is None or prev == on:
             return
         for i, (target, _) in enumerate(m.pend):
@@ -119,6 +128,29 @@ class EntityGroups:
             else:
                 self._follow(gid, m)
 
+    def _align(self, gid: str) -> None:
+        """Na de terugkeer van een lid van een andere installatie: elke touch naar de stand van de lamp. De lamp-relais zelf nooit."""
+        e = self.e
+        if not self.enabled(gid) or self.held(gid) is not None:
+            return  # een kring die uit staat doet niets; een vastgehouden lamp regelt hold_tick
+        ms = self.members[gid]
+        lamps = [x for x in ms if x.lamp and x.avail and x.known is not None]
+        if not lamps:
+            return  # de stand van de lamp is niet bekend: niets om over te nemen
+        want = any(x.known for x in lamps)
+        now, sent = e._clock(), []
+        for o in ms:
+            eff = o.pend[-1][0] if o.pend else o.known
+            if o.lamp or not o.avail or o.known is None or eff == want:
+                continue
+            if not e.call_entity(o.entity, want):
+                e._emit("sync", what="failed", group=gid, entity=o.entity, on=want, why="niet bereikbaar")
+                continue
+            o.pend.append((want, now + PENDING_FOR))
+            sent.append(o.entity)
+        if sent:
+            e._emit("sync", what="aligned", group=gid, on=want, to=sent)
+
     def blocked(self, gid: str) -> bool:
         g = self.e.model.groups.get(gid)
         return bool(g and g.get("disable") and self.e.source_on(g["disable"]))
@@ -131,7 +163,7 @@ class EntityGroups:
     def hold_tick(self) -> None:
         """Brengt lampen met een aan/uit-ingang op hun stand: als de ingang omslaat, en wat daarna nog afwijkt."""
         e = self.e
-        if not (e.virt.link and e.ha_call):
+        if not ((e.virt.link and e.ha_call) or e.remote_call):
             return
         now = e._clock()
         for gid, ms in self.members.items():
@@ -154,8 +186,8 @@ class EntityGroups:
             lamps = [x for x in self.members[gid] if x.lamp and x.known is not None]
             back = any(x.known for x in lamps) if lamps else prev
         if back != src.known:
-            if not (e.virt.link and e.ha_call and e.ha_call(src.entity, back)):
-                e._emit("sync", what="failed", group=gid, entity=src.entity, on=back, why="geen verbinding met HA")
+            if not e.call_entity(src.entity, back):
+                e._emit("sync", what="failed", group=gid, entity=src.entity, on=back, why="niet bereikbaar")
                 return
             src.pend.append((back, e._clock() + PENDING_FOR))
         e._emit("sync", what=what, group=gid, entity=src.entity, on=back)
@@ -174,8 +206,8 @@ class EntityGroups:
                 continue
             if eff == on:
                 continue
-            if not (e.virt.link and e.ha_call and e.ha_call(o.entity, on)):
-                e._emit("sync", what="failed", group=gid, entity=o.entity, on=on, why="geen verbinding met HA")
+            if not e.call_entity(o.entity, on):
+                e._emit("sync", what="failed", group=gid, entity=o.entity, on=on, why="niet bereikbaar")
                 continue
             o.pend.append((on, now + PENDING_FOR))
             sent.append(o.entity)
@@ -214,8 +246,8 @@ class EntityGroups:
         sent = []
         now = e._clock()
         for m, target in targets:
-            if not (e.virt.link and e.ha_call and e.ha_call(m.entity, target)):
-                e._emit("sync", what="failed", group=gid, entity=m.entity, on=target, why="geen verbinding met HA")
+            if not e.call_entity(m.entity, target):
+                e._emit("sync", what="failed", group=gid, entity=m.entity, on=target, why="niet bereikbaar")
                 continue
             if entity is None:  # alleen bij de hele kring: de echo's zijn onze eigen bevelen
                 m.pend.append((target, now + PENDING_FOR))
