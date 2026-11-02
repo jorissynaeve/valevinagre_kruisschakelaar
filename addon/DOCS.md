@@ -150,16 +150,18 @@ Een andere YAML (bv. van een tweede panel onder AppDaemon) zet je om via *YAML v
 
 ## Andere installaties (een ander subnet)
 
-Staat een deel van het huis in een ander subnet, met een eigen Home Assistant en een eigen Huisconfig, dan kunnen die installaties elkaar hun **lampen** (kringen en lichten op het netwerk) en **Tuya-toestellen** tonen en laten bedienen. Zo kan een NSPanel in het ene subnet de laadpaal in het andere starten.
+Staat een deel van het huis in een ander subnet, met een eigen Home Assistant en een eigen Huisconfig, dan bieden die installaties elkaar hun **lampen** (kringen en lichten op het netwerk) en **Tuya-toestellen** aan. Je kiest per installatie wat je ervan wilt gebruiken, bv. alleen de laadpaal en de stroommeter. Zo kan een NSPanel in het ene subnet de laadpaal in het andere starten.
 
 1. **Naam**: tabblad *Instellingen* → *Andere installaties* → geef elke installatie een eigen naam (bv. *Hoofdhuis*, *Atelier*). De id die eruit volgt blijft, ook als je de naam later verandert.
 2. **Koppelsleutel**: maak op één installatie een sleutel (*Nieuwe sleutel*), **kopieer hem vóór je opslaat**, en plak hem bij elke andere. Alle installaties van het huis gebruiken dezelfde sleutel. De add-on toont hem na het opslaan niet meer.
 3. **Adres**: geef bij één van de twee het IP-adres van de andere Home Assistant (en de poort, standaard 47490). Eén kant volstaat; de verbinding werkt in beide richtingen. Met meer installaties geef je elke verbinding die je wilt.
 4. **Poort**: de add-on luistert op TCP-poort 47490 (de optie *Poort voor koppelingen*). Zet die open in de router of firewall tussen de subnetten.
+5. **Kiezen**: onder *Wat je van andere installaties gebruikt* staat per installatie wat ze aanbiedt. Vink aan wat je hier wilt gebruiken. Niets wordt vanzelf gebruikt: wat je niet aanvinkt, wordt geen blok, de stand ervan komt niet over de lijn, en de andere installatie aanvaardt er geen bevel voor.
 
-Wat een andere installatie deelt, staat links in de lijst onder *Andere installaties* en zet je als blok op het schema. Zo'n blok is **alleen-lezen**: je kunt het bedienen (aan/uit, een datapunt van een Tuya-toestel) en aan een kaart hangen, maar instellen, hernoemen en aansluiten op touches doe je bij de installatie waar het toestel hangt. Die beslist ook: een lamp die daar vastgehouden wordt door haar aan/uit-ingang, weigert een bevel.
+Wat je gekozen hebt, staat links in de lijst onder *Andere installaties* en zet je als blok op het schema. Zo'n blok is **alleen-lezen**: je kunt het bedienen (aan/uit, een datapunt van een Tuya-toestel) en aan een kaart hangen, maar instellen, hernoemen en aansluiten op touches doe je bij de installatie waar het toestel hangt. Die beslist ook: een lamp die daar vastgehouden wordt door haar aan/uit-ingang, weigert een bevel.
 
 * **Op een kaart**: sleep een knop van een rasterkaart naar een lamp van een andere installatie, of kies bij een laadpaalkaart een lader onder *Van andere installaties*.
+* **Versie**: beide installaties hebben dezelfde versie van de koppeling nodig. Is één ervan ouder, dan staat bij het adres dat je beide add-ons moet bijwerken.
 * **Valt de verbinding weg**, dan blijft het blok staan als offline, met de laatst bekende naam. Een bevel gaat dan niet weg en wordt ook niet bewaard voor later. Bestaat een installatie niet meer, dan kun je haar onder *Bekende installaties* vergeten.
 * **Veiligheid**: elk bericht is versleuteld en ondertekend met de koppelsleutel, en een opgenomen bericht nog eens sturen werkt niet. Wie de sleutel niet heeft, krijgt geen antwoord. Een korte zelfbedachte sleutel is wel te raden: gebruik de knop *Nieuwe sleutel*.
 

@@ -4,11 +4,13 @@ Elke installatie
   * luistert op een eigen TCP-poort (`link_port`, standaard 47490) en verbindt met de adressen die je opgeeft. Eén kant opgeven
     volstaat: de verbinding werkt in beide richtingen. Geven beide kanten elkaar op, dan blijft de verbinding over die is
     opgezet door de installatie met de kleinste id (aan beide kanten dezelfde regel), de andere wordt gesloten.
-  * deelt haar lampen (kringen en lichten op het netwerk) en Tuya-toestellen, met hun stand, elke keer dat er iets verandert.
-  * voert bevelen voor haar **eigen** toestellen uit: de eigenaar beslist, met dezelfde regels als in de eigen UI (een lamp met
-    een aan/uit-ingang laat zich niet schakelen, een Tuya-datapunt alleen binnen zijn datamodel).
+  * biedt haar lampen (kringen en lichten op het netwerk) en Tuya-toestellen aan in een catalogus (naam en soort). De andere kant
+    kiest wat ze wil gebruiken (`want`); alleen daarvan gaat de stand over de lijn, elke keer dat er iets verandert.
+  * voert bevelen voor haar **eigen** toestellen uit, en alleen voor wat de andere kant gekozen heeft: de eigenaar beslist, met
+    dezelfde regels als in de eigen UI (een lamp met een aan/uit-ingang laat zich niet schakelen, een Tuya-datapunt alleen binnen
+    zijn datamodel).
 
-Wat een andere installatie deelt, verschijnt hier als alleen-lezen blok (`r:<installatie>:<object>`), te bedienen en aan een
+Wat je van een andere installatie kiest, verschijnt hier als alleen-lezen blok (`r:<installatie>:<object>`), te bedienen en aan een
 kaart te hangen. Instellen gebeurt bij de eigenaar. Valt de verbinding weg, dan blijft het blok staan met de laatst bekende
 naam, als offline; een bevel gaat dan niet weg en wordt ook niet bewaard.
 
@@ -32,7 +34,7 @@ import aiohttp
 from aiohttp import web
 
 from .engine import Engine
-from .link import ID_RE, MAX_MESSAGE, OBJ_RE, LinkError, Session, derive, open_hello, seal_hello
+from .link import ID_RE, MAX_MESSAGE, OBJ_RE, LinkError, Session, derive, open_hello, seal_hello, split_ref
 from .model import ModelError
 
 log = logging.getLogger("kk.link")
@@ -59,6 +61,8 @@ class Conn:
     initiator: str  # id van wie de verbinding opzette: beslist welke blijft als er twee zijn
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     sent: str = ""  # laatst gestuurde stand: alleen een wijziging gaat opnieuw weg
+    sent_catalog: str = ""
+    want: set[str] = field(default_factory=set)  # wat de andere kant gekozen heeft: alleen dat krijgt ze en mag ze bedienen
     futures: dict[int, asyncio.Future] = field(default_factory=dict)
 
 
@@ -81,7 +85,8 @@ class LinkHub:
         self.me = {"id": "", "name": ""}
         self.key_text = ""
         self.addresses: list[Address] = []
-        self.known: dict[str, dict] = {}  # installatie -> {name, objects: {obj: {kind, name}}}: blijft na een herstart
+        self.known: dict[str, dict] = {}  # installatie -> {name, objects: {obj: {kind, name}}}: haar catalogus, blijft na een herstart
+        self.use: dict[str, list[str]] = {}  # installatie -> wat deze installatie van haar gebruikt
         self.remote: dict[str, dict] = {}  # installatie -> {obj: stand}, alleen zolang verbonden
         self.conns: dict[str, Conn] = {}
         self.listening, self.error = False, ""
@@ -105,10 +110,28 @@ class LinkHub:
         self.key_text = str(raw.get("key") or "")
         self.addresses = [Address(str(p["host"]), int(p["port"])) for p in raw.get("peers") or [] if isinstance(p, dict) and p.get("host")]
         self.known = {k: v for k, v in (raw.get("known") or {}).items() if ID_RE.match(k) and isinstance(v, dict)}
+        self.use = {k: [o for o in v if isinstance(o, str) and OBJ_RE.match(o)] for k, v in (raw.get("use") or {}).items() if ID_RE.match(k) and isinstance(v, list)}
+        if "use" not in raw:  # 0.12.0 gebruikte alles: wat toen al op het schema of op een kaart stond, blijft gekozen
+            for ref in self._refs_in_model():
+                peer, obj = split_ref(ref) or (None, None)
+                if peer and obj not in self.use.setdefault(peer, []):
+                    self.use[peer].append(obj)
+            if self.use:
+                log.info("koppelingen: in gebruik gehouden wat al op het schema of een kaart stond: %s", self.use)
+                self._save()
+
+    def _refs_in_model(self) -> set[str]:
+        m = self.model
+        refs = {k for k in m.schema["blocks"] if k.startswith("r:")}
+        for c in m.cards.values():
+            refs |= {it["ref"] for it in c.get("items", []) if c["type"] == "grid" and (it.get("ref") or "").startswith("r:")}
+            if c["type"] == "charger" and (c.get("tuya") or "").startswith("r:"):
+                refs.add(c["tuya"])
+        return refs
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        d = {**self.me, "key": self.key_text, "peers": [{"host": a.host, "port": a.port} for a in self.addresses], "known": self.known}
+        d = {**self.me, "key": self.key_text, "peers": [{"host": a.host, "port": a.port} for a in self.addresses], "known": self.known, "use": self.use}
         fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".link-", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -193,20 +216,47 @@ class LinkHub:
             return False
         del self.known[pid]
         self.remote.pop(pid, None)
+        self.use.pop(pid, None)
         self._save()
         self._poke()
         return True
+
+    def set_use(self, pid: str, obj: str, on: bool) -> None:
+        """Een toestel van een andere installatie wel of niet gebruiken. Alleen wat je gebruikt wordt een blok en komt over de lijn."""
+        if pid not in self.known or not isinstance(obj, str) or obj not in (self.known[pid].get("objects") or {}):
+            raise ModelError("dat toestel biedt die installatie niet aan")
+        cur = set(self.use.get(pid, []))
+        cur = cur | {obj} if on else cur - {obj}
+        self.use[pid] = sorted(cur)
+        if not on:
+            self.remote.get(pid, {}).pop(obj, None)
+        self._save()
+        conn = self.conns.get(pid)
+        if conn is not None:
+            self._spawn(self._send_want(conn))
+        self._poke()
+
+    def used(self, pid: str) -> set[str]:
+        return set(self.use.get(pid, []))
+
+    async def _send_want(self, conn: Conn) -> None:
+        try:
+            await self._send(conn, {"t": "want", "objects": sorted(self.used(conn.peer))})
+        except (ConnectionError, RuntimeError) as e:
+            log.debug("keuze naar %s niet verstuurd: %s", conn.peer, e)
 
     # ------------------------------------------------------------ voor de pagina en de kaarten
 
     def status(self) -> dict:
         remote = {}
         for pid in sorted(set(self.known) | set(self.remote)):
-            up = pid in self.conns
-            objs = {o: {**k, "online": False} for o, k in (self.known.get(pid, {}).get("objects") or {}).items()}
+            up, use = pid in self.conns, self.used(pid)
+            catalog = self.known.get(pid, {}).get("objects") or {}
+            objs = {o: {**k, "online": False} for o, k in catalog.items() if o in use}
             if up:
-                objs.update(self.remote.get(pid, {}))
-            remote[pid] = {"name": self.known.get(pid, {}).get("name") or pid, "online": up, "objects": objs}
+                objs.update({o: v for o, v in self.remote.get(pid, {}).items() if o in use})
+            remote[pid] = {"name": self.known.get(pid, {}).get("name") or pid, "online": up, "objects": objs,
+                           "catalog": {o: {**k, "used": o in use} for o, k in sorted(catalog.items())}}
         return {"me": {**self.me, "port": self.port, "has_key": bool(self.key_text), "listening": self.listening, "error": self.error},
                 "peers": [{"host": a.host, "port": a.port, "state": a.state, "error": a.error, "peer": a.peer} for a in self.addresses],
                 "remote": remote}
@@ -215,7 +265,10 @@ class LinkHub:
         return pid in self.conns
 
     def object(self, pid: str, obj: str) -> dict | None:
-        """De stand van een object van een andere installatie; offline (met de laatst bekende naam) als de verbinding weg is."""
+        """De stand van een object van een andere installatie; offline (met de laatst bekende naam) als de verbinding weg is.
+        None als deze installatie het niet gebruikt."""
+        if obj not in self.used(pid):
+            return None
         if pid in self.conns and obj in self.remote.get(pid, {}):
             return self.remote[pid][obj]
         k = (self.known.get(pid, {}).get("objects") or {}).get(obj)
@@ -226,7 +279,7 @@ class LinkHub:
 
     def send(self, pid: str, obj: str, **cmd) -> bool:
         """Een bevel zonder op het antwoord te wachten (een druk op een paneel). False als er geen verbinding is."""
-        if pid not in self.conns:
+        if pid not in self.conns or obj not in self.used(pid):
             return False
         self._spawn(self._command_logged(pid, obj, cmd))
         return True
@@ -242,6 +295,8 @@ class LinkHub:
         conn = self.conns.get(pid)
         if conn is None:
             raise LinkError(f"geen verbinding met {self.peer_name(pid)}")
+        if obj not in self.used(pid):
+            raise LinkError("dit toestel is hier niet gekozen")
         self._seq += 1
         i = self._seq
         fut = asyncio.get_running_loop().create_future()
@@ -272,11 +327,13 @@ class LinkHub:
             out[f"y:{t['id']}"] = {"kind": "tuya", "name": t["name"], "online": t["online"], "product": t["product"], "points": pts}
         return out
 
-    def _execute(self, peer: str, m: dict) -> str | None:
+    def _execute(self, conn: Conn, m: dict) -> str | None:
         """Een bevel van een andere installatie voor een eigen toestel. Geeft de reden van een weigering, of None."""
-        obj, op, e = m.get("obj"), m.get("op"), self.engine
+        obj, op, e, peer = m.get("obj"), m.get("op"), self.engine, conn.peer
         if not isinstance(obj, str) or not OBJ_RE.match(obj):
             return "ongeldig bevel"
+        if obj not in conn.want:
+            return "dit toestel is niet gekozen bij de andere installatie"
         log.info("bevel van %s: %s %s", self.peer_name(peer), obj, op or f"{m.get('dp')}={m.get('value')}")
         if obj.startswith("y:"):
             if self.tuya is None or obj[2:] not in self.tuya.devices:
@@ -431,6 +488,7 @@ class LinkHub:
         self._poke()
         dup = False
         try:
+            await self._send_want(conn)
             await self._push(conn)
             async for msg in ws:
                 if msg.type != aiohttp.WSMsgType.BINARY:
@@ -461,26 +519,41 @@ class LinkHub:
             await conn.ws.send_bytes(conn.sess.seal(obj))
 
     async def _push(self, conn: Conn) -> None:
-        text = json.dumps(self.export(), sort_keys=True, ensure_ascii=False)
+        """De catalogus aan iedereen; de stand alleen van wat de andere kant gekozen heeft. Telkens alleen als er iets veranderd is."""
+        objs = self.export()
+        catalog = json.dumps({k: {"kind": v["kind"], "name": v["name"]} for k, v in objs.items()}, sort_keys=True, ensure_ascii=False)
+        if catalog != conn.sent_catalog:
+            conn.sent_catalog = catalog
+            await self._send(conn, {"t": "catalog", "objects": json.loads(catalog)})
+        text = json.dumps({k: v for k, v in objs.items() if k in conn.want}, sort_keys=True, ensure_ascii=False)
         if text != conn.sent:
             conn.sent = text
             await self._send(conn, {"t": "state", "objects": json.loads(text)})
 
     async def _on_message(self, conn: Conn, m: dict) -> None:
         t = m.get("t")
-        if t == "state":
+        if t in ("state", "catalog"):
             objs = m.get("objects")
             if not isinstance(objs, dict) or len(objs) > MAX_OBJECTS:
                 return
             clean = {k: v for k, v in objs.items() if isinstance(k, str) and OBJ_RE.match(k) and isinstance(v, dict) and v.get("kind") in ("lamp", "tuya")}
-            self.remote[conn.peer] = clean
-            catalog = {k: {"kind": v["kind"], "name": str(v.get("name") or k)[:60]} for k, v in clean.items()}
-            if catalog != self.known.get(conn.peer, {}).get("objects"):
-                self.known.setdefault(conn.peer, {"name": conn.peer})["objects"] = catalog
-                self._save()
+            if t == "state":
+                use = self.used(conn.peer)
+                self.remote[conn.peer] = {k: v for k, v in clean.items() if k in use}
+            else:
+                catalog = {k: {"kind": v["kind"], "name": str(v.get("name") or k)[:60]} for k, v in clean.items()}
+                if catalog != self.known.get(conn.peer, {}).get("objects"):
+                    self.known.setdefault(conn.peer, {"name": conn.peer})["objects"] = catalog
+                    self._save()
             self._poke()
+        elif t == "want":
+            objs = m.get("objects")
+            if isinstance(objs, list) and len(objs) <= MAX_OBJECTS:
+                conn.want = {o for o in objs if isinstance(o, str) and OBJ_RE.match(o)}
+                log.info("%s gebruikt %d %s van deze installatie", self.peer_name(conn.peer), len(conn.want), "toestel" if len(conn.want) == 1 else "toestellen")
+                await self._push(conn)
         elif t == "cmd":
-            err = self._execute(conn.peer, m)
+            err = self._execute(conn, m)
             await self._send(conn, {"t": "ack", "i": m.get("i"), "ok": err is None, "error": err or ""})
             await self._push(conn)  # de nieuwe stand meteen, niet pas bij de volgende tik
         elif t == "ack":

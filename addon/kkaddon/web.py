@@ -391,6 +391,13 @@ async def link_peer_remove(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
+async def link_use(request: web.Request) -> web.Response:
+    """Een toestel van een andere installatie wel of niet gebruiken: {peer, obj, use}."""
+    b = await _body(request)
+    _links(request).set_use(str(b.get("peer")), b.get("obj"), bool(b.get("use")))
+    return web.json_response({"ok": True})
+
+
 async def link_forget(request: web.Request) -> web.Response:
     ok = _links(request).forget(str((await _body(request)).get("peer")))
     if not ok:
@@ -725,6 +732,7 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/link/peers", link_peer_add)
     r.add_post("/api/link/peers/remove", link_peer_remove)
     r.add_post("/api/link/forget", link_forget)
+    r.add_post("/api/link/use", link_use)
     r.add_post("/api/link/cmd", link_cmd)
     r.add_put("/api/cards/{cid}", card_put)
     r.add_delete("/api/cards/{cid}", card_delete)

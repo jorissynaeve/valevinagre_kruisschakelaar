@@ -44,6 +44,14 @@ def test_the_handshake_needs_the_same_key():
         link.open_hello(key, hello, "welcome")
     with pytest.raises(link.LinkError, match="minstens"):
         link.derive("kort")
+    old = link.VERSION
+    try:
+        link.VERSION = 1  # een add-on van 0.12.0
+        hello_v1 = link.seal_hello(key, "hello", "boven", "Boven", n)
+    finally:
+        link.VERSION = old
+    with pytest.raises(link.LinkError, match="andere versie.*werk beide add-ons bij"):
+        link.open_hello(key, hello_v1, "hello")
     assert link.split_ref("r:boven:y:lader") == ("boven", "y:lader") and link.split_ref("r:boven:x:y") is None
 
 
@@ -113,18 +121,28 @@ def test_two_houses_share_their_devices_and_the_owner_executes_a_command(tmp_pat
         try:
             a.hub.add_peer("127.0.0.1", b.hub.port)  # één kant opgeven volstaat
             await until(lambda: a.hub.is_up("atelier") and b.hub.is_up("hoofdhuis"), what="gekoppeld")
-            await until(lambda: a.hub.object("atelier", "y:lader") is not None, what="toestellen van de andere kant")
+            await until(lambda: "y:lader" in a.hub.status()["remote"].get("atelier", {}).get("catalog", {}), what="catalogus van de andere kant")
             st = a.hub.status()
             assert st["peers"][0]["state"] == "verbonden" and st["peers"][0]["peer"] == "atelier"
-            assert st["remote"]["atelier"]["name"] == "Atelier" and st["remote"]["atelier"]["objects"]["g:hal"]["name"] == "Hal"
-            assert b.hub.status()["remote"]["hoofdhuis"]["objects"] == {}, "het hoofdhuis deelt (nog) niets"
+            assert st["remote"]["atelier"]["catalog"] == {"g:hal": {"kind": "lamp", "name": "Hal", "used": False}, "y:lader": {"kind": "tuya", "name": "Feyree", "used": False}}
+            assert st["remote"]["atelier"]["objects"] == {} and a.hub.object("atelier", "y:lader") is None, "niets wordt vanzelf gebruikt"
+            assert b.hub.conns["hoofdhuis"].want == set() and not b.hub.conns["hoofdhuis"].sent.strip("{}"), "en van wat niet gekozen is gaat de stand niet over de lijn"
+            a.hub.set_use("atelier", "y:lader", True)  # alleen de lader
+            await until(lambda: "points" in (a.hub.object("atelier", "y:lader") or {}), what="stand van de gekozen lader")
+            assert b.hub.conns["hoofdhuis"].want == {"y:lader"} and set(a.hub.status()["remote"]["atelier"]["objects"]) == {"y:lader"}
+            with pytest.raises(link.LinkError, match="niet gekozen"):
+                await a.hub.command("atelier", "g:hal", op="on")
+            a.hub.use["atelier"].append("g:hal")  # buiten de UI om: de eigenaar weigert toch, want hij kreeg die keuze niet
+            with pytest.raises(link.LinkError, match="niet gekozen bij de andere installatie"):
+                await a.hub.command("atelier", "g:hal", op="on")
+            a.hub.use["atelier"].remove("g:hal")
+            with pytest.raises(ModelError, match="biedt die installatie niet aan"):
+                a.hub.set_use("atelier", "y:weg", True)
             await a.hub.command("atelier", "y:lader", dp="124", value="OpenCharging")
             assert b.hub.tuya.sent == [("124", "OpenCharging")], "de eigenaar voert uit"
             await until(lambda: any(p["dp"] == "124" and p["value"] == "OpenCharging" for p in a.hub.object("atelier", "y:lader")["points"]), what="nieuwe stand terug")
             with pytest.raises(link.LinkError, match="niet beschrijfbaar"):
                 await a.hub.command("atelier", "y:lader", dp="25", value="9")
-            with pytest.raises(link.LinkError, match="onbekende lamp"):
-                await a.hub.command("atelier", "g:weg", op="on")
             b.hub.tuya.online = False
             await until(lambda: a.hub.object("atelier", "y:lader")["online"] is False, what="een wijziging gaat vanzelf mee")
             assert json.loads((tmp_path / "hoofdhuis" / "link.json").read_text())["known"]["atelier"]["objects"]["y:lader"] == {"kind": "tuya", "name": "Feyree"}
@@ -133,7 +151,9 @@ def test_two_houses_share_their_devices_and_the_owner_executes_a_command(tmp_pat
             o = a.hub.object("atelier", "y:lader")
             assert o == {"kind": "tuya", "name": "Feyree", "online": False}, "offline, met de laatst bekende naam"
             assert a.hub.send("atelier", "y:lader", dp="124", value="CloseCharging") is False, "zonder verbinding gaat er geen bevel"
-            assert a.hub.forget("atelier") is True and "atelier" not in a.hub.status()["remote"]
+            a.hub.set_use("atelier", "y:lader", False)
+            assert a.hub.object("atelier", "y:lader") is None and a.hub.status()["remote"]["atelier"]["catalog"]["y:lader"]["used"] is False
+            assert a.hub.forget("atelier") is True and "atelier" not in a.hub.status()["remote"] and "atelier" not in a.hub.use
         finally:
             await a.stop()
             if not b.task.done():
@@ -150,6 +170,8 @@ def test_a_remote_charger_on_a_panel_card(tmp_path):
         await b.start()
         try:
             a.hub.add_peer("127.0.0.1", b.hub.port)
+            await until(lambda: "y:lader" in a.hub.status()["remote"].get("atelier", {}).get("catalog", {}))
+            a.hub.set_use("atelier", "y:lader", True)
             await until(lambda: a.hub.object("atelier", "y:lader") is not None and a.hub.object("atelier", "y:lader")["online"])
             m = a.engine.model
             m.add_card("charger")
@@ -206,3 +228,20 @@ def test_the_key_and_name_stay_out_of_the_model_and_the_status(tmp_path):
         h.hub.configure({"key": "kort"})
     again = LinkHub(tmp_path / "hoofdhuis", Engine(KEY, Model(), lambda raw: None))
     assert again.ready() and again.me["id"] == "hoofdhuis"
+
+
+def test_what_0_12_already_used_on_the_schema_or_a_card_stays_chosen(tmp_path):
+    (tmp_path / "link.json").write_text(json.dumps({"id": "hoofdhuis", "name": "Hoofdhuis", "key": SECRET, "peers": [],
+                                                    "known": {"atelier": {"name": "Atelier", "objects": {"y:lader": {"kind": "tuya", "name": "Feyree"},
+                                                                                                        "g:hal": {"kind": "lamp", "name": "Hal"},
+                                                                                                        "g:tuin": {"kind": "lamp", "name": "Tuin"}}}}}), encoding="utf-8")
+    m = Model()
+    m.add_card("charger")
+    m.set_card("laadpaal", tuya="r:atelier:y:lader")
+    m.set_schema({**m.schema, "pages": [{"id": "hal", "name": "Hal"}], "blocks": {"r:atelier:g:hal": {"page": "hal", "x": 0, "y": 0}}})
+    hub = LinkHub(tmp_path, Engine(KEY, m, lambda raw: None))
+    assert sorted(hub.use["atelier"]) == ["g:hal", "y:lader"], "de tuin stond nergens: die wordt niet vanzelf gekozen"
+    assert json.loads((tmp_path / "link.json").read_text())["use"] == hub.use, "en dat is bewaard: de volgende start kiest niets meer vanzelf"
+    hub.set_use("atelier", "g:hal", False)
+    again = LinkHub(tmp_path, Engine(KEY, m, lambda raw: None))
+    assert again.use["atelier"] == ["y:lader"], "een keuze die je daarna maakt, blijft"

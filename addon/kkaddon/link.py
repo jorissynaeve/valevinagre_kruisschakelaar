@@ -21,7 +21,7 @@ from typing import Any
 from nacl.exceptions import CryptoError
 from nacl.secret import SecretBox
 
-VERSION = 1
+VERSION = 2  # 2: catalogus en keuze (want); een andere versie wordt bij de handdruk geweigerd
 MAX_MESSAGE = 4 * 1024 * 1024
 ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 MIN_KEY = 16  # tekens; de knop in de UI maakt er 64 (32 bytes, hex)
@@ -75,8 +75,10 @@ def open_hello(key: bytes, data: bytes, kind: str) -> tuple[str, str, bytes]:
         m = _load(SecretBox(key).decrypt(data))
     except CryptoError as e:
         raise LinkError("verkeerde koppelsleutel") from e
-    if m.get("t") != kind or m.get("v") != VERSION:
-        raise LinkError(f"onverwacht bericht (versie {m.get('v')!r})")
+    if m.get("t") != kind:
+        raise LinkError("onverwacht bericht")
+    if m.get("v") != VERSION:
+        raise LinkError(f"de andere installatie heeft een andere versie van de koppeling ({m.get('v')!r}, hier {VERSION}): werk beide add-ons bij")
     pid, name = m.get("id"), m.get("name")
     if not isinstance(pid, str) or not ID_RE.match(pid) or not isinstance(name, str) or len(name) > 60:
         raise LinkError("ongeldige naam van de andere installatie")

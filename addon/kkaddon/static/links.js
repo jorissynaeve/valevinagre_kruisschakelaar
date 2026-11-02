@@ -18,10 +18,19 @@ function viewLinks() {
   const peers = lk.peers.map((p) => `<tr><td><code>${esc(p.host)}:${p.port}</code></td><td>${lkState(p)}</td>
       <td><button class="btn small danger" type="button" data-lk="rmpeer" data-host="${esc(p.host)}" data-port="${p.port}" title="Adres weghalen">✕</button></td></tr>`).join('')
     || '<tr><td colspan="3" class="sub">Nog geen adressen. Eén kant opgeven volstaat: de verbinding werkt in beide richtingen.</td></tr>';
-  const known = Object.entries(lk.remote).map(([id, r]) => `<tr><td>${esc(r.name)} <span class="sub">(${esc(id)})</span></td><td>${r.online ? '<span class="badge ok">online</span>' : '<span class="badge">offline</span>'}</td>
-      <td>${Object.keys(r.objects).length} ${Object.keys(r.objects).length === 1 ? 'toestel' : 'toestellen'}</td><td>${r.online ? '' : `<button class="btn small danger" type="button" data-lk="forget" data-peer="${esc(id)}" title="Haar blokken weghalen">Vergeten</button>`}</td></tr>`).join('');
+  const kind = { lamp: 'Lamp', tuya: 'Tuya' };
+  const known = Object.entries(lk.remote).map(([id, r]) => {
+    const offer = Object.entries(r.catalog || {});
+    const used = offer.filter(([, o]) => o.used).length;
+    const rows = offer.map(([obj, o]) => `<label style="display:flex;gap:8px;align-items:center;margin:2px 0;color:var(--ink);cursor:pointer">
+        <input type="checkbox" data-lkuse="${esc(obj)}" data-peer="${esc(id)}" ${o.used ? 'checked' : ''}> ${esc(o.name)} <span class="sub">${kind[o.kind] || esc(o.kind)}</span></label>`).join('');
+    return `<div class="tmd"><div class="row sp"><b>${esc(r.name)} <span class="sub">(${esc(id)})</span></b><span class="row">${r.online ? '<span class="badge ok">online</span>' : '<span class="badge">offline</span>'}
+        ${r.online ? '' : `<button class="btn small danger" type="button" data-lk="forget" data-peer="${esc(id)}" title="Haar blokken weghalen">Vergeten</button>`}</span></div>
+      <div class="sub">${offer.length ? `${used} van ${offer.length} in gebruik. Vink aan wat je hier wilt gebruiken: alleen dat wordt een blok, en alleen daarvan komt de stand over de lijn.` : 'Biedt nog niets aan.'}</div>
+      ${rows}</div>`;
+  }).join('');
   return `<h2>Andere installaties</h2>
-    <p class="sub">Een Huisconfig in een ander subnet (met een eigen Home Assistant) deelt zijn lampen en Tuya-toestellen met deze, en omgekeerd. Ze verschijnen op het schema als blokken die je kunt bedienen en aan een NSPanel-kaart kunt hangen; instellen doe je bij de installatie waar het toestel hangt.</p>
+    <p class="sub">Een Huisconfig in een ander subnet (met een eigen Home Assistant) biedt zijn lampen en Tuya-toestellen aan, en omgekeerd. Je kiest per installatie wat je wilt gebruiken; dat verschijnt op het schema als blok dat je kunt bedienen en aan een NSPanel-kaart kunt hangen. Instellen doe je bij de installatie waar het toestel hangt.</p>
     <label for="lkname">Naam van deze installatie</label>
     <div class="row"><input type="text" id="lkname" maxlength="60" placeholder="bv. Hoofdhuis" value="${esc(me.name)}"><button class="btn small" type="button" data-lk="name">Opslaan</button></div>
     ${me.id ? `<div class="sub">Id: <code>${esc(me.id)}</code>. Die blijft, ook als je de naam verandert: de andere installaties verwijzen ermee naar deze.</div>` : '<div class="sub">Nodig om te koppelen. Elke installatie een andere naam.</div>'}
@@ -35,7 +44,7 @@ function viewLinks() {
     <div class="scroll"><table><thead><tr><th>Home Assistant</th><th>Stand</th><th></th></tr></thead><tbody>${peers}</tbody></table></div>
     <div class="row" style="margin-top:6px"><input type="text" id="lkhost" spellcheck="false" autocomplete="off" placeholder="IP-adres, bv. 192.168.20.10" style="flex:1;min-width:180px"><input type="number" id="lkport" min="1" max="65535" value="47490" style="width:90px">
       <button class="btn small" type="button" data-lk="addpeer">Toevoegen</button></div>
-    ${known ? `<label>Bekende installaties</label><div class="scroll"><table><tbody>${known}</tbody></table></div>` : ''}`;
+    ${known ? `<label>Wat je van andere installaties gebruikt</label>${known}` : ''}`;
 }
 
 function linksUpdate() { // de stand van de verbindingen verandert: bijwerken, behalve terwijl je in een veld typt
@@ -67,6 +76,18 @@ const LK_ACTIONS = {
     await api('POST', 'link/forget', { peer: d.peer });
   },
 };
+
+document.addEventListener('change', (ev) => {
+  const t = ev.target;
+  if (!t.dataset || t.dataset.lkuse === undefined) return;
+  const peer = t.dataset.peer, obj = t.dataset.lkuse, use = t.checked, ref = `r:${peer}:${obj}`;
+  const cards = (S.schema.blocks || []).filter((c) => c.kind === 'card' && ((c.items || []).some((it) => it.ref === ref) || c.tuya === ref));
+  if (!use && cards.length && !confirm(`Niet meer gebruiken? ${cards.map((c) => c.name).join(', ')} ${cards.length === 1 ? 'toont' : 'tonen'} het dan als weg.`)) { t.checked = true; return; }
+  t.blur();
+  act(async () => {
+    try { await api('POST', 'link/use', { peer, obj, use }); } finally { await refresh(); const box = $('#linkbox'); if (box) box.innerHTML = viewLinks(); }
+  })();
+});
 
 document.addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-lk]');
