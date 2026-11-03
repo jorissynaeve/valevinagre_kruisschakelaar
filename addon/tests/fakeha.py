@@ -35,6 +35,7 @@ class FakeHa:
         self.auth_ok = 0
         self.overview: dict | None = {"views": [{"title": "Zwembad", "path": "zwembad", "cards": []}]}  # de opgeslagen Overview; None: automatisch
         self.saves = 0
+        self.dashboards: dict[str, str] = {}  # dashboard-id -> url_path (de extra dashboards in de zijbalk)
 
     # ---- toestand
 
@@ -91,6 +92,11 @@ class FakeHa:
                 await ws.send_json({"id": i, "type": "result", "success": True, "result": res})
             elif t in ("config/entity_registry/list", "config/device_registry/list", "config/area_registry/list") and self.registry is not None:
                 await ws.send_json({"id": i, "type": "result", "success": True, "result": self._registry(t)})
+            elif t == "lovelace/dashboards/list":
+                await ws.send_json({"id": i, "type": "result", "success": True, "result": [{"id": k, "url_path": v} for k, v in self.dashboards.items()]})
+            elif t == "lovelace/dashboards/delete":
+                self.dashboards.pop(m["dashboard_id"], None)
+                await ws.send_json({"id": i, "type": "result", "success": True, "result": None})
             elif t == "lovelace/config":
                 if self.overview is None:  # een automatisch gemaakte Overview
                     await ws.send_json({"id": i, "type": "result", "success": False, "error": {"code": "config_not_found", "message": "No config found."}})

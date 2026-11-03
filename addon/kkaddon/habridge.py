@@ -39,6 +39,7 @@ class HaBridge:
         self.dashboard, self.dashboard_delay = dashboard, dashboard_delay
         self._dash_task: asyncio.Task | None = None
         self._dash_sig: str | None = None  # wat er laatst in HA staat; None: nog niet bekend
+        self._old_removed = False
         self.enabled = bool(url and token)
         self.connected = False
         self.last_error = ""
@@ -354,22 +355,22 @@ class HaBridge:
         ents = (await self._request({"type": "config/entity_registry/list"})).get("result") or []
         devs = {d["id"]: d for d in (await self._request({"type": "config/device_registry/list"})).get("result") or []}
         names = {a["area_id"]: a.get("name", "") for a in (await self._request({"type": "config/area_registry/list"})).get("result") or []}
-        entities: dict[str, str] = {}
-        areas: dict[str, str] = {}
+        uids: dict[str, str] = {}  # unique_id -> entity_id van onze eigen MQTT-lichten
+        areas: dict[str, str] = {}  # entity_id -> gebied
         for r in ents:
-            uid = r.get("unique_id")
-            if r.get("platform") != "mqtt" or not isinstance(uid, str) or not uid.startswith("kk_") or r.get("disabled_by") or r.get("hidden_by"):
+            ent, uid = r.get("entity_id"), r.get("unique_id")
+            if not ent:
                 continue
-            if not str(r.get("entity_id", "")).startswith("light."):
-                continue
-            entities[uid] = r["entity_id"]
             area = r.get("area_id") or (devs.get(r.get("device_id")) or {}).get("area_id")
             if area and names.get(area):
-                areas[uid] = names[area]
-        view = dashboard.build(self.engine.model, entities, areas)
+                areas[ent] = names[area]
+            if r.get("platform") == "mqtt" and isinstance(uid, str) and uid.startswith("kk_") and ent.startswith("light.") and not r.get("disabled_by") and not r.get("hidden_by"):
+                uids[uid] = ent
+        view = dashboard.build(self.engine.model, self.engine.snapshot(), uids, areas)
         sig = json.dumps(view, sort_keys=True)
         if sig == self._dash_sig:
             return False
+        await self._remove_old_dashboard()
         try:
             config = (await self._request({"type": "lovelace/config", "force": True})).get("result")
         except HaError as e:  # een automatisch gemaakte Overview heeft geen opgeslagen config: die nemen we niet over
@@ -389,6 +390,19 @@ class HaBridge:
         self._dash_sig = sig
         log.info("tab %s in de Overview bijgewerkt: %d kamers", dashboard.TITLE, len(view["cards"]))
         return True
+
+    async def _remove_old_dashboard(self) -> None:
+        """0.18.0 zette de lampen in een eigen dashboard in de zijbalk; dat is nu een tab in de Overview. Eenmalig opruimen, alleen dat ene dashboard."""
+        if self._old_removed:
+            return
+        self._old_removed = True
+        try:
+            for d in (await self._request({"type": "lovelace/dashboards/list"})).get("result") or []:
+                if d.get("url_path") == dashboard.OLD_DASHBOARD and d.get("id"):
+                    await self._request({"type": "lovelace/dashboards/delete", "dashboard_id": d["id"]})
+                    log.info("het oude dashboard %s uit 0.18.0 is verwijderd", dashboard.OLD_DASHBOARD)
+        except (HaError, asyncio.TimeoutError) as e:
+            log.warning("oud dashboard niet verwijderd: %s", e)
 
     # ------------------------------------------------------------ model veranderd
 

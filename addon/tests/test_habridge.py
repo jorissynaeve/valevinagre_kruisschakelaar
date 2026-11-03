@@ -232,42 +232,51 @@ def _reg():
     }}
 
 
+def _place(model, key, room):
+    """Een lampblok op een pagina (kamer) van het schema zetten."""
+    pid = room.lower()
+    if not any(p["id"] == pid for p in model.schema["pages"]):
+        model.schema["pages"].append({"id": pid, "name": room})
+    model.schema["blocks"][key] = {"page": pid, "x": 0, "y": 0}
+
+
 def test_the_lights_tab_joins_the_overview_without_touching_the_other_tabs():
     from kkaddon.model import Light
 
     async def go():
-        ha = FakeHa(entities={"light.plafond": "off", "light.spots": "off", "light.hal": "off"}, registry=_reg())
-        async with Env(ha, with_device=False, dashboard_delay=0.05) as e:
-            e.model.lights[(2, 0)] = Light(2, 0, "Plafond")
-            e.model.lights[(2, 1)] = Light(2, 1, "Spots")
-            e.model.lights[(3, 0)] = Light(3, 0, "Hal")
-            e.model.nodes[3] = {"name": "Hal", "room": "Gang", "adopted": True}
+        # een extern apparaat (zoals de Dingtian): de gangen zijn HA-schakelaars, het licht van de add-on is verborgen
+        ha = FakeHa(entities={"switch.t_0": "off", "switch.t_1": "off", "switch.t_2": "off", "switch.t_3": "off", "light.plafond": "off"}, registry=_reg())
+        async with Env(ha, dashboard_delay=0.05) as e:
+            e.model.lights[(2, 0)] = Light(2, 0, "Plafond")  # een licht van een node: via MQTT in HA
+            _place(e.model, f"l{e.vid}.0", "Keuken")
+            _place(e.model, f"l{e.vid}.1", "Bureau")
+            _place(e.model, "l2.0", "Keuken")
             await e.until(lambda: e.bridge.connected, what="verbonden")
             await e.bridge.sync_dashboard()
             assert [v["path"] for v in ha.overview["views"]] == ["zwembad", "huisconfig-lampen"]  # de eigen tab komt erbij
-            # het gebied uit HA gaat voor, anders de kamer uit het model
-            assert _cards(ha) == {"Gang": ["light.hal"], "Keuken": ["light.plafond", "light.spots"]}
+            v = _view(ha)
+            assert {c["title"]: [(x["entity"], x["name"]) for x in c["entities"]] for c in v["cards"]} == {
+                "Bureau": [("switch.t_1", "Gang 2")],
+                "Keuken": [("switch.t_0", "Gang 1"), ("light.plafond", "Plafond")],
+            }
             assert ha.saves == 1
 
             assert await e.bridge.sync_dashboard() is False  # niets veranderd: niet opnieuw schrijven
-            e.model.lights[(2, 1)].enabled = False  # verborgen in HA
+            e.model.schema["blocks"].pop(f"l{e.vid}.1")  # van het schema af: geen kamer meer
             await e.bridge.sync_dashboard()
-            assert _cards(ha)["Keuken"] == ["light.plafond"]
-            e.model.lights.pop((3, 0))  # verwijderd
+            assert _cards(ha)["Zonder kamer"] == ["switch.t_1"] and list(_cards(ha))[-1] == "Zonder kamer"
+            e.model.lights.pop((2, 0))  # verwijderd
             await e.bridge.sync_dashboard()
-            assert list(_cards(ha)) == ["Keuken"] and ha.saves == 3
+            assert _cards(ha)["Keuken"] == ["switch.t_0"] and ha.saves == 3
             assert [v["path"] for v in ha.overview["views"]] == ["zwembad", "huisconfig-lampen"]  # niet dubbel
 
     run(go())
 
 
 def test_after_reconnecting_an_unchanged_tab_is_not_written_again_and_it_can_be_switched_off():
-    from kkaddon.model import Light
-
     async def go():
-        ha = FakeHa(entities={"light.plafond": "off"}, registry=_reg())
-        async with Env(ha, with_device=False, dashboard_delay=0.05) as e:
-            e.model.lights[(2, 0)] = Light(2, 0, "Plafond")
+        ha = FakeHa(registry=_reg())
+        async with Env(ha, dashboard_delay=0.05) as e:
             await e.until(lambda: ha.saves == 1, what="eerste keer geschreven")
             await e.ha.kick(None)
             await e.until(lambda: ha.auth_ok == 2, what="opnieuw verbonden")
@@ -290,5 +299,16 @@ def test_an_automatic_overview_is_left_alone():
             await e.until(lambda: e.bridge.connected)
             await asyncio.sleep(0.3)
             assert ha.overview is None and ha.saves == 0
+
+    run(go())
+
+
+def test_the_old_sidebar_dashboard_of_0_18_0_is_removed_but_other_dashboards_stay():
+    async def go():
+        ha = FakeHa(registry=_reg())
+        ha.dashboards = {"d1": "huisconfig-lampen", "d2": "mijn-eigen"}
+        async with Env(ha, dashboard_delay=0.05) as e:
+            await e.until(lambda: ha.saves == 1, what="tab geschreven")
+            assert ha.dashboards == {"d2": "mijn-eigen"}
 
     run(go())

@@ -304,11 +304,11 @@ Het model zit in `/data/network.json` (zit in de HA-back-up) en kan geëxporteer
 * Per node: firmwareversie en "Configuratie wijkt af" (diagnostisch).
 * Het logboek in de add-on toont per wijziging welke schakelaar of opdracht de oorzaak was.
 * **Tab "Lampen" in de Overview**: de add-on zet zelf een tab *Lampen* naast je andere tabs (Verlichting, Zwembad, ...) in de Overview, met
-  alle lampen per kamer (het gebied uit HA, anders de kamer uit het model; zonder beide onder *Zonder kamer*) en een aan/uit-schakelaar per kamer.
+  alle lampen van het schema per kamer (de pagina waarop de lamp staat, anders het gebied uit HA, anders *Zonder kamer*) en een aan/uit-schakelaar per kamer. Bij een lamp op een extern apparaat (bv. een Dingtian-relais) staat de HA-entiteit van die gang erin.
   Hij volgt vanzelf: een licht toevoegen, verwijderen, verbergen of hernoemen, of een ander gebied in HA, werkt hem binnen enkele seconden bij.
   Alleen die ene tab is van de add-on (handmatige aanpassingen eraan worden overschreven); je andere tabs blijven zoals ze waren.
   Voorwaarde: de Overview is overgenomen (*Overview* → potlood → *Dashboard overnemen*, zodra je zelf tabs hebt is dat al zo). Een automatisch
-  gemaakte Overview laat de add-on met rust en meldt dat in het logboek. Zet de optie `ha_dashboard` uit als je dit niet wilt.
+  gemaakte Overview laat de add-on met rust en meldt dat in het logboek. Het aparte dashboard *Lampen* uit versie 0.18.0 ruimt de add-on zelf op. Zet de optie `ha_dashboard` uit als je dit niet wilt.
 
 ## Opties
 
