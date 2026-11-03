@@ -31,6 +31,7 @@ class Settings:
     mqtt_password: str = ""
     ha_url: str = ""  # websocket van HA; leeg + SUPERVISOR_TOKEN: de supervisor-proxy
     ha_token: str = ""
+    ha_dashboard: bool = True  # het dashboard "Lampen" in HA door de add-on laten bijhouden
     panel_port: int = 47480  # UDP: hier luistert de add-on naar de NSPanels
     panel_remote_port: int = 47481  # UDP: hier luistert het Berry-script op de panel
     link_port: int = 47490  # TCP: koppelingen met de add-on van een ander subnet (linkhub.py)
@@ -133,6 +134,7 @@ def load(env: dict | None = None) -> Settings:
         mqtt_password=str(get("mqtt_password", "")),
         ha_url=ha_url,
         ha_token=ha_token,
+        ha_dashboard=_bool(get("ha_dashboard", True)),
         panel_port=int(get("panel_port", 47480)),
         panel_remote_port=int(get("panel_remote_port", 47481)),
         link_port=int(get("link_port", 47490)),

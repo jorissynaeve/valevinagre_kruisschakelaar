@@ -44,7 +44,7 @@ async def run() -> None:
     await transport.start()
 
     mqtt = MqttBridge(s, engine)
-    ha = HaBridge(s.ha_url, s.ha_token, engine)
+    ha = HaBridge(s.ha_url, s.ha_token, engine, dashboard=s.ha_dashboard)
     panels = PanelHub(s.data_dir, ha, engine, port=s.panel_port, panel_port=s.panel_remote_port)
     mqtt.extras.append(panels)
     panels.changed = mqtt.resync

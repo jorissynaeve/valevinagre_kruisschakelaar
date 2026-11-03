@@ -10,11 +10,13 @@ De add-on leest alleen entiteiten die in het model staan; de rest van HA blijft 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any, Callable
 
 import aiohttp
 
+from . import dashboard
 from .engine import Engine
 
 log = logging.getLogger("kk.ha")
@@ -23,13 +25,20 @@ log = logging.getLogger("kk.ha")
 DOMAINS = ("switch", "light", "input_boolean", "fan")
 
 
+# Gebeurtenissen waarbij het dashboard "Lampen" opnieuw moet kloppen
+REGISTRY_EVENTS = ("entity_registry_updated", "device_registry_updated", "area_registry_updated")
+
+
 class HaError(Exception):
     pass
 
 
 class HaBridge:
-    def __init__(self, url: str, token: str, engine: Engine, retry: tuple[float, float] = (2.0, 60.0)) -> None:
+    def __init__(self, url: str, token: str, engine: Engine, retry: tuple[float, float] = (2.0, 60.0), dashboard: bool = True, dashboard_delay: float = 5.0) -> None:
         self.url, self.token, self.engine = url, token, engine
+        self.dashboard, self.dashboard_delay = dashboard, dashboard_delay
+        self._dash_task: asyncio.Task | None = None
+        self._dash_sig: str | None = None  # wat er laatst in HA staat; None: nog niet bekend
         self.enabled = bool(url and token)
         self.connected = False
         self.last_error = ""
@@ -81,6 +90,10 @@ class HaBridge:
                 fut.set_exception(HaError("verbinding verbroken"))
         self._futures.clear()
         self._tpl_ids.clear()
+        self._dash_sig = None  # na een nieuwe verbinding eerst vergelijken met wat HA heeft
+        if self._dash_task:
+            self._dash_task.cancel()
+            self._dash_task = None
         self.engine.virt.set_link(False)
 
     async def _session(self, sess: aiohttp.ClientSession) -> None:
@@ -111,8 +124,15 @@ class HaBridge:
     async def _init(self) -> None:
         try:
             await self._request({"type": "subscribe_events", "event_type": "state_changed"})
+            if self.dashboard:
+                for ev in REGISTRY_EVENTS:  # een nieuw licht, een ander gebied: het dashboard volgt
+                    try:
+                        await self._request({"type": "subscribe_events", "event_type": ev})
+                    except (HaError, asyncio.TimeoutError) as err:
+                        log.warning("niet te volgen: %s (%s)", ev, err)
             self.engine.virt.set_link(True)
             await self._sync()
+            self._schedule_dashboard()
             for text in sorted(self._tpl_wanted):
                 await self._subscribe_template(text)
             try:
@@ -161,6 +181,9 @@ class HaBridge:
                 if "result" in ev:
                     self.templates[text] = ev["result"]
                     self._notify(self.template_listeners, text)
+                return
+            if ev.get("event_type") in REGISTRY_EVENTS:
+                self._schedule_dashboard()
                 return
             if ev.get("event_type") != "state_changed":
                 return
@@ -306,11 +329,73 @@ class HaBridge:
         except (aiohttp.ClientError, ConnectionError) as e:
             log.warning("bevel naar HA mislukt: %s", e)
 
+    # ------------------------------------------------------------ dashboard "Lampen"
+
+    def _schedule_dashboard(self) -> None:
+        """Bundelen: veel wijzigingen vlak na elkaar (HA registreert ook net gepubliceerde lichten één voor één) geven één schrijfbeurt."""
+        if not self.dashboard or not self.connected:
+            return
+        if self._dash_task and not self._dash_task.done():
+            self._dash_task.cancel()
+
+        async def later() -> None:
+            try:
+                await asyncio.sleep(self.dashboard_delay)
+                await self.sync_dashboard()
+            except asyncio.CancelledError:
+                raise
+            except (HaError, asyncio.TimeoutError, KeyError, TypeError) as err:
+                log.warning("dashboard Lampen niet bijgewerkt: %s", err)
+
+        self._dash_task = asyncio.get_running_loop().create_task(later())
+
+    async def sync_dashboard(self) -> bool:
+        """Maak het dashboard aan als het ontbreekt en schrijf de lampen per kamer erin. Geeft True als er geschreven is."""
+        ents = (await self._request({"type": "config/entity_registry/list"})).get("result") or []
+        devs = {d["id"]: d for d in (await self._request({"type": "config/device_registry/list"})).get("result") or []}
+        names = {a["area_id"]: a.get("name", "") for a in (await self._request({"type": "config/area_registry/list"})).get("result") or []}
+        entities: dict[str, str] = {}
+        areas: dict[str, str] = {}
+        for r in ents:
+            uid = r.get("unique_id")
+            if r.get("platform") != "mqtt" or not isinstance(uid, str) or not uid.startswith("kk_") or r.get("disabled_by") or r.get("hidden_by"):
+                continue
+            if not str(r.get("entity_id", "")).startswith("light."):
+                continue
+            entities[uid] = r["entity_id"]
+            area = r.get("area_id") or (devs.get(r.get("device_id")) or {}).get("area_id")
+            if area and names.get(area):
+                areas[uid] = names[area]
+        config = dashboard.build(self.engine.model, entities, areas)
+        sig = json.dumps(config, sort_keys=True)
+        if sig == self._dash_sig:
+            return False
+        listed = (await self._request({"type": "lovelace/dashboards/list"})).get("result") or []
+        if not any(d.get("url_path") == dashboard.URL_PATH for d in listed):
+            await self._request({"type": "lovelace/dashboards/create", "url_path": dashboard.URL_PATH, "title": dashboard.TITLE, "icon": dashboard.ICON,
+                                 "show_in_sidebar": True, "require_admin": False, "mode": "storage"})
+            log.info("dashboard %s aangemaakt", dashboard.TITLE)
+        elif self._dash_sig is None:  # eerste keer na het verbinden: al hetzelfde dan niet schrijven
+            try:
+                have = (await self._request({"type": "lovelace/config", "url_path": dashboard.URL_PATH, "force": True})).get("result")
+            except HaError:  # nog geen inhoud
+                have = None
+            if json.dumps(have, sort_keys=True) == sig:
+                self._dash_sig = sig
+                return False
+        await self._request({"type": "lovelace/config/save", "url_path": dashboard.URL_PATH, "config": config})
+        self._dash_sig = sig
+        log.info("dashboard %s bijgewerkt: %d kamers", dashboard.TITLE, len(config["views"][0]["cards"]))
+        return True
+
     # ------------------------------------------------------------ model veranderd
 
     def _on_event(self, e: dict) -> None:
         """Een nieuwe entiteit in het model: haal haar stand op (anders blijft ze 'onbekend' tot HA iets meldt)."""
-        if e["t"] != "model" or not self.connected or self._refresh_pending:
+        if e["t"] != "model" or not self.connected:
+            return
+        self._schedule_dashboard()
+        if self._refresh_pending:
             return
         self._refresh_pending = True
 

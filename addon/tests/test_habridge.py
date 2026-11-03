@@ -15,8 +15,8 @@ GANGS = [{"entity": f"switch.t_{i}", "name": f"Gang {i + 1}", "lamp": i < 2} for
 
 
 class Env:
-    def __init__(self, ha: FakeHa, token="test", with_device=True):
-        self.ha, self.token, self.with_device = ha, token, with_device
+    def __init__(self, ha: FakeHa, token="test", with_device=True, **bridge_kw):
+        self.ha, self.token, self.with_device, self.bridge_kw = ha, token, with_device, bridge_kw
         self.frames: list[proto.Frame] = []
 
     async def __aenter__(self):
@@ -25,7 +25,7 @@ class Env:
         self.model = Model()
         self.vid = self.model.set_virtual(None, "Tuya", "", GANGS) if self.with_device else None
         self.engine = Engine(KEY, self.model, lambda raw: self.frames.append(proto.open_frame(KEY, raw)), )
-        self.bridge = HaBridge(f"ws://127.0.0.1:{self.server.port}/api/websocket", self.token, self.engine, retry=(0.05, 0.2))
+        self.bridge = HaBridge(f"ws://127.0.0.1:{self.server.port}/api/websocket", self.token, self.engine, retry=(0.05, 0.2), **self.bridge_kw)
         self.tasks = [asyncio.create_task(self._tick()), asyncio.create_task(self.bridge.run())]
         return self
 
@@ -212,5 +212,65 @@ def test_group_members_follow_each_other_through_ha():
             assert sorted(ha.calls) == [("switch.t_0", "turn_on"), ("switch.t_2", "turn_on")], f"precies een bevel per lid: {ha.calls}"
             assert ha.states["switch.t_3"] == "off", "een entiteit buiten de kring blijft ongemoeid"
             assert [x for x in e.engine.log if x["t"] == "sync" and x["what"] == "follow"]
+
+    run(go())
+
+
+def _cards(ha):
+    cfg = ha.dashboards.get("huisconfig-lampen")
+    return {c["title"]: [x["entity"] for x in c["entities"]] for c in cfg["views"][0]["cards"]} if cfg else {}
+
+
+def test_the_lights_dashboard_is_created_and_follows_the_model_and_the_registers():
+    from kkaddon.model import Light
+
+    async def go():
+        reg = {"devices": {
+            "d1": {"name": "Relaisbox", "area": "keuken", "platform": "mqtt", "entities": [("light.plafond", {"unique_id": "kk_2_0"}), ("light.spots", {"unique_id": "kk_2_1"})]},
+            "d2": {"name": "Hal", "area": None, "platform": "mqtt", "entities": [("light.hal", {"unique_id": "kk_3_0"})]},
+        }}
+        ha = FakeHa(entities={"light.plafond": "off", "light.spots": "off", "light.hal": "off"}, registry=reg)
+        async with Env(ha, with_device=False, dashboard_delay=0.05) as e:
+            e.model.lights[(2, 0)] = Light(2, 0, "Plafond")
+            e.model.lights[(2, 1)] = Light(2, 1, "Spots")
+            e.model.lights[(3, 0)] = Light(3, 0, "Hal")
+            e.model.nodes[3] = {"name": "Hal", "room": "Gang", "adopted": True}
+            await e.until(lambda: e.bridge.connected, what="verbonden")
+            await e.bridge.sync_dashboard()
+            meta = ha.dashboard_meta["huisconfig-lampen"]
+            assert meta["title"] == "Lampen" and meta["show_in_sidebar"] is True
+            # het gebied uit HA gaat voor, anders de kamer uit het model
+            assert _cards(ha) == {"Gang": ["light.hal"], "Keuken": ["light.plafond", "light.spots"]}
+            assert ha.saves == 1
+
+            assert await e.bridge.sync_dashboard() is False  # niets veranderd: niet opnieuw schrijven
+            e.model.lights[(2, 1)].enabled = False  # verborgen in HA
+            await e.bridge.sync_dashboard()
+            assert _cards(ha)["Keuken"] == ["light.plafond"]
+            e.model.lights.pop((3, 0))  # verwijderd
+            await e.bridge.sync_dashboard()
+            assert list(_cards(ha)) == ["Keuken"] and ha.saves == 3
+
+    run(go())
+
+
+def test_after_reconnecting_an_unchanged_dashboard_is_not_written_again_and_it_can_be_switched_off():
+    from kkaddon.model import Light
+
+    async def go():
+        reg = {"devices": {"d1": {"name": "Box", "area": "keuken", "platform": "mqtt", "entities": [("light.plafond", {"unique_id": "kk_2_0"})]}}}
+        ha = FakeHa(entities={"light.plafond": "off"}, registry=reg)
+        async with Env(ha, with_device=False, dashboard_delay=0.05) as e:
+            e.model.lights[(2, 0)] = Light(2, 0, "Plafond")
+            await e.until(lambda: ha.saves == 1, what="eerste keer geschreven")
+            await e.ha.kick(None)
+            await e.until(lambda: ha.auth_ok == 2, what="opnieuw verbonden")
+            await asyncio.sleep(0.4)
+            assert ha.saves == 1
+        ha2 = FakeHa(entities={"light.plafond": "off"}, registry=reg)
+        async with Env(ha2, with_device=False, dashboard=False, dashboard_delay=0.05) as e:
+            await e.until(lambda: e.bridge.connected)
+            await asyncio.sleep(0.3)
+            assert ha2.dashboards == {}
 
     run(go())

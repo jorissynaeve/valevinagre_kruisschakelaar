@@ -303,6 +303,11 @@ Het model zit in `/data/network.json` (zit in de HA-back-up) en kan geëxporteer
   er niets mee geschakeld wordt.
 * Per node: firmwareversie en "Configuratie wijkt af" (diagnostisch).
 * Het logboek in de add-on toont per wijziging welke schakelaar of opdracht de oorzaak was.
+* **Dashboard "Lampen"**: de add-on maakt zelf een dashboard *Lampen* in de zijbalk met alle lampen per kamer (het gebied uit HA, anders de kamer
+  uit het model; zonder beide onder *Zonder kamer*), met een aan/uit-schakelaar per kamer. Het volgt vanzelf: een licht toevoegen,
+  verwijderen, verbergen of hernoemen, of een ander gebied in HA, werkt het binnen enkele seconden bij. Het is van de add-on: handmatige
+  aanpassingen worden overschreven. Wil je er zelf een maken, zet dan de optie `ha_dashboard` uit en verwijder het dashboard onder
+  *Instellingen → Dashboards*. Het token van de add-on moet de registers van HA mogen lezen (dat is in de add-on zo).
 
 ## Opties
 
@@ -313,6 +318,7 @@ Het model zit in `/data/network.json` (zit in de HA-back-up) en kan geëxporteer
 | `hub` | Frames van de ene vaste bridge ook naar de andere doorgeven. |
 | `broadcast_addr` | Standaard `255.255.255.255`; gebruik het subnet-broadcast als dat niet aankomt. |
 | `mqtt_host` e.a. | Leeg: de broker van Home Assistant. |
+| `ha_dashboard` | Standaard aan: de add-on houdt het dashboard *Lampen* in HA bij. |
 
 ## Beperkingen (versie 0.1)
 
