@@ -65,3 +65,29 @@ def build(model: Model, snap: dict, uids: dict[str, str], areas: dict[str, str],
             "entities": [{"entity": ent, "name": name} for name, ent in sorted(rooms[room], key=lambda x: (x[0].lower(), x[1]))],
         })
     return {"title": TITLE, "path": VIEW_PATH, "icon": ICON, "cards": cards}, sorted(set(missing))
+
+
+AIRCO_PATH = "huisconfig-airco"
+AIRCO_TITLE = "Airco"
+AIRCO_ICON = "mdi:air-conditioner"
+
+
+def airco_uid(did: str) -> str:
+    return f"kk_gree_{did}"  # zoals in greehub.py
+
+
+def build_airco(aircos: dict[str, str], uids: dict[str, str], known: set[str] | None = None) -> tuple[dict | None, list[str]]:
+    """De tab met een thermostaat per airco (greehub.py: een `climate` per airco). `aircos`: id -> naam; `uids`: unique_id -> entity_id.
+    Geeft (None, ...) zonder airco's: dan hoort er geen tab te zijn. Een entiteit die HA niet kent blijft weg, zoals bij de lampen."""
+    cards, missing = [], []
+    for did, name in sorted(aircos.items(), key=lambda kv: (kv[1].lower(), kv[0])):
+        ent = uids.get(airco_uid(did))
+        if not ent:
+            continue
+        if known is not None and ent not in known:
+            missing.append(ent)
+            continue
+        cards.append({"type": "thermostat", "entity": ent, "name": name})
+    if not cards:
+        return None, sorted(missing)
+    return {"title": AIRCO_TITLE, "path": AIRCO_PATH, "icon": AIRCO_ICON, "cards": cards}, sorted(missing)

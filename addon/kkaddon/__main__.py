@@ -66,7 +66,13 @@ async def run() -> None:
     tuya.start()
     airco = GreeHub(s.data_dir, engine)  # airco's met een Gree-module, een eigen blok (w:<id>) los van Tuya
     mqtt.extras.append(airco)
-    airco.changed = mqtt.resync
+    ha.airco_names = lambda: {did: dev["name"] for did, dev in airco.devices.items()}
+
+    def airco_changed() -> None:
+        mqtt.resync()
+        ha.refresh_dashboard()  # de tab Airco volgt toevoegen, verwijderen en hernoemen
+
+    airco.changed = airco_changed
     airco.start()
     await links.start()
     ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco)

@@ -40,6 +40,7 @@ class HaBridge:
         self._dash_task: asyncio.Task | None = None
         self._dash_sig: str | None = None  # wat er laatst in HA staat; None: nog niet bekend
         self._old_removed = False
+        self.airco_names: Callable[[], dict[str, str]] | None = None  # id -> naam van de airco's (greehub.py), voor de tab Airco
         self._dash_missing: list[str] = []
         self.enabled = bool(url and token)
         self.connected = False
@@ -335,6 +336,13 @@ class HaBridge:
 
     # ------------------------------------------------------------ tab "Lampen" in de Overview
 
+    def refresh_dashboard(self) -> None:
+        """Voor andere onderdelen (de airco's): de tabs in de Overview opnieuw laten kloppen."""
+        try:
+            self._schedule_dashboard()
+        except RuntimeError:  # geen lopende event-loop (bv. bij het opstarten): de verbinding plant het zelf in
+            pass
+
     def _schedule_dashboard(self) -> None:
         """Bundelen: veel wijzigingen vlak na elkaar (HA registreert ook net gepubliceerde lichten één voor één) geven één schrijfbeurt."""
         if not self.dashboard or not self.connected:
@@ -349,12 +357,12 @@ class HaBridge:
             except asyncio.CancelledError:
                 raise
             except (HaError, asyncio.TimeoutError, KeyError, TypeError) as err:
-                log.warning("tab Lampen niet bijgewerkt: %s", err)
+                log.warning("tabs niet bijgewerkt: %s", err)
 
         self._dash_task = asyncio.get_running_loop().create_task(later())
 
     async def sync_dashboard(self) -> bool:
-        """Zet de tab "Lampen" met de lampen per kamer in de Overview (maakt hem aan of werkt hem bij). Geeft True als er geschreven is."""
+        """Zet de tabs "Lampen" (lampen per kamer) en "Airco" (een thermostaat per airco) in de Overview: maakt ze aan, werkt ze bij of haalt ze weg. Geeft True als er geschreven is."""
         ents = (await self._request({"type": "config/entity_registry/list"})).get("result") or []
         devs = {d["id"]: d for d in (await self._request({"type": "config/device_registry/list"})).get("result") or []}
         names = {a["area_id"]: a.get("name", "") for a in (await self._request({"type": "config/area_registry/list"})).get("result") or []}
@@ -367,13 +375,17 @@ class HaBridge:
             area = r.get("area_id") or (devs.get(r.get("device_id")) or {}).get("area_id")
             if area and names.get(area):
                 areas[ent] = names[area]
-            if r.get("platform") == "mqtt" and isinstance(uid, str) and uid.startswith("kk_") and ent.startswith("light.") and not r.get("disabled_by") and not r.get("hidden_by"):
-                uids[uid] = ent
-        view, missing = dashboard.build(self.engine.model, self.engine.snapshot(), uids, areas, set(self.states) if self.states else None)
+            if r.get("platform") == "mqtt" and isinstance(uid, str) and uid.startswith("kk_") and not r.get("disabled_by") and not r.get("hidden_by"):
+                uids[uid] = ent  # onze lichten (kk_<node>_<relais>) en airco's (kk_gree_<id>)
+        known = set(self.states) if self.states else None
+        lights, missing = dashboard.build(self.engine.model, self.engine.snapshot(), {u: e for u, e in uids.items() if e.startswith("light.")}, areas, known)
+        aircos, missing_a = dashboard.build_airco(self.airco_names() if self.airco_names else {}, {u: e for u, e in uids.items() if e.startswith("climate.")}, known)
+        missing = sorted(set(missing) | set(missing_a))
         if missing and missing != self._dash_missing:
-            log.warning("niet in de tab Lampen, want HA kent ze niet: %s", ", ".join(missing))
+            log.warning("niet in de tabs Lampen en Airco, want HA kent ze niet: %s", ", ".join(missing))
         self._dash_missing = missing
-        sig = json.dumps(view, sort_keys=True)
+        want = {dashboard.VIEW_PATH: lights, dashboard.AIRCO_PATH: aircos}  # onze tabs; None: er hoort er geen te zijn
+        sig = json.dumps(want, sort_keys=True)
         if sig == self._dash_sig:
             return False
         await self._remove_old_dashboard()
@@ -384,17 +396,24 @@ class HaBridge:
         if not isinstance(config, dict):
             raise HaError("de Overview heeft geen opgeslagen configuratie")
         views = list(config.get("views") or [])
-        at = next((i for i, v in enumerate(views) if v.get("path") == dashboard.VIEW_PATH), None)
-        if at is not None and views[at] == view:
-            self._dash_sig = sig
-            return False
-        if at is None:
-            views.append(view)
-        else:
-            views[at] = view  # alleen onze eigen tab; de rest van de Overview blijft zoals het was
-        await self._request({"type": "lovelace/config/save", "config": {**config, "views": views}})
+        changed = False
+        for path, view in want.items():  # alleen onze eigen tabs; de rest van de Overview blijft zoals het was
+            at = next((i for i, v in enumerate(views) if v.get("path") == path), None)
+            if view is None:
+                if at is not None:
+                    del views[at]
+                    changed = True
+            elif at is None:
+                views.append(view)
+                changed = True
+            elif views[at] != view:
+                views[at] = view
+                changed = True
         self._dash_sig = sig
-        log.info("tab %s in de Overview bijgewerkt: %d kamers", dashboard.TITLE, len(view["cards"]))
+        if not changed:
+            return False
+        await self._request({"type": "lovelace/config/save", "config": {**config, "views": views}})
+        log.info("tabs in de Overview bijgewerkt: Lampen (%d kamers)%s", len(lights["cards"]), f", Airco ({len(aircos['cards'])})" if aircos else "")
         return True
 
     async def _remove_old_dashboard(self) -> None:

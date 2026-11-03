@@ -327,3 +327,30 @@ def test_an_entity_that_ha_does_not_know_stays_out_of_the_tab_until_it_appears()
             assert _cards(ha) == {"Bureau": ["switch.t_1"], "Keuken": ["switch.t_0"]}
 
     run(go())
+
+
+def test_the_airco_tab_follows_the_airco_s_and_goes_away_with_the_last_one():
+    async def go():
+        reg = _reg()
+        reg["devices"]["d3"] = {"name": "Airco living", "area": None, "platform": "mqtt", "entities": [("climate.kk_gree_a1", {"unique_id": "kk_gree_a1"}),
+                                                                                                         ("climate.kk_gree_b2", {"unique_id": "kk_gree_b2"})]}
+        ha = FakeHa(entities={"switch.t_0": "off", "switch.t_1": "off", "climate.kk_gree_a1": "cool", "climate.kk_gree_b2": "off"}, registry=reg)
+        names = {"a1": "Living", "b2": "Bureau"}
+        async with Env(ha, dashboard_delay=0.05) as e:
+            e.bridge.airco_names = lambda: names
+            await e.until(lambda: e.bridge.connected, what="verbonden")
+            await e.bridge.sync_dashboard()
+            assert [v["path"] for v in ha.overview["views"]] == ["zwembad", "huisconfig-lampen", "huisconfig-airco"]  # naast de lampen
+            air = next(v for v in ha.overview["views"] if v["path"] == "huisconfig-airco")
+            assert air["cards"] == [{"type": "thermostat", "entity": "climate.kk_gree_b2", "name": "Bureau"},
+                                    {"type": "thermostat", "entity": "climate.kk_gree_a1", "name": "Living"}]
+            names.pop("b2")  # een airco verwijderd of hernoemd
+            e.bridge.refresh_dashboard()
+            await e.until(lambda: ha.saves == 2, what="tab bijgewerkt")
+            assert [c["entity"] for c in next(v for v in ha.overview["views"] if v["path"] == "huisconfig-airco")["cards"]] == ["climate.kk_gree_a1"]
+            names.clear()  # geen airco's meer: de tab verdwijnt, de rest blijft
+            e.bridge.refresh_dashboard()
+            await e.until(lambda: ha.saves == 3, what="tab weg")
+            assert [v["path"] for v in ha.overview["views"]] == ["zwembad", "huisconfig-lampen"]
+
+    run(go())

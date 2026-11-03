@@ -308,7 +308,8 @@ Het model zit in `/data/network.json` (zit in de HA-back-up) en kan geëxporteer
   Hij volgt vanzelf: een licht toevoegen, verwijderen, verbergen of hernoemen, of een ander gebied in HA, werkt hem binnen enkele seconden bij.
   Alleen die ene tab is van de add-on (handmatige aanpassingen eraan worden overschreven); je andere tabs blijven zoals ze waren.
   Voorwaarde: de Overview is overgenomen (*Overview* → potlood → *Dashboard overnemen*, zodra je zelf tabs hebt is dat al zo). Een automatisch
-  gemaakte Overview laat de add-on met rust en meldt dat in het logboek. Het aparte dashboard *Lampen* uit versie 0.18.0 ruimt de add-on zelf op. Zet de optie `ha_dashboard` uit als je dit niet wilt.
+  gemaakte Overview laat de add-on met rust en meldt dat in het logboek. Het aparte dashboard *Lampen* uit versie 0.18.0 ruimt de add-on zelf op. Heb je airco's (zie *Airco*), dan zet de add-on daar een tweede tab *Airco* naast, met een thermostaat per airco. Ook die volgt
+  vanzelf: een airco toevoegen, hernoemen of verwijderen werkt hem bij, en zonder airco's is er geen tab. Zet de optie `ha_dashboard` uit als je dit niet wilt.
 
 ## Opties
 
@@ -319,7 +320,7 @@ Het model zit in `/data/network.json` (zit in de HA-back-up) en kan geëxporteer
 | `hub` | Frames van de ene vaste bridge ook naar de andere doorgeven. |
 | `broadcast_addr` | Standaard `255.255.255.255`; gebruik het subnet-broadcast als dat niet aankomt. |
 | `mqtt_host` e.a. | Leeg: de broker van Home Assistant. |
-| `ha_dashboard` | Standaard aan: de add-on houdt de tab *Lampen* in de Overview van HA bij. |
+| `ha_dashboard` | Standaard aan: de add-on houdt de tabs *Lampen* en *Airco* in de Overview van HA bij. |
 
 ## Beperkingen (versie 0.1)
 
