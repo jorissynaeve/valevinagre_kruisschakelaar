@@ -312,3 +312,18 @@ def test_the_old_sidebar_dashboard_of_0_18_0_is_removed_but_other_dashboards_sta
             assert ha.dashboards == {"d2": "mijn-eigen"}
 
     run(go())
+
+
+def test_an_entity_that_ha_does_not_know_stays_out_of_the_tab_until_it_appears():
+    async def go():
+        ha = FakeHa(entities={"switch.t_0": "off"}, registry=_reg())  # switch.t_1 bestaat (nog) niet in HA
+        async with Env(ha, dashboard_delay=0.05) as e:
+            _place(e.model, f"l{e.vid}.0", "Keuken")
+            _place(e.model, f"l{e.vid}.1", "Bureau")
+            await e.until(lambda: ha.saves == 1, what="tab geschreven")
+            assert _cards(ha) == {"Keuken": ["switch.t_0"]}  # geen waarschuwingsrij voor een onbekende entiteit
+            await ha.set_state("switch.t_1", "off")
+            await e.until(lambda: ha.saves == 2, what="opnieuw opgebouwd")
+            assert _cards(ha) == {"Bureau": ["switch.t_1"], "Keuken": ["switch.t_0"]}
+
+    run(go())

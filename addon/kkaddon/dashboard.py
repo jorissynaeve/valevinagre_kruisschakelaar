@@ -36,16 +36,21 @@ def _entities(model: Model, b: dict, uids: dict[str, str]) -> list[str]:
     return [ent] if light and light.enabled and ent else []
 
 
-def build(model: Model, snap: dict, uids: dict[str, str], areas: dict[str, str]) -> dict:
+def build(model: Model, snap: dict, uids: dict[str, str], areas: dict[str, str], known: set[str] | None = None) -> tuple[dict, list[str]]:
     """De view (tab). `snap`: de momentopname van de engine; `uids`: unique_id -> entity_id van de MQTT-lichten in HA;
-    `areas`: entity_id -> gebied in HA. De kamer is de pagina van het schema waarop de lamp staat, anders het gebied in HA."""
+    `areas`: entity_id -> gebied in HA; `known`: de entiteiten die HA kent (een onbekende geeft in HA een waarschuwingsrij en blijft weg).
+    Geeft de view en de weggelaten entiteiten. De kamer is de pagina van het schema waarop de lamp staat, anders het gebied in HA."""
     v = schema.view(model, snap)
     pages = {p["id"]: p["name"] for p in v["pages"]}
     blocks = sorted((b for b in v["blocks"] if b["kind"] == "lamp"), key=lambda b: (b["source"] != "ha", b["name"].lower()))
     rooms: dict[str, list[tuple[str, str]]] = {}
     seen: set[str] = set()
+    missing: list[str] = []
     for b in blocks:
         ents = [e for e in _entities(model, b, uids) if e not in seen]
+        if known is not None:
+            missing += [e for e in ents if e not in known]
+            ents = [e for e in ents if e in known]
         for i, ent in enumerate(ents):
             seen.add(ent)
             room = pages.get(b.get("page")) or areas.get(ent) or NO_ROOM
@@ -59,4 +64,4 @@ def build(model: Model, snap: dict, uids: dict[str, str], areas: dict[str, str])
             "show_header_toggle": True,
             "entities": [{"entity": ent, "name": name} for name, ent in sorted(rooms[room], key=lambda x: (x[0].lower(), x[1]))],
         })
-    return {"title": TITLE, "path": VIEW_PATH, "icon": ICON, "cards": cards}
+    return {"title": TITLE, "path": VIEW_PATH, "icon": ICON, "cards": cards}, sorted(set(missing))

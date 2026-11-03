@@ -40,6 +40,7 @@ class HaBridge:
         self._dash_task: asyncio.Task | None = None
         self._dash_sig: str | None = None  # wat er laatst in HA staat; None: nog niet bekend
         self._old_removed = False
+        self._dash_missing: list[str] = []
         self.enabled = bool(url and token)
         self.connected = False
         self.last_error = ""
@@ -193,6 +194,8 @@ class HaBridge:
             new = data.get("new_state")
             if ent:
                 if new:
+                    if ent in self._dash_missing:  # een entiteit die de tab miste is er nu: opnieuw opbouwen
+                        self._schedule_dashboard()
                     self.states[ent] = (str(new.get("state")), new.get("attributes") or {})
                 else:
                     self.states.pop(ent, None)
@@ -366,7 +369,10 @@ class HaBridge:
                 areas[ent] = names[area]
             if r.get("platform") == "mqtt" and isinstance(uid, str) and uid.startswith("kk_") and ent.startswith("light.") and not r.get("disabled_by") and not r.get("hidden_by"):
                 uids[uid] = ent
-        view = dashboard.build(self.engine.model, self.engine.snapshot(), uids, areas)
+        view, missing = dashboard.build(self.engine.model, self.engine.snapshot(), uids, areas, set(self.states) if self.states else None)
+        if missing and missing != self._dash_missing:
+            log.warning("niet in de tab Lampen, want HA kent ze niet: %s", ", ".join(missing))
+        self._dash_missing = missing
         sig = json.dumps(view, sort_keys=True)
         if sig == self._dash_sig:
             return False
