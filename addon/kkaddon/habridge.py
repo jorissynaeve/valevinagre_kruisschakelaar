@@ -25,7 +25,7 @@ log = logging.getLogger("kk.ha")
 DOMAINS = ("switch", "light", "input_boolean", "fan")
 
 
-# Gebeurtenissen waarbij het dashboard "Lampen" opnieuw moet kloppen
+# Gebeurtenissen waarbij de tab "Lampen" opnieuw moet kloppen
 REGISTRY_EVENTS = ("entity_registry_updated", "device_registry_updated", "area_registry_updated")
 
 
@@ -329,7 +329,7 @@ class HaBridge:
         except (aiohttp.ClientError, ConnectionError) as e:
             log.warning("bevel naar HA mislukt: %s", e)
 
-    # ------------------------------------------------------------ dashboard "Lampen"
+    # ------------------------------------------------------------ tab "Lampen" in de Overview
 
     def _schedule_dashboard(self) -> None:
         """Bundelen: veel wijzigingen vlak na elkaar (HA registreert ook net gepubliceerde lichten één voor één) geven één schrijfbeurt."""
@@ -345,12 +345,12 @@ class HaBridge:
             except asyncio.CancelledError:
                 raise
             except (HaError, asyncio.TimeoutError, KeyError, TypeError) as err:
-                log.warning("dashboard Lampen niet bijgewerkt: %s", err)
+                log.warning("tab Lampen niet bijgewerkt: %s", err)
 
         self._dash_task = asyncio.get_running_loop().create_task(later())
 
     async def sync_dashboard(self) -> bool:
-        """Maak het dashboard aan als het ontbreekt en schrijf de lampen per kamer erin. Geeft True als er geschreven is."""
+        """Zet de tab "Lampen" met de lampen per kamer in de Overview (maakt hem aan of werkt hem bij). Geeft True als er geschreven is."""
         ents = (await self._request({"type": "config/entity_registry/list"})).get("result") or []
         devs = {d["id"]: d for d in (await self._request({"type": "config/device_registry/list"})).get("result") or []}
         names = {a["area_id"]: a.get("name", "") for a in (await self._request({"type": "config/area_registry/list"})).get("result") or []}
@@ -366,26 +366,28 @@ class HaBridge:
             area = r.get("area_id") or (devs.get(r.get("device_id")) or {}).get("area_id")
             if area and names.get(area):
                 areas[uid] = names[area]
-        config = dashboard.build(self.engine.model, entities, areas)
-        sig = json.dumps(config, sort_keys=True)
+        view = dashboard.build(self.engine.model, entities, areas)
+        sig = json.dumps(view, sort_keys=True)
         if sig == self._dash_sig:
             return False
-        listed = (await self._request({"type": "lovelace/dashboards/list"})).get("result") or []
-        if not any(d.get("url_path") == dashboard.URL_PATH for d in listed):
-            await self._request({"type": "lovelace/dashboards/create", "url_path": dashboard.URL_PATH, "title": dashboard.TITLE, "icon": dashboard.ICON,
-                                 "show_in_sidebar": True, "require_admin": False, "mode": "storage"})
-            log.info("dashboard %s aangemaakt", dashboard.TITLE)
-        elif self._dash_sig is None:  # eerste keer na het verbinden: al hetzelfde dan niet schrijven
-            try:
-                have = (await self._request({"type": "lovelace/config", "url_path": dashboard.URL_PATH, "force": True})).get("result")
-            except HaError:  # nog geen inhoud
-                have = None
-            if json.dumps(have, sort_keys=True) == sig:
-                self._dash_sig = sig
-                return False
-        await self._request({"type": "lovelace/config/save", "url_path": dashboard.URL_PATH, "config": config})
+        try:
+            config = (await self._request({"type": "lovelace/config", "force": True})).get("result")
+        except HaError as e:  # een automatisch gemaakte Overview heeft geen opgeslagen config: die nemen we niet over
+            raise HaError(f"de Overview is niet overgenomen (Overview -> potlood -> Dashboard overnemen): {e}") from e
+        if not isinstance(config, dict):
+            raise HaError("de Overview heeft geen opgeslagen configuratie")
+        views = list(config.get("views") or [])
+        at = next((i for i, v in enumerate(views) if v.get("path") == dashboard.VIEW_PATH), None)
+        if at is not None and views[at] == view:
+            self._dash_sig = sig
+            return False
+        if at is None:
+            views.append(view)
+        else:
+            views[at] = view  # alleen onze eigen tab; de rest van de Overview blijft zoals het was
+        await self._request({"type": "lovelace/config/save", "config": {**config, "views": views}})
         self._dash_sig = sig
-        log.info("dashboard %s bijgewerkt: %d kamers", dashboard.TITLE, len(config["views"][0]["cards"]))
+        log.info("tab %s in de Overview bijgewerkt: %d kamers", dashboard.TITLE, len(view["cards"]))
         return True
 
     # ------------------------------------------------------------ model veranderd

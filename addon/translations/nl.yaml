@@ -33,8 +33,8 @@ configuration:
     name: HA-token (alleen buiten Home Assistant)
     description: Long-lived access token.
   ha_dashboard:
-    name: Dashboard "Lampen" bijhouden
-    description: Zet in HA een dashboard "Lampen" (zijbalk) met alle lampen per kamer, dat vanzelf meeverandert bij toevoegen, verwijderen en hernoemen. Handmatige aanpassingen daaraan worden overschreven.
+    name: Tab "Lampen" in de Overview bijhouden
+    description: Zet in de Overview van HA (naast je andere tabs) een tab "Lampen" met alle lampen per kamer, die vanzelf meeverandert bij toevoegen, verwijderen en hernoemen. Handmatige aanpassingen aan die tab worden overschreven.
   link_port:
     name: Poort voor koppelingen
     description: TCP-poort waarop andere Huisconfig-installaties (in een ander subnet) verbinden. Zet hem open tussen de subnetten. Sleutel en adressen stel je in op het tabblad Instellingen.

@@ -33,8 +33,7 @@ class FakeHa:
         self.subs: dict[web.WebSocketResponse, int] = {}
         self.sockets: set[web.WebSocketResponse] = set()
         self.auth_ok = 0
-        self.dashboards: dict[str, dict | None] = {}  # url_path -> Lovelace-config (None: aangemaakt, nog leeg)
-        self.dashboard_meta: dict[str, dict] = {}
+        self.overview: dict | None = {"views": [{"title": "Zwembad", "path": "zwembad", "cards": []}]}  # de opgeslagen Overview; None: automatisch
         self.saves = 0
 
     # ---- toestand
@@ -92,20 +91,13 @@ class FakeHa:
                 await ws.send_json({"id": i, "type": "result", "success": True, "result": res})
             elif t in ("config/entity_registry/list", "config/device_registry/list", "config/area_registry/list") and self.registry is not None:
                 await ws.send_json({"id": i, "type": "result", "success": True, "result": self._registry(t)})
-            elif t == "lovelace/dashboards/list":
-                await ws.send_json({"id": i, "type": "result", "success": True, "result": [{"url_path": p} for p in self.dashboards]})
-            elif t == "lovelace/dashboards/create":
-                self.dashboards[m["url_path"]] = None
-                self.dashboard_meta[m["url_path"]] = {k: m[k] for k in ("title", "icon", "show_in_sidebar")}
-                await ws.send_json({"id": i, "type": "result", "success": True, "result": {"url_path": m["url_path"]}})
             elif t == "lovelace/config":
-                cfg = self.dashboards.get(m.get("url_path"))
-                if cfg is None:
+                if self.overview is None:  # een automatisch gemaakte Overview
                     await ws.send_json({"id": i, "type": "result", "success": False, "error": {"code": "config_not_found", "message": "No config found."}})
                 else:
-                    await ws.send_json({"id": i, "type": "result", "success": True, "result": cfg})
+                    await ws.send_json({"id": i, "type": "result", "success": True, "result": self.overview})
             elif t == "lovelace/config/save":
-                self.dashboards[m["url_path"]] = m["config"]
+                self.overview = m["config"]
                 self.saves += 1
                 await ws.send_json({"id": i, "type": "result", "success": True, "result": None})
             elif t == "render_template":
