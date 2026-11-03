@@ -22,15 +22,16 @@ STATIC = Path(__file__).parent / "static"
 CTX = web.AppKey("ctx", object)
 INGRESS_PROXY = {"172.30.32.2", "127.0.0.1", "::1"}
 # Events die de pagina moet kennen; de rest (bv. losse commando-statussen) is ruis.
-PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "link", "action"}
+PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "airco", "link", "action"}
 
 
 class Ctx:
     """Alles wat de handlers nodig hebben."""
 
-    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None) -> None:
+    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None) -> None:
         self.settings, self.engine, self.model = settings, engine, engine.model
         self.transport, self.mqtt, self.ha, self.panels, self.tuya, self.links = transport, mqtt, ha, panels, tuya, links
+        self.airco = airco
         self.clients: set[web.WebSocketResponse] = set()
         engine.subscribe(self._on_event)
 
@@ -531,6 +532,48 @@ async def tuya_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
+def _airco(request: web.Request):
+    hub = request.app[CTX].airco
+    if hub is None:
+        raise ModelError("airco's zijn niet beschikbaar")
+    return hub
+
+
+async def airco_post(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    did = _airco(request).add(b)
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"w:{did}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "id": did, "key": f"w:{did}"})
+
+
+async def airco_put(request: web.Request) -> web.Response:
+    _airco(request).update(request.match_info["did"], await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def airco_set(request: web.Request) -> web.Response:
+    b = await _body(request)
+    _airco(request).set(request.match_info["did"], str(b.get("field")), str(b.get("value")))
+    return web.json_response({"ok": True})
+
+
+async def airco_scan(request: web.Request) -> web.Response:
+    b = await _body(request)
+    host = str(b.get("host") or "").strip()
+    if host and not re.fullmatch(r"[A-Za-z0-9.\-]{1,253}", host):
+        raise ModelError("ongeldig adres")
+    if not _airco(request).ask(host or "255.255.255.255"):
+        raise ModelError("zoeken is niet mogelijk (zie het logboek)")
+    return web.json_response({"ok": True})
+
+
+async def airco_delete(request: web.Request) -> web.Response:
+    ok = _airco(request).remove(request.match_info["did"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
 async def screen_post(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     b = await _body(request)
@@ -767,6 +810,11 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/tuya/{did}", tuya_put)
     r.add_delete("/api/tuya/{did}", tuya_delete)
     r.add_post("/api/tuya/{did}/set", tuya_set)
+    r.add_post("/api/airco", airco_post)
+    r.add_post("/api/airco/scan", airco_scan)
+    r.add_put("/api/airco/{did}", airco_put)
+    r.add_delete("/api/airco/{did}", airco_delete)
+    r.add_post("/api/airco/{did}/set", airco_set)
     r.add_put("/api/schema/pages", schema_pages)
     r.add_post("/api/schema/wire", schema_wire)
     r.add_post("/api/schema/lamp", schema_lamp)

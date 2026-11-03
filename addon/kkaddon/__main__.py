@@ -14,6 +14,7 @@ from aiohttp import web
 
 from . import __version__, settings as cfg
 from .engine import Engine
+from .greehub import GreeHub
 from .habridge import HaBridge
 from .hasphub import HaspHub
 from .linkhub import LinkHub
@@ -63,8 +64,12 @@ async def run() -> None:
     mqtt.extras.append(tuya)
     tuya.changed = mqtt.resync
     tuya.start()
+    airco = GreeHub(s.data_dir, engine)  # airco's met een Gree-module, een eigen blok (w:<id>) los van Tuya
+    mqtt.extras.append(airco)
+    airco.changed = mqtt.resync
+    airco.start()
     await links.start()
-    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links)
+    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco)
     runner = web.AppRunner(make_app(ctx), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", s.web_port).start()
@@ -91,6 +96,7 @@ async def run() -> None:
     panels.close()
     screens.close()
     tuya.close()
+    airco.close()
     await links.close()
     engine.close()  # zet het leren uit en bewaart de staat
     await asyncio.sleep(0.2)  # laat de Learn(uit)-frames nog weggaan

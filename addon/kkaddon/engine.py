@@ -175,6 +175,8 @@ class Engine:
         self.panel_view: Callable[[], list[dict]] | None = None  # status van de panelen (panelhub.py)
         self.screen_view: Callable[[], list[dict]] | None = None  # status van de schermen (hasphub.py)
         self.tuya_view: Callable[[], list[dict]] | None = None  # status van de Tuya-toestellen, zonder sleutels (tuyahub.py)
+        self.airco_view: Callable[[], list[dict]] | None = None  # de airco's, zonder sleutels (greehub.py)
+        self.airco_value: Callable[[str], Any] | None = None  # een uitgang van een airco: w:<id>:on|room|set
         self.link_view: Callable[[], dict] | None = None  # koppelingen met andere installaties, zonder sleutel (linkhub.py)
         self._at(SPRINKLER_TICK, self._sprinkler_tick)
 
@@ -262,7 +264,10 @@ class Engine:
     def module_values(self) -> dict:
         now = self.local_now()
         return evaluate(self.model.modules, lambda t: self.timer_on(t) if t in self.model.timers else None, now.hour * 60 + now.minute, self.sun_today(),
-                        lambda dev, dp: self.points.number(dev, dp) if self.points else None)
+                        lambda dev, dp: self.points.number(dev, dp) if self.points else None, self._airco)
+
+    def _airco(self, ref: str):
+        return self.airco_value(ref) if self.airco_value else None
 
     def source_value(self, source: str) -> bool | None:
         """Wat de bron op een ingang van een lamp nu geeft: 0, 1 of onbekend."""
@@ -273,6 +278,8 @@ class Engine:
         if ref.startswith("v:"):
             dp, _, dev = ref[2:].partition("@")
             return self.points.number(dev, dp) if self.points else None
+        if ref.startswith("w:"):
+            return self._airco(ref)
         if ref.startswith("t:"):
             return self.timer_on(ref[2:]) if ref[2:] in self.model.timers else None
         return self.module_values().get(ref[2:])
@@ -835,6 +842,7 @@ class Engine:
             "panels": self.panel_view() if self.panel_view else [{"id": k, **p, "online": False, "error": "", "greeted": False, "last_seen": None, "relays": [None, None],
                                                                   "temperature": None, "rssi": None} for k, p in self.model.panels.items()],
             "tuya": self.tuya_view() if self.tuya_view else [],
+            "airco": self.airco_view() if self.airco_view else [],
             "links": self.link_view() if self.link_view else {"me": {"id": "", "name": "", "port": 0, "has_key": False, "listening": False, "error": ""}, "peers": [], "remote": {}},
             "screens": self.screen_view() if self.screen_view else [{"id": k, **s, "online": False, "phase": "idle", "error": "", "missing": [], "uptime": None, "received": 0, "plates": []}
                                                                     for k, s in self.model.screens.items()],

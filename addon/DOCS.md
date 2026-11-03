@@ -231,6 +231,29 @@ entiteiten komen via MQTT in HA, dus de Mosquitto-broker en de MQTT-integratie z
   oude niet bereikt. Een vast IP via een DHCP-reservering blijft het betrouwbaarst. Broadcasts komen niet over routers of VLAN's heen.
 * De sleutels en het Access Secret staan in `/data/tuya.json`: ze zitten in de HA-back-up, niet in *Exporteer configuratie*. Op armv7 is deze functie niet beschikbaar.
 
+## Airco (Gree, Toyotomi, ...: zonder HACS of cloud)
+
+*+ Module → Airco* zet een airco-blok op de pagina, voor een airco met een Gree-wifimodule: Gree, Toyotomi, Sinclair, Cooper&Hunter en
+andere merken die de app *Gree+* of *EWPE Smart* gebruiken. Het is een eigen blok, los van Tuya.
+
+* **Instellen**: kies in de zijbalk de airco onder *Op het netwerk gevonden* (de add-on vraagt elke minuut wie er is, en meteen met
+  *Zoeken op het netwerk*), of vul het IP-adres zelf in. Het MAC-adres zoekt de add-on op en de sleutel vraagt hij eenmalig aan de airco
+  (binden), met de oudere (v1) of nieuwere versleuteling (v2), wat werkt. Komt er geen antwoord: staat de airco op de wifi, en zit ze in
+  hetzelfde subnet? Na een nieuwe wifi-koppeling van de airco: *Opnieuw binden*.
+* **In HA**: per airco een `climate.kk_gree_<id>` (aan/uit en stand, temperatuur 16–30 °C, ventilator, lamellen op/neer en links/rechts),
+  een sensor voor de kamertemperatuur en schakelaars voor turbo, stil, licht, X-fan, health, energiebesparing, 8 °C-verwarming en slaapstand.
+  Via MQTT, dus de Mosquitto-broker en de MQTT-integratie zijn nodig.
+* **Overstappen van HACS**: de HACS-integratie mag tijdens de overstap blijven staan (de airco aanvaardt beide). Zet daarna je dashboards en
+  automaties om naar `climate.kk_gree_<id>` (of geef die entiteit in HA de naam van de oude) en verwijder de HACS-integratie en haar repository.
+* **Ingangen** (links): *aan* (0/1), *temperatuur* (een getal, bv. een module Getal) en *blokkeren* (0/1, bv. een raamcontact via een
+  module). Een ingang doet pas iets als ze **verandert**: na een herstart of als de bron weer bekend wordt, onthoudt ze alleen de stand. Wat
+  je met de afstandsbediening doet, blijft dus staan tot de ingang weer wisselt. *Blokkeren* op 1 zet de airco uit en houdt *aan* tegen;
+  terug op 0 gaat ze weer aan als *aan* dan 1 is. Bij *Ingang aan zet de airco* kies je of ze in haar laatste stand aangaat of in een vaste
+  (bv. verwarmen). Lukt een bevel niet (airco onbereikbaar), dan probeert de add-on het na 30 s opnieuw zolang de ingang anders blijft.
+* **Uitgangen** (rechts): *aan* (0/1), *kamer* en *ingesteld* (°C). Sleep ze naar Groter dan of Kleiner dan, En, Of, een routine of een
+  ingang van een andere airco. Offline is de waarde onbekend.
+* De sleutels staan in `/data/gree.json`: in de HA-back-up, niet in *Exporteer configuratie*. Op armv7 is deze functie niet beschikbaar.
+
 ## Externe apparaten (Tuya via local-tuya)
 
 Schakelaars die niet te flashen zijn, doen toch mee in je kruisschakelingen:

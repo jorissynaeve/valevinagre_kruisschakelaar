@@ -569,3 +569,18 @@ Code: `points.py` (een datapunt lezen en zetten, hier of bij een andere installa
 ### Niet getest / open
 - Getest met unit-tests (`test_values.py`: logica, model, de routine stap voor stap, kaarten hier en van een andere installatie) en met de add-on en een nagebootste lader en stroommeter in een browser: de keten Tuya-waarde → Groter dan → Tuya instellen zette de laadstroom op 8 en 16 A, niet vaker dan het interval.
 - Niet tegen de echte lader en meter. Niet ondersteund: hysterese, een waarde vergelijken met een andere waarde, een enum vergelijken (alleen getallen en aan/uit), een datapunt als tekst op het Energie-schema.
+
+## 31. Airco's met een Gree-module (0.17)
+
+Code: `gree.py` (protocol en verbinding), `greehub.py` (toestellen, ingangen, uitgangen, entiteiten), blok `w:<id>` (`schema.py`, `static/schema.js`), `tests/test_gree.py`.
+
+- **Waarom**: de Toyotomi-airco liep via een HACS-repository (de Gree-integratie). Zelf doen haalt die weg en maakt van de airco een blok met poorten, zoals de rest van het huis.
+- **Eigen blok, niet via Tuya**: een airco is geen toestel met datapunten maar heeft een vaste set eigenschappen. Ze staat dus los: eigen opslag (`/data/gree.json`, 0600), eigen blok `w:<id>`, eigen zijbalk, eigen `climate`-entiteit. Wat ze met de rest deelt, gaat via de bestaande bronnen: de uitgangen zijn `w:<id>:on|room|set` (`model.SOURCE_RE`, `logic.evaluate`, `engine.ref_value`), te gebruiken op elke ingang van een module, sprinkler of routine.
+- **Protocol**: JSON over UDP 7000, de inhoud AES-128-ECB (v1) of AES-128-GCM met vaste nonce en AAD (v2), zoals greeclimate. Binden met de algemene sleutel geeft de sleutel van het toestel; `auto` probeert v1, dan v2, en bewaart wat werkt. Zonder MAC vraagt de client eerst `scan` aan het IP. Een Gree-module meldt niets uit zichzelf: elke 10 s een statusvraag, drie keer geen antwoord is offline. Zoeken gebeurt van een eigen poort (UDP 7000 is van de Tuya-luisteraar; de antwoorden gaan naar de poort die vroeg).
+- **Kamertemperatuur**: de meeste modules tellen 40 bij `TemSen`, nieuwere niet. Binnen is het tussen 0 en 40 °C, dus boven 40 betekent met verschuiving; 0 is geen sensor.
+- **Ingangen** handelen op een wijziging, zoals Tuya instellen (§30): de eerste stand wordt onthouden, onbekend wist het geheugen. Zo zet een herstart de airco niet aan of uit en wint de afstandsbediening tot de ingang verandert. Blokkeren wint van aan. Pas na een mislukt bevel wordt 30 s gewacht; een geslaagd bevel houdt de volgende wijziging niet op.
+
+### Niet getest / open
+- Getest met unit-tests (versleuteling beide versies, een nagebootste airco over echte UDP: MAC opzoeken, binden v1 en v2, status, bevel, stil toestel, verkeerde sleutel; de hub, MQTT, ingangen stap voor stap, uitgangen in de logica, de web-API) en met de add-on en een nagebootste airco in headless Chrome (blok, zijbalk, bevel, draden, een ingang die verandert).
+- Niet tegen de echte Toyotomi: welke versleuteling, of `TemSen` klopt, en welke schakelaars ze echt kent (wat ze niet meldt, staat niet in de zijbalk maar wel als entiteit in HA).
+- Niet ondersteund: halve graden (`TemRec`), Fahrenheit, VRF-binnenunits achter één module (`subCnt`), en een airco van een andere installatie (de koppelingen delen nog geen airco's).

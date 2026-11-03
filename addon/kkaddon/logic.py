@@ -1,7 +1,7 @@
 """Kleine tijd- en logicamodules, om op het schema aan elkaar te koppelen.
 
 Een module heeft een uitgang met een tijd (minuten sinds middernacht) of een 0/1. Een ingang wijst naar de uitgang van
-een andere module (`m:<id>`), een timer (`t:<id>`) of rechtstreeks naar een datapunt van een Tuya-toestel (`v:<datapunt>@<toestel>`). Er is ook een derde waarde: None = onbekend, bv. een ingang die
+een andere module (`m:<id>`), een timer (`t:<id>`), rechtstreeks naar een datapunt van een Tuya-toestel (`v:<datapunt>@<toestel>`) of naar een uitgang van een airco (`w:<id>:on|room|set`). Er is ook een derde waarde: None = onbekend, bv. een ingang die
 niet is aangesloten of een zonsondergang zonder locatie. Onbekend blokkeert nooit iets.
 
 De waarden worden niet bewaard maar telkens opnieuw berekend uit de klok, dus er is niets dat uit de pas kan lopen.
@@ -89,7 +89,7 @@ def _between(now: int, a: int, b: int) -> bool:
 
 
 def evaluate(modules: dict[str, dict], timer: Callable[[str], bool | None], now: int, sun: tuple[int, int] | None,
-             point: Callable[[str, str], float | None] | None = None) -> dict:
+             point: Callable[[str, str], float | None] | None = None, airco: Callable[[str], object] | None = None) -> dict:
     """De uitgang van elke module. Een lus of een verdwenen bron (kan alleen uit een oud bestand komen) geeft onbekend.
     `point(toestel, datapunt)`: de waarde van een Tuya-datapunt als getal, of None (offline, geen getal)."""
     values: dict[str, int | bool | None] = {}
@@ -101,6 +101,8 @@ def evaluate(modules: dict[str, dict], timer: Callable[[str], bool | None], now:
         if ref.startswith("v:"):  # rechtstreeks een datapunt: v:<datapunt>@<toestel>
             dp, _, dev = ref[2:].partition("@")
             return point(dev, dp) if point else None
+        if ref.startswith("w:"):  # een uitgang van een airco: w:<id>:on|room|set
+            return airco(ref) if airco else None
         return timer(ref[2:]) if ref.startswith("t:") else module(ref[2:])
 
     def module(mid: str):
