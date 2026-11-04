@@ -305,3 +305,16 @@ def test_timer_api(tmp_path):
             await c.close()
 
     asyncio.run(go())
+
+
+def test_an_airco_card_block_names_its_airco_and_says_when_it_is_gone():
+    from kkaddon import schema
+    from kkaddon.model import Model
+
+    m = Model()
+    cid = m.add_card("airco")
+    assert schema._card_blocks(m, {"airco": []}, set())[0]["device"] is None  # nog niets gekozen
+    m.set_card(cid, airco="living")
+    b = schema._card_blocks(m, {"airco": [{"id": "living", "name": "Living", "online": False}]}, set())[0]
+    assert b["device"] == {"name": "Living", "online": False} and b["rows"] == 2 and b["tech"] == "Kaart · Airco"
+    assert schema._card_blocks(m, {"airco": []}, set())[0]["device"] is None  # de airco is verwijderd: de kaart blijft, het blok zegt het

@@ -27,7 +27,7 @@ log = logging.getLogger("kk.panel")
 DEFAULT_COLOR = 17299  # [68,115,158] in RGB565
 WHITE = 65535
 UNAVAILABLE = ("unavailable", "unknown")
-CARD_TYPES = ("cardGrid", "cardGrid1", "cardGrid2", "cardEntities", "cardQR", "cardPower")
+CARD_TYPES = ("cardGrid", "cardGrid1", "cardGrid2", "cardEntities", "cardQR", "cardPower", "cardThermo")
 SCREENSAVERS = ("screensaver", "screensaver2", "screensaver3")
 MAX_GRID = 6  # meer rijen: het scherm schakelt naar de brede variant
 TOGGLES = ("light", "switch", "input_boolean", "automation", "fan")
@@ -60,8 +60,11 @@ DAYS_LONG = {"nl": ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "z
              "en": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]}
 MONTHS = {"nl": ["januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus", "september", "oktober", "november", "december"],
           "en": ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]}
-WORDS = {"nl": {"press": "Druk", "run": "Start", "activate": "Activeer", "missing": "Niet gevonden", "check": "controleer de config"},
-         "en": {"press": "Press", "run": "Run", "activate": "Activate", "missing": "Not found", "check": "check config"}}
+WORDS = {"nl": {"press": "Druk", "run": "Start", "activate": "Activeer", "missing": "Niet gevonden", "check": "controleer de config",
+                "currently": "Momenteel", "state": "Status", "operation": "Modus"},
+         "en": {"press": "Press", "run": "Run", "activate": "Activate", "missing": "Not found", "check": "check config",
+                "currently": "Currently", "state": "State", "operation": "Operation"}}
+THERMO_SLOTS = 8  # knoppen voor de stand op de thermostaatpagina
 
 WEATHER_ICON = {"clear-night": "weather-night", "cloudy": "weather-cloudy", "exceptional": "alert-circle-outline", "fog": "weather-fog",
                 "hail": "weather-hail", "lightning": "weather-lightning", "lightning-rainy": "weather-lightning-rainy",
@@ -484,6 +487,12 @@ class Panel:
         if card.type in SCREENSAVERS:
             self._saver_pages(force=page_type)
             return
+        if card.type == "cardThermo":
+            body = self._thermo(card)
+            if body != self._last_page:
+                self._last_page = body
+                self._tx(body)
+            return
         body = f"entityUpd~{card.title}~{self.nav_buttons(card)}"
         ct = self.page_type(card)
         if card.type == "cardQR":
@@ -497,6 +506,35 @@ class Panel:
         if body != self._last_page:
             self._last_page = body
             self._tx(body)
+
+    def _thermo(self, card: Card) -> str:
+        """De thermostaatpagina (cardThermo), in het formaat van nspanel-lovelace-ui:
+        entityUpd~titel~nav~entiteit~huidig~doel~status~min~max~stap + 8 standknoppen (~icoon~kleur~actief~stand) ~woorden~eenheidsicoon~doel2~detail.
+        Temperaturen gaan ×10 naar het scherm en terug (tempUpd). De gegevens komen uit de add-on (env.dynamic), de opbouw is van hier."""
+        nav, it = self.nav_buttons(card), (card.items[0] if card.items else None)
+        fn = getattr(self.env, "dynamic", None)
+        d = fn(it.entity, self.lang) if fn and it else None
+        if d is None or d.get("kind") != "thermo":  # zoals bij een onbekende entiteit in nspanel-lovelace-ui
+            return f"entityUpd~{self.word('missing')}~{nav}~{it.entity if it else ''}~~220~{self.word('check')}~150~300~5{'~' * 32}~~~~~~1"
+        cells = [f"~{self.icon(m['icon'])}~{m['color']}~{1 if m['active'] else 0}~{m['mode']}" for m in d["modes"][:THERMO_SLOTS]]
+        n = len(cells)
+        if n == 1:
+            icons = "~" * 4 + cells[0] + "~" * 24
+        elif n == 2:
+            icons = "~" * 8 + cells[0] + "~" * 8 + cells[1] + "~" * 8
+        elif n == 3:
+            icons = "~" * 8 + cells[0] + "~" * 4 + cells[1] + "~" * 4 + cells[2] + "~" * 4
+        elif n == 4:
+            icons = "~" * 4 + cells[0] + "~" * 4 + cells[1] + "~" * 4 + cells[2] + "~" * 4 + cells[3]
+        else:
+            icons = "".join(cells) + "~" * 4 * (THERMO_SLOTS - n)
+        cur = d.get("current")
+        current = f"{cur:g} °C" if isinstance(cur, (int, float)) else "— °C"
+        target = d.get("target") if d.get("target") is not None else d["min"]
+        text = str(d.get("state", "")).replace("~", "-")
+        w = self.word
+        return (f"entityUpd~{str(card.title).replace('~', '-')}~{nav}~{it.entity}~{current}~{round(target * 10)}~{text}~{round(d['min'] * 10)}~{round(d['max'] * 10)}~{round(d['step'] * 10)}"
+                f"{icons}~{w('currently')}~{w('state')}~{w('operation')}~{self.icon('temperature-celsius')}~~1")
 
     def _saver_pages(self, force: bool) -> None:
         msgs = self._saver_messages()

@@ -66,6 +66,7 @@ async def run() -> None:
     tuya.start()
     airco = GreeHub(s.data_dir, engine)  # airco's met een Gree-module, een eigen blok (w:<id>) los van Tuya
     mqtt.extras.append(airco)
+    panels.airco = airco  # de airco-kaart op het paneel
     ha.airco_names = lambda: {did: dev["name"] for did, dev in airco.devices.items()}
 
     def airco_changed() -> None:

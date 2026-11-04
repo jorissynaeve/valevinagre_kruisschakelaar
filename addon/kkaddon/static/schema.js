@@ -108,12 +108,13 @@ function scPanelBlock(b, tags) { // de relais zoals bij een schakelaar (een sche
   return scSwitch(b, tags).replace(/<\/g>$/, `${rows}${free}</g>`);
 }
 
-const SC_CARD_NL = { grid: 'Knoppen', charger: 'Laadpaal', saver: 'Screensaver', power: 'Energie', qr: 'Wifi (QR)' };
+const SC_CARD_NL = { grid: 'Knoppen', charger: 'Laadpaal', saver: 'Screensaver', power: 'Energie', qr: 'Wifi (QR)', airco: 'Airco' };
 
 function scCardLines(b) { // wat een kaart zonder knoppen op haar blok laat zien
   if (b.type === 'power' && b.labels) return b.labels.length ? b.labels : ['Nog geen rijen'];
   if (b.type === 'charger') return [b.device ? `Lader: ${b.device.name}${b.device.online ? '' : ' (offline)'}` : 'Nog geen lader gekozen', `€ ${b.price} per kWh${b.price_entity ? ' of uit HA' : ''}`];
   if (b.type === 'saver') return [b.weather ? `Weer: ${b.weather}` : 'Geen weer', b.temperature ? `Binnen: ${b.temperature}` : 'Geen temperatuur', [b.status1, b.status2].filter(Boolean).length ? `${[b.status1, b.status2].filter(Boolean).length} statuspictogram(men)` : 'Klok en datum'];
+  if (b.type === 'airco') return [b.device ? `Airco: ${b.device.name}${b.device.online ? '' : ' (offline)'}` : 'Nog geen airco gekozen', 'Temperatuur en stand'];
   if (b.type === 'power') return b.items.length ? b.items.map((it) => it.entity ? (it.name || it.entity) : 'leeg') : ['Nog geen rijen'];
   return [b.ssid ? `Netwerk: ${b.ssid}` : 'Nog geen netwerk', b.security === 'nopass' ? 'zonder wachtwoord' : 'met wachtwoord'];
 }
@@ -679,6 +680,7 @@ const SC_CARD_HELP = {
   saver: 'Het startscherm: klok, datum, het weer met 4 dagen voorspelling en een temperatuur binnen.',
   power: 'Het energieschema van nspanel-lovelace-ui: tot 6 rijen, elk een sensor uit HA.',
   qr: 'Een QR-code waarmee een gast op de wifi komt, met de naam en het wachtwoord ernaast.',
+  airco: 'De thermostaatpagina van het paneel voor een airco: de temperatuur in de kamer en de ingestelde, een schuif om hem in te stellen en een knop per stand (uit, auto, koelen, drogen, ventileren, verwarmen).',
 };
 
 function scCardPanel(b, props) {
@@ -723,6 +725,11 @@ function scCardPanel(b, props) {
       <h2>Prijs</h2><label>Prijs per kWh (€)</label><input type="number" min="0" max="100" step="0.01" data-cdfield="price" value="${esc(b.price)}">
       ${tx('price_entity', 'Of de prijs uit een entiteit van HA (wint als ze een getal geeft)', 'bv. sensor.stroomprijs')}
       <div class="sub">Prijs = Geladen × de prijs per kWh.</div>`;
+  } else if (b.type === 'airco') {
+    const aircos = scBlocks().filter((x) => x.kind === 'airco');
+    body = `<label>Airco</label><select data-cdfield="airco">${opt('', b.airco, aircos.length ? 'kies een airco' : 'nog geen airco: zet er een op het schema')}${aircos.map((x) => opt(x.id, b.airco, x.name)).join('')}</select>
+      ${b.airco && !b.device ? '<div class="sub">Deze airco bestaat niet meer: kies een andere.</div>' : ''}
+      <div class="sub">Het paneel toont de temperatuur in de kamer en de ingestelde; met de schuif en de knoppen stel je hem in. Alleen op een paneel, niet op een scherm met openHASP.</div>`;
   } else if (b.type === 'saver') {
     body = `${tx('weather', 'Weer', 'weather.forecast_thuis')}${tx('forecast', 'Voorspelling uit (leeg: uit het weer)', 'sensor.weather_forecast_daily')}${tx('temperature', 'Temperatuur binnen', 'sensor.temperatuur_hal')}
       ${tx('status1', 'Statuspictogram 1', 'bv. binary_sensor.voordeur')}${tx('status2', 'Statuspictogram 2', '')}`;
@@ -962,7 +969,7 @@ const SC_MENU = [
   ['Vergelijken', [['between', 'Tussen', '1 tussen twee tijden'], ['after', 'Na', '1 na een tijd'], ['before', 'Voor', '1 voor een tijd'], ['above', 'Groter dan', '1 boven een grens'], ['below', 'Kleiner dan', '1 onder een grens']]],
   ['Logica', [['and', 'En', '1 als beide 1 zijn'], ['or', 'Of', '1 als een van beide 1 is']]],
   ['Routines', [['sprinkler', 'Sprinkler', 'zones na elkaar, in cycli'], ['action', 'Tuya instellen', 'een 0/1 zet een datapunt']]],
-  ['Kaarten', [['card-grid', 'Knoppen', 'lampen, schakelaars, subpagina\'s'], ['card-charger', 'Laadpaal', 'start/stop, kWh en prijs'], ['card-saver', 'Screensaver', 'klok en weer'],
+  ['Kaarten', [['card-grid', 'Knoppen', 'lampen, schakelaars, subpagina\'s'], ['card-charger', 'Laadpaal', 'start/stop, kWh en prijs'], ['card-saver', 'Screensaver', 'klok en weer'], ['card-airco', 'Airco', 'thermostaat voor het paneel'],
     ['card-power', 'Energie', 'verbruik en opbrengst'], ['card-qr', 'Wifi (QR)', 'gastnetwerk']]],
 ];
 

@@ -200,3 +200,97 @@ def test_a_dynamic_row_on_the_screen_asks_the_env_and_a_press_goes_back_to_it():
     assert page.startswith("entityUpd~Laadpaal~") and "~button~kk.laadpaal__run~~17299~Aangesloten~Start" in page
     p.on_screen("event,buttonPress2,kk.laadpaal__run,button")
     assert t.sent == [("124", "OpenCharging")]
+
+
+class FakeAirco:
+    """Zoals GreeHub voor de kaart: devices, state(), is_online() en set()."""
+
+    def __init__(self, power=True, mode="cool", target=22, room=23.5, online=True):
+        self.devices = {"living": {"name": "Living"}}
+        self.s = {"power": power, "mode": mode, "target": target, "room": room}
+        self.online, self.sent = online, []
+
+    def state(self, did):
+        return dict(self.s)
+
+    def is_online(self, did):
+        return self.online
+
+    def set(self, did, field, value):
+        if not self.online:
+            raise ModelError("niet verstuurd: geen verbinding met de airco")
+        self.sent.append((did, field, value))
+
+
+def airco_screen(airco, **kw):
+    m = Model()
+    cid = m.add_card("airco")
+    m.set_card(cid, airco="living", **kw)
+    m.add_panel("P")
+    m.set_panel("p", cards=[cid])
+    env, out = FakeEnv(), []
+    live = cards.Live(m, airco=airco)
+    env.dynamic, env.press = live.value, lambda e, k, v: live.press(e, k, v)
+    p = Panel(cards.config(m, "p"), env, out.append)
+    p.reset()
+    p.on_screen("event,startup,59,eu")
+    p.on_screen("event,buttonPress2,screensaver,bExit,2")
+    return m, p, out
+
+
+def fields(page: str) -> dict:
+    """De velden van een thermostaatpagina: entityUpd~titel~(2 x 6 voor de navigatie)~entiteit~huidig~doel~status~min~max~stap~(8 x 4 standknoppen)~woorden~icoon~doel2~detail."""
+    f = page.split("~")
+    cells = f[21:53]
+    return {"title": f[1], "entity": f[14], "now": f[15], "target": f[16], "status": f[17], "range": f[18:21], "n": len(f),
+            "modes": [(cells[i + 3], cells[i + 2], cells[i]) for i in range(0, 32, 4)], "words": f[53:57], "tail": f[57:]}
+
+
+def test_the_airco_card_is_a_thermostat_page_in_the_format_of_nspanel_lovelace_ui():
+    _, p, out = airco_screen(FakeAirco())
+    assert "pageType~cardThermo" in out
+    f = fields(out[-1])
+    assert f["n"] == 59 and f["title"] == "Airco" and f["entity"] == "kk.airco__thermo"
+    assert (f["now"], f["target"], f["status"], f["range"]) == ("23.5 °C", "220", "Koelen", ["160", "300", "10"])  # temperaturen ×10 naar het scherm
+    # zes standen: meer dan vier staan links, daarna twee lege plekken; alleen de huidige is actief
+    assert [(m, a) for m, a, _ in f["modes"]] == [("off", "0"), ("auto", "0"), ("cool", "1"), ("dry", "0"), ("fan_only", "0"), ("heat", "0"), ("", ""), ("", "")]
+    assert all(icon for _, _, icon in f["modes"][:6]) and not any(icon for _, _, icon in f["modes"][6:])
+    assert f["words"] == ["Momenteel", "Status", "Modus", ""] and f["tail"] == ["", "1"]
+    assert p.dynamic and "kk.airco__thermo" not in p.entities()
+
+
+def test_a_changed_temperature_and_mode_go_to_the_airco_and_the_page_follows_its_answer():
+    a = FakeAirco()
+    _, p, out = airco_screen(a)
+    p.on_screen("event,buttonPress2,kk.airco__thermo,tempUpd,245")  # 24,5: de airco kent hele graden
+    p.on_screen("event,buttonPress2,kk.airco__thermo,hvac_action,heat")
+    p.on_screen("event,buttonPress2,kk.airco__thermo,hvac_action,off")
+    assert a.sent == [("living", "target", "24"), ("living", "mode", "heat"), ("living", "mode", "off")]
+    a.s.update(power=False)  # de airco antwoordt: uit
+    p.refresh()
+    f = fields(out[-1])
+    assert f["status"] == "Uit" and [m for m, active, _ in f["modes"] if active == "1"] == ["off"]
+
+
+def test_an_airco_that_is_offline_says_so_and_a_missing_one_is_not_found():
+    a = FakeAirco(online=False)
+    _, p, out = airco_screen(a)
+    f = fields(out[-1])
+    assert f["status"] == "Offline" and not [m for m, active, _ in f["modes"] if active == "1"]
+    p.on_screen("event,buttonPress2,kk.airco__thermo,tempUpd,200")
+    assert a.sent == [], "geen verbinding: niets gestuurd, geen fout"
+    a2 = FakeAirco()
+    a2.devices = {}  # de airco is verwijderd
+    _, _, out = airco_screen(a2)
+    assert out[-1].startswith("entityUpd~Niet gevonden~") and "controleer de config" in out[-1]
+    assert out[-1].count("~") == 58, "even lang als een gewone pagina: het scherm leest vaste velden"
+
+
+def test_an_airco_card_needs_a_valid_airco_id_and_is_not_for_a_screen():
+    m = Model()
+    cid = m.add_card("airco")
+    assert m.cards[cid]["airco"] == "" and "airco" not in cards.SCREEN_TYPES
+    with pytest.raises(ModelError):
+        m.set_card(cid, airco="../x")
+    m.set_card(cid, airco="living")
+    assert m.cards[cid]["airco"] == "living"

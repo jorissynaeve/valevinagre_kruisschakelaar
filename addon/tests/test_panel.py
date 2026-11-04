@@ -260,8 +260,8 @@ def test_more_than_six_tiles_switches_to_the_wide_grid():
 
 
 def test_a_card_type_that_is_not_supported_is_refused_when_the_config_is_saved():
-    with pytest.raises(PanelError, match="cardThermo"):
-        Panel("cards:\n  - type: cardThermo\n    title: X\n    entity: climate.x\n", FakeEnv(), print)
+    with pytest.raises(PanelError, match="cardChart"):
+        Panel("cards:\n  - type: cardChart\n    title: X\n    entity: sensor.x\n", FakeEnv(), print)
     with pytest.raises(PanelError, match="cards"):
         Panel("foo: 1", FakeEnv(), print)
     with pytest.raises(PanelError, match="YAML"):

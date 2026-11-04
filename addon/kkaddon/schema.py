@@ -269,6 +269,10 @@ def _card_blocks(model: Model, snap: dict, lamps: set[str]) -> list[dict]:
         elif c["type"] == "power":
             b["rows"] = max(len(c["items"]), 1)
             b["labels"] = [(_point_label(snap, it["tuya"], it["dp"])[1] if it.get("tuya") else it.get("name") or it.get("entity") or "leeg") for it in c["items"]]
+        elif c["type"] == "airco":  # de thermostaatpagina van een airco-blok (w:<id>); `device` is die airco, of None
+            a = next((x for x in snap.get("airco", []) if x["id"] == c["airco"]), None)
+            b["device"] = {"name": a["name"], "online": a["online"]} if a else None
+            b["rows"] = 2
         elif c["type"] == "saver":
             b["rows"] = 3
         else:

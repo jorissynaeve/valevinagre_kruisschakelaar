@@ -24,7 +24,7 @@ from .points import Points
 
 log = logging.getLogger("kk.cards")
 
-TYPES = {"grid": "Knoppen", "charger": "Laadpaal", "saver": "Screensaver", "power": "Energie", "qr": "Wifi (QR)"}
+TYPES = {"grid": "Knoppen", "charger": "Laadpaal", "saver": "Screensaver", "power": "Energie", "qr": "Wifi (QR)", "airco": "Airco"}
 SCREEN_TYPES = {"grid", "charger", "power", "qr"}  # wat op een scherm met openHASP kan (hasp.py): een screensaver heeft daar geen tegenhanger
 LAYOUTS = {"grid": "cardGrid", "list": "cardEntities"}
 MAX_ITEMS = {"grid": 8, "list": 4}  # een raster met meer dan 6 wordt het brede raster; een lijst toont er 4
@@ -47,6 +47,15 @@ STATUS = {
            "wait": "Waiting", "waiting": "Waiting", "finish": "Done", "charge_end": "Done", "end": "Done", "fault": "Fault", "error": "Fault"},
 }
 CHARGING = {"charing", "charging"}
+
+# De airco-kaart is de thermostaatpagina van het paneel (cardThermo): huidige en ingestelde temperatuur, en een knop per stand.
+# Standen en kleuren van nspanel-lovelace-ui; de namen van de standen zijn die van HA (greehub.MODES).
+AIRCO_MODES = {
+    "nl": {"off": "Uit", "auto": "Auto", "cool": "Koelen", "dry": "Drogen", "fan_only": "Ventileren", "heat": "Verwarmen", "offline": "Offline"},
+    "en": {"off": "Off", "auto": "Auto", "cool": "Cool", "dry": "Dry", "fan_only": "Fan only", "heat": "Heat", "offline": "Offline"},
+}
+AIRCO_ICONS = {"off": ("power-plug-off", 35921), "auto": ("calendar-sync", 1024), "cool": ("snowflake", 11487),
+               "dry": ("water-percent", 60897), "fan_only": ("fan", 35921), "heat": ("fire", 64512)}
 
 
 def same(value, want: str) -> bool:
@@ -178,6 +187,8 @@ def _card(model, cid: str, lang: str) -> dict:
         if c["security"] != "nopass":
             rows.append({"entity": f"iText.{_clean(c['password'])}", "name": w["password"], "icon": "mdi:key"})
         return {**base, "type": "cardQR", "qrCode": wifi_code(c["ssid"], c["password"], c["security"]), "entities": rows}
+    if t == "airco":
+        return {**base, "type": "cardThermo", "entities": [{"entity": f"{DYN}.{cid}__thermo"}]}
     # een screensaver als pagina (via een rasterknop) kan niet: die wordt overgeslagen bij het zoeken
     return {**base, "type": "cardGrid", "entities": [{"entity": "delete"}]}
 
@@ -239,8 +250,8 @@ class Live:
     `engine` voor de lampen, `tuya` (TuyaHub) voor de laadpaal, `state(entity)` voor een HA-entiteit (de prijs per kWh), `link`
     (LinkHub) voor een lamp of lader van een andere installatie (`r:<installatie>:<object>`)."""
 
-    def __init__(self, model, engine=None, tuya=None, state: Callable[[str], Any] | None = None, link=None) -> None:
-        self.model, self.engine, self.tuya, self.link = model, engine, tuya, link
+    def __init__(self, model, engine=None, tuya=None, state: Callable[[str], Any] | None = None, link=None, airco=None) -> None:
+        self.model, self.engine, self.tuya, self.link, self.airco = model, engine, tuya, link, airco  # airco: GreeHub, voor de airco-kaart
         self.state = state or (lambda _e: None)
         self.points = Points(tuya, link)
 
@@ -284,7 +295,21 @@ class Live:
             return out
         if c["type"] == "charger":
             return self._charger(c, part, WORDS[lang], lang)
+        if c["type"] == "airco" and part == "thermo":
+            return self._airco(c, lang)
         return None
+
+    def _airco(self, c: dict, lang: str) -> dict | None:
+        """De thermostaatpagina van een airco, of None (geen airco gekozen of ze bestaat niet meer: het scherm toont dan "niet gevonden")."""
+        from .greehub import MAX_T, MIN_T, MODES  # hier pas: greehub haalt model binnen, dat dit bestand al laadt
+        g, did = self.airco, c.get("airco") or ""
+        if g is None or did not in g.devices:
+            return None
+        s, online, words = g.state(did), g.is_online(did), AIRCO_MODES[lang]
+        mode = (s["mode"] or "auto") if s["power"] else "off"
+        modes = [{"mode": m, "icon": AIRCO_ICONS[m][0], "color": AIRCO_ICONS[m][1], "active": online and m == mode} for m in ["off", *MODES]]
+        return {"kind": "thermo", "current": s["room"], "target": s["target"], "min": MIN_T, "max": MAX_T, "step": 1,
+                "state": words[mode] if online else words["offline"], "modes": modes}
 
     def _value(self, dev: str, dp: str) -> dict | None:
         """Een rij met een Tuya-datapunt: de waarde met eenheid, en de naam van het datapunt als de kaart er geen eigen heeft."""
@@ -412,6 +437,8 @@ class Live:
                 return False
             on = (value == "1") if kind == "OnOff" else None
             return self._lamp(ref, on)
+        if c["type"] == "airco" and part == "thermo":
+            return self._press_airco(c, kind, value)
         if c["type"] == "charger" and part == "run" and kind == "button":
             p, online = self._target(c)
             if p is None or not online:
@@ -433,6 +460,24 @@ class Live:
             log.info("laadpaal %s: %s vanaf het paneel", c["name"], want)
             return True
         return False
+
+    def _press_airco(self, c: dict, kind: str, value: str | None) -> bool:
+        """`tempUpd` (de temperatuur ×10) en `hvac_action` (de stand) van de thermostaatpagina."""
+        g, did = self.airco, c.get("airco") or ""
+        if g is None or did not in g.devices:
+            return False
+        try:
+            if kind == "tempUpd":
+                g.set(did, "target", str(round(int(value or "") / 10)))
+            elif kind == "hvac_action":
+                g.set(did, "mode", str(value or ""))
+            else:
+                return False
+        except ValueError as e:  # een ongeldige waarde, of geen verbinding met de airco (ModelError)
+            log.info("airco %s: %s", c["name"], e)
+            return False
+        log.info("airco %s: %s %s vanaf het paneel", c["name"], kind, value)
+        return True
 
     def _lamp(self, ref: str, on: bool | None) -> bool:
         if ref.startswith("r:"):  # de eigenaar beslist (bv. een lamp met een aan/uit-ingang weigert)

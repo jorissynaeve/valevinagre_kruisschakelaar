@@ -116,6 +116,7 @@ class Light:
 
 
 ENTITY_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+AIRCO_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")  # zoals greehub.REF_RE
 FLOOR_ID_RE = re.compile(r"^[a-z0-9]{1,12}$")
 GROUP_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
 DISABLE_RE = re.compile(r"^(m:)?[a-z0-9_]{1,80}$")
@@ -509,6 +510,11 @@ def _card(cid, v) -> dict:
             raise ModelError(f"laadpaal: de status {sorted(both)[0]!r} kan niet starten én stoppen")
         out.update(inputs={k: r for k, r in ins.items() if r}, target={"device": _device_ref(tgt.get("device")), "dp": _dp(tgt.get("dp")), **vals}, **whens,
                    price=_num(v.get("price", 0.30), 0, 100, "prijs per kWh"), price_entity=_opt_entity(v.get("price_entity"), "prijs"))
+    elif t == "airco":
+        ac = v.get("airco") or ""
+        if not isinstance(ac, str) or (ac and not AIRCO_ID_RE.fullmatch(ac)):
+            raise ModelError("airco: ongeldige airco")
+        out["airco"] = ac  # het id van de airco-module (greehub); leeg = nog niet gekozen
     elif t == "saver":
         out.update({k: _opt_entity(v.get(k), k) for k in ("weather", "forecast", "temperature", "status1", "status2")})
     elif t == "power":
