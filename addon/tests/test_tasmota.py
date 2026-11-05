@@ -79,3 +79,11 @@ def test_the_panel_remembers_the_address_of_home_assistant():
     assert m.panels[pid]["hub"] == "192.168.0.10"
     with pytest.raises(ModelError, match="Home Assistant"):
         m.set_panel(pid, hub="http://x/")
+
+
+def test_an_upload_that_is_not_stored_is_reported():
+    class Lying(FakePanel):
+        async def up(self, r):
+            return web.Response(text="ok")  # 200, maar niets bewaard
+    with pytest.raises(tasmota.TasmotaError, match="staat niet op de panel"):
+        asyncio.run(run(Lying()))
