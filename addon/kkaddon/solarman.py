@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import struct
 from typing import Callable
 
@@ -23,6 +24,9 @@ POLL_EVERY = 15.0  # s: de stick meldt niets uit zichzelf
 TIMEOUT = 5.0  # s: zo lang wachten op een antwoord
 MISSES = 3  # zoveel ronden zonder antwoord: niet meer bereikbaar
 MAX_FRAME = 1024
+DISCOVERY_PORT = 48899  # de stick antwoordt hier op de vraag van de Solarman-app (en van HA's Solarman-integratie)
+DISCOVER = b"WIFIKIT-214028-READ"
+MAC_RE = re.compile(r"^[0-9A-Fa-f]{12}$")
 
 
 class SolarmanError(Exception):
@@ -191,6 +195,44 @@ def _value(regs: dict[int, int], addrs: tuple, kind: str, scale: float):
 def decode(regs: dict[int, int]) -> dict[str, float | int | None]:
     """Gelezen registers -> de waarden. Wat ontbreekt, is None (onbekend), nooit 0."""
     return {key: _value(regs, addrs, kind, scale) for key, _g, _n, _u, addrs, kind, scale, _c, _s in FIELDS}
+
+
+def parse_discovery(data: bytes, addr=None) -> dict | None:
+    """Het antwoord van een stick: "ip,mac,serienummer". Ruis, een ander formaat of een ongeldig serienummer geeft None."""
+    try:
+        ip, mac, serial = data.decode("ascii").strip().split(",")
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not MAC_RE.match(mac) or not re.fullmatch(r"\d{6,10}", serial) or not 0 < int(serial) < 2 ** 32:
+        return None
+    if not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) or any(int(x) > 255 for x in ip.split(".")):
+        return None
+    if addr and addr[0] != ip:  # een stick meldt zijn eigen adres; iets anders is een vervalst of verdwaald antwoord
+        return None
+    return {"ip": ip, "mac": mac.lower(), "serial": int(serial)}
+
+
+class _Finder(asyncio.DatagramProtocol):
+    def __init__(self, on_found: Callable[[dict], None]) -> None:
+        self.on_found = on_found
+
+    def datagram_received(self, data: bytes, addr) -> None:
+        f = parse_discovery(data, addr)
+        if f:
+            self.on_found(f)
+
+
+async def finder(on_found: Callable[[dict], None]) -> asyncio.DatagramTransport:
+    """Een eigen poort voor de zoekvraag: de antwoorden komen terug naar de poort die vroeg."""
+    t, _ = await asyncio.get_running_loop().create_datagram_endpoint(lambda: _Finder(on_found), local_addr=("0.0.0.0", 0), allow_broadcast=True)
+    return t
+
+
+def discover(transport: asyncio.DatagramTransport, target: str = "255.255.255.255", port: int = DISCOVERY_PORT) -> None:
+    try:
+        transport.sendto(DISCOVER, (target, port))
+    except OSError as e:
+        log.debug("zoekvraag niet verstuurd: %s", e)
 
 
 class SolarmanClient:

@@ -476,8 +476,9 @@ function scSolarPanel(b, props) {
   const num = (x, unit, d = 0) => (x == null ? '?' : `${Number(x).toFixed(d)} ${unit}`);
   const users = b.all.flatMap((o) => scAcUsers(o.ref).map((u) => ({ ...u, label: o.label })));
   const groups = [...new Set(b.all.map((o) => o.group))];
+  const found = b.unclaimed.length ? `<label>Op het netwerk gevonden</label><select data-sofound="1"><option value="">${b.serial ? 'andere stick kiezen…' : 'kies een stick…'}</option>${b.unclaimed.map((f) => `<option value="${esc(f.serial)}|${esc(f.ip)}">${esc(f.ip)} · ${esc(f.serial)}</option>`).join('')}</select>` : '';
   const pick = groups.map((g) => `<div class="sub"><b>${esc(g)}</b></div>${b.all.filter((o) => o.group === g).map((o) => `<label class="chk"><input type="checkbox" data-soshow="${esc(o.name)}" ${b.shown.includes(o.name) ? 'checked' : ''}> ${esc(o.label)} <span class="sub">${esc(scAcOutText(o))}</span></label>`).join('')}`).join('');
-  return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${b.online ? 'verbonden' : esc(b.error || 'verbinden…')}</span></div>
+  return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${b.online ? 'verbonden' : !b.configured ? 'nog niet ingesteld: kies de stick onder Stick' : esc(b.error || 'verbinden…')}</span></div>
     <div class="sub">Een omvormer met een Solarman-wifistick (Deye, Sunsynk, ...), rechtstreeks over het LAN zonder cloud. De add-on leest hem elke 15 s en zet de waarden in Home Assistant als sensoren <code>sensor.kk_solar_${esc(b.id)}_…</code> (ook voor het energiedashboard). Alleen lezen: de omvormer zelf stel je hier niet bij.</div>${props}
     ${b.online ? `<h2>Nu</h2>
     <div class="sub">Zon ${num(v.pv, 'W')} (PV1 ${num(v.pv1, 'W')} · ${num(v.pv1_v, 'V', 0)}, PV2 ${num(v.pv2, 'W')} · ${num(v.pv2_v, 'V', 0)})</div>
@@ -487,14 +488,15 @@ function scSolarPanel(b, props) {
     <h2>Uitgangen gaan naar</h2>${users.map((u) => `<div class="sub">${esc(u.label)} → <a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.text)}</a></div>`).join('') || '<div class="sub">Nog nergens. Sleep een uitgang (rechts) naar Groter dan of Kleiner dan, bv. om iets te starten bij veel zon.</div>'}
     <h2>Uitgangen op het blok</h2>
     <div class="sub">Alle ${b.all.length} waarden zijn uitgangen. Hier kies je welke als rij op het blok staan om te verbinden; de andere kies je bij een module als bron.</div>${pick}
-    <h2>Stick</h2>
+    <h2>Stick</h2>${found}
     <label>IP-adres</label><input type="text" maxlength="253" data-sofield="host" spellcheck="false" autocomplete="off" placeholder="192.168.1.50" value="${esc(b.host)}">
     <label>Serienummer van de stick</label><input type="text" maxlength="10" data-sofield="serial" spellcheck="false" autocomplete="off" placeholder="10 cijfers" value="${esc(b.serial)}">
-    <div class="sub">Het serienummer van de <b>stick</b> (niet van de omvormer) staat op de sticker en op zijn statuspagina. Hieronder zoekt de add-on het zelf op.</div>
+    <div class="sub">De add-on vraagt elke minuut wie er is (en meteen met <b>Zoeken</b>): kies de stick in de lijst en het IP en serienummer worden ingevuld, en een nieuw IP na DHCP neemt hij zelf over. Zelf invullen kan ook: het serienummer van de <b>stick</b> (niet van de omvormer) staat op de sticker en op zijn statuspagina, en wordt hieronder desnoods opgezocht.</div>
     <label>Gebruikersnaam</label><input type="text" maxlength="40" id="solu" autocomplete="off" value="admin">
     <label>Wachtwoord</label><input type="password" maxlength="40" id="solp" autocomplete="new-password" value="admin">
     <div class="sub">Alleen voor het opzoeken (standaard admin en admin); ze worden niet bewaard.</div>
-    <div class="row" style="margin-top:6px"><button class="btn small" type="button" data-sc="solook" data-id="${esc(b.id)}" ${b.host ? '' : 'disabled'}>Serienummer opzoeken</button></div>
+    <div class="row" style="margin-top:6px"><button class="btn small" type="button" data-sc="soscan" ${b.scanning ? '' : 'disabled'}>Zoeken op het netwerk</button>
+      <button class="btn small" type="button" data-sc="solook" data-id="${esc(b.id)}" ${b.host ? '' : 'disabled'}>Serienummer opzoeken</button></div>
     <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="delsolar" data-id="${esc(b.id)}">Omvormer verwijderen</button></div>`;
 }
 
@@ -1663,6 +1665,11 @@ const SC_ACTIONS = {
     if (!confirm('Opnieuw een sleutel vragen aan deze airco? Dat is nodig als ze opnieuw aan de wifi gekoppeld is.')) return;
     await scSaveAirco(scBlock(`w:${d.id}`), { rebind: true });
   },
+  soscan: async () => {
+    await api('POST', 'solar/scan', {});
+    toast('Gevraagd wie er is; een stick die antwoordt, staat binnen enkele seconden in de keuzelijst.', 5000);
+    setTimeout(() => { SC.force = true; refresh(); }, 2500);
+  },
   solook: async (d) => {
     const b = scBlock(`o:${d.id}`), user = document.getElementById('solu'), pass = document.getElementById('solp');
     const r = await api('POST', 'solar/lookup', { host: b.host, user: user ? user.value : 'admin', password: pass ? pass.value : 'admin' });
@@ -2161,6 +2168,11 @@ document.addEventListener('change', (ev) => {
   if (t.dataset && t.dataset.soshow && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'solar') {
     const b = scBlock(SC.sel), shown = [...document.querySelectorAll('[data-soshow]')].filter((x) => x.checked).map((x) => x.dataset.soshow);
     act(() => scSaveSolar(b, { shown }))();
+  }
+  if (t.dataset && t.dataset.sofound && t.value && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'solar') {
+    const b = scBlock(SC.sel), [serial, host] = t.value.split('|');
+    t.blur();
+    act(() => scSaveSolar(b, { serial, host }))();
   }
   if (t.dataset && t.dataset.sofield && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'solar') {
     const b = scBlock(SC.sel), value = t.value.trim();

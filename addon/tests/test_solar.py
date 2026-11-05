@@ -239,14 +239,29 @@ def test_bad_input_is_refused(tmp_path):
         r = Rig(tmp_path)
         hub = SolarHub(tmp_path, r.engine)
         try:
-            for b, word in [({"name": "", "host": "1.2.3.4", "serial": "2983112989"}, "naam"), ({"name": "x", "host": "", "serial": "2983112989"}, "IP"),
-                            ({"name": "x", "host": "http://1.2.3.4", "serial": "2983112989"}, "IP"), ({"name": "x", "host": "1.2.3.4", "serial": "abc"}, "serienummer"),
-                            ({"name": "x", "host": "1.2.3.4", "serial": "99999999999"}, "serienummer"), ({"name": "x", "host": "1.2.3.4"}, "serienummer")]:
+            for b, word in [({"name": "", "host": "1.2.3.4", "serial": "2983112989"}, "naam"), ({"name": "x", "host": "http://1.2.3.4", "serial": "2983112989"}, "IP"), ({"name": "x", "host": "1.2.3.4", "serial": "abc"}, "serienummer"),
+                            ({"name": "x", "host": "1.2.3.4", "serial": "99999999999"}, "serienummer")]:
                 with pytest.raises(ModelError, match=word):
                     hub.add(b)
             hub.add({"name": "a", "host": "1.2.3.4", "serial": "2983112989"})
             with pytest.raises(ModelError, match="staat er al"):
                 hub.add({"name": "b", "host": "1.2.3.5", "serial": "2983112989"})
+        finally:
+            hub.close()
+    asyncio.run(go())
+
+
+def test_a_block_without_ip_and_serial_is_allowed_and_not_started(tmp_path):
+    async def go():
+        r = Rig(tmp_path)
+        hub = SolarHub(tmp_path, r.engine)
+        try:
+            did = hub.add({})  # zo zet het menu "+ Module" er een neer
+            st = hub.status()[0]
+            assert did not in hub.clients and not st["configured"] and not st["online"] and st["serial"] == ""
+            assert hub.add({"name": "twee"}) and len(hub.devices) == 2, "twee lege blokken mogen naast elkaar"
+            hub.update(did, {"host": "1.2.3.4", "serial": "2983112989"})
+            assert did in hub.clients and hub.status()[0]["configured"]
         finally:
             hub.close()
     asyncio.run(go())
@@ -424,6 +439,93 @@ def test_web_api_adds_places_updates_and_removes(tmp_path):
             assert (await c.delete(f"/api/solar/{did}")).status == 200 and did not in hub.devices
             assert f"o:{did}" not in r.model.schema["blocks"]
             assert (await c.delete(f"/api/solar/{did}")).status == 404
+        finally:
+            await c.close()
+            hub.close()
+    asyncio.run(go())
+
+
+# ------------------------------------------------------------ ontdekking
+
+
+def test_discovery_answer_is_understood_and_noise_is_not():
+    ok = sm.parse_discovery(b"192.168.8.34,D42787269D94,2983112989", ("192.168.8.34", 48899))
+    assert ok == {"ip": "192.168.8.34", "mac": "d42787269d94", "serial": 2983112989}
+    for bad in (b"", b"nonsense", b"1.2.3.4,xyz,2983112989", b"1.2.3.4,D42787269D94,abc", b"999.1.1.1,D42787269D94,2983112989", b"1.2.3.4,D42787269D94,0", b"\xff\xfe"):
+        assert sm.parse_discovery(bad) is None, bad
+    assert sm.parse_discovery(b"1.2.3.4,D42787269D94,2983112989", ("9.9.9.9", 1)) is None, "een stick meldt zijn eigen adres"
+
+
+def test_finder_hears_a_fake_stick_over_udp():
+    class Stick(asyncio.DatagramProtocol):
+        def connection_made(self, t):
+            self.t = t
+
+        def datagram_received(self, data, addr):
+            if data == sm.DISCOVER:
+                self.t.sendto(b"127.0.0.1,D42787269D94,2983112989", addr)
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        st, _ = await loop.create_datagram_endpoint(Stick, local_addr=("127.0.0.1", 0))
+        port = st.get_extra_info("sockname")[1]
+        got = []
+        f = await sm.finder(got.append)
+        sm.discover(f, "127.0.0.1", port)
+        for _ in range(50):
+            if got:
+                break
+            await asyncio.sleep(0.05)
+        f.close()
+        st.close()
+        return got
+    assert asyncio.run(go()) == [{"ip": "127.0.0.1", "mac": "d42787269d94", "serial": 2983112989}]
+
+
+def test_a_found_stick_fills_in_the_ip_and_follows_a_new_address(tmp_path):
+    async def go():
+        r = Rig(tmp_path)
+        hub = SolarHub(tmp_path, r.engine)
+        try:
+            did = hub.add({"name": "Dak"})
+            hub.on_found({"ip": "192.168.8.53", "mac": "d427873ce876", "serial": 2988223610})
+            assert hub.status()[0]["unclaimed"] == [{"serial": "2988223610", "ip": "192.168.8.53", "mac": "d427873ce876"}]
+            hub.update(did, {"serial": "2988223610"})  # het IP vult de add-on in
+            assert hub.devices[did]["host"] == "192.168.8.53" and hub.clients[did].host == "192.168.8.53"
+            assert hub.status()[0]["unclaimed"] == [], "geclaimd: weg uit de lijst"
+            hub.on_found({"ip": "192.168.8.99", "mac": "d427873ce876", "serial": 2988223610})
+            assert hub.devices[did]["host"] == "192.168.8.99", "onbereikbaar: het nieuwe DHCP-adres wordt overgenomen"
+            hub.clients[did].connected = True
+            hub.on_found({"ip": "192.168.8.12", "mac": "d427873ce876", "serial": 2988223610})
+            assert hub.devices[did]["host"] == "192.168.8.99", "bereikbaar: het IP blijft"
+            hub.on_found({"ip": "192.168.8.245", "mac": "d4278727ddfc", "serial": 2989941810})
+            assert [f["ip"] for f in hub.status()[0]["unclaimed"]] == ["192.168.8.245"]
+        finally:
+            hub.close()
+    asyncio.run(go())
+
+
+def test_web_scan_and_unconfigured_block(tmp_path):
+    from aiohttp.test_utils import TestClient, TestServer
+    from kkaddon import web
+    from kkaddon.settings import Settings
+    from tests.rig import KEY
+
+    async def go():
+        r = Rig(tmp_path)
+        hub = SolarHub(tmp_path, r.engine)
+        ctx = web.Ctx(Settings(data_dir=tmp_path, key=KEY, key_generated=False, dev_mode=True), r.engine, solar=hub)
+        r.model.set_schema({**r.model.schema, "pages": [{"id": "dak", "name": "Dak"}]})
+        c = TestClient(TestServer(web.make_app(ctx)))
+        await c.start_server()
+        try:
+            res = await (await c.post("/api/solar", json={"page": "dak", "x": 40, "y": 30})).json()  # zoals het menu: zonder naam, IP en serienummer
+            assert res["ok"] and res["key"].startswith("o:")
+            assert (await c.post("/api/solar/scan", json={})).status == 400, "geen zoekpoort buiten een draaiende add-on"
+            assert (await c.post("/api/solar/scan", json={"host": "http://x"})).status == 400
+            hub.on_found({"ip": "127.0.0.1", "mac": "d427873ce876", "serial": 2988223610})
+            b = next(x for x in schema.view(r.model, r.engine.snapshot())["blocks"] if x["key"] == res["key"])
+            assert b["configured"] is False and b["unclaimed"][0]["serial"] == "2988223610"
         finally:
             await c.close()
             hub.close()

@@ -603,6 +603,16 @@ async def solar_lookup(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "serial": serial})
 
 
+async def solar_scan(request: web.Request) -> web.Response:
+    b = await _body(request)
+    host = str(b.get("host") or "").strip()
+    if host and not re.fullmatch(r"[A-Za-z0-9.\-]{1,253}", host):
+        raise ModelError("ongeldig adres")
+    if not _solar(request).ask(host or "255.255.255.255"):
+        raise ModelError("zoeken is niet mogelijk (zie het logboek)")
+    return web.json_response({"ok": True})
+
+
 async def solar_delete(request: web.Request) -> web.Response:
     ok = _solar(request).remove(request.match_info["did"])
     return web.json_response({"ok": ok}, status=200 if ok else 404)
@@ -853,6 +863,7 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/tuya/{did}/set", tuya_set)
     r.add_post("/api/solar", solar_post)
     r.add_post("/api/solar/lookup", solar_lookup)
+    r.add_post("/api/solar/scan", solar_scan)
     r.add_put("/api/solar/{did}", solar_put)
     r.add_delete("/api/solar/{did}", solar_delete)
     r.add_post("/api/airco", airco_post)

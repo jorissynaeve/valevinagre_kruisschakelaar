@@ -341,7 +341,7 @@ def _solar_blocks(snap: dict) -> list[dict]:
         every = [out(a, *o) for o in OUTPUTS]
         shown = [o for o in every if o["name"] in a["shown"]]
         res.append({"id": a["id"], "name": a["name"], "host": a["host"], "serial": a["serial"], "online": a["online"], "error": a["error"], "values": a["values"],
-                    "shown": a["shown"], "key": f"o:{a['id']}", "kind": "solar", "source": "solar", "tech": "Omvormer · Solarman", "alias": "", "room": "",
+                    "configured": a["configured"], "unclaimed": a["unclaimed"], "scanning": a["scanning"], "shown": a["shown"], "key": f"o:{a['id']}", "kind": "solar", "source": "solar", "tech": "Omvormer · Solarman", "alias": "", "room": "",
                     "rows": max(len(shown), 1), "ports": [], "outs": shown, "all": every})
     return res
 

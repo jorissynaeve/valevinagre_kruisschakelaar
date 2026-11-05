@@ -261,9 +261,12 @@ andere merken die de app *Gree+* of *EWPE Smart* gebruiken. Het is een eigen blo
 merken die de Solarman-app gebruiken. Het is een eigen blok, los van Tuya. De add-on leest de registers van de stick zelf
 (TCP 8899, Solarman V5), elke 15 s.
 
-* **Instellen**: vul het IP-adres van de stick in en zijn **serienummer** (niet dat van de omvormer: het staat op de sticker en op de
-  statuspagina van de stick). *Serienummer opzoeken* haalt het zelf van die pagina (gebruikersnaam en wachtwoord staan standaard op
-  `admin`; ze worden niet bewaard). De omvormer moet in hetzelfde netwerk of via een koppeling bereikbaar zijn voor de add-on.
+* **Instellen**: de add-on vraagt elke minuut wie er is (en meteen met *Zoeken op het netwerk*) zoals de Solarman-app dat doet. Kies in de
+  zijbalk de stick onder *Op het netwerk gevonden*: het IP en het serienummer worden ingevuld. Daarna volgt de add-on de stick zelf als die na
+  DHCP een nieuw IP krijgt (alleen als het oude niet meer bereikbaar is). Zelf invullen kan ook: het IP en het **serienummer van de stick**
+  (niet dat van de omvormer; het staat op de sticker en op zijn statuspagina). *Serienummer opzoeken* haalt het van die pagina (gebruikersnaam
+  en wachtwoord staan standaard op `admin`; ze worden niet bewaard). Zoeken werkt met een broadcast en reikt dus niet over routers of VLAN's
+  heen: de add-on moet in het subnet van de sticks draaien.
 * **Uitgangen** (rechts): alle 54 waarden die de omvormer meldt, in zes groepen. *Zon*: totaal, per string (PV1, PV2) vermogen, spanning en
   stroom, opbrengst vandaag en totaal. *Accu*: vermogen en stroom (positief = laden), spanning, %, temperatuur, geladen en ontladen
   vandaag en totaal. *Net*: vermogen (positief = afname, negatief = teruglevering), per fase (externe en interne CT), netspanning per fase,

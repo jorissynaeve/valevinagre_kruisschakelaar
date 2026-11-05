@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 import aiohttp
@@ -29,11 +30,13 @@ from . import discovery as d
 from .engine import Engine
 from .logic import NUMBER
 from .model import ModelError
-from .solarman import FIELDS, PORT, SolarmanClient
+from .solarman import FIELDS, PORT, SolarmanClient, discover, finder
 
 log = logging.getLogger("kk.solar")
 
 MAX_DEVICES = 8
+SCAN_EVERY = 60  # s: zolang een omvormer geen IP heeft of onbereikbaar is
+FOUND_KEEP = 3600  # s: wat zich zo lang niet meer meldde, verdwijnt uit de keuzelijst
 HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,253}$")
 REF_RE = re.compile(r"^o:([a-z0-9_]{1,40}):([a-z0-9_]{1,12})$")
 # elke waarde is een uitgang (te gebruiken in de logica) en een sensor in HA. Op het blok staan er standaard zes; de rest kies je in het zijpaneel.
@@ -60,6 +63,8 @@ NAMES_ORDER = tuple(k for k, *_ in OUTPUTS)
 def _serial(raw) -> int:
     """Het serienummer van de STICK (niet van de omvormer): 8 tot 10 cijfers, staat op de sticker en op de statuspagina."""
     s = str(raw or "").strip()
+    if not s:
+        return 0  # nog niet ingesteld
     if not re.fullmatch(r"\d{6,10}", s) or not 0 < int(s) < 2 ** 32:
         raise ModelError("het serienummer van de stick is 6 tot 10 cijfers, bv. 2983112989 (op de sticker of op zijn statuspagina)")
     return int(s)
@@ -75,6 +80,8 @@ class SolarHub:
         self.clients: dict[str, SolarmanClient] = {}
         self.values: dict[str, dict] = {}
         self.tasks: dict[str, asyncio.Task] = {}
+        self.found: dict[int, dict] = {}  # serienummer van de stick -> {"ip", "mac", "seen"}
+        self._scan = None
         self._load()
         engine.solar_view = self.status
         engine.solar_value = self.output
@@ -119,10 +126,11 @@ class SolarHub:
             new["shown"] = _shown(b["shown"])
         if not new["name"]:
             raise ModelError("geef de omvormer een naam")
-        if not new["host"] or not HOST_RE.match(new["host"]):
-            raise ModelError("geef het IP van de stick, zonder http://")
-        if not new.get("serial"):
-            raise ModelError("geef het serienummer van de stick")
+        if new["host"] and not HOST_RE.match(new["host"]):
+            raise ModelError("ongeldig adres: geef het IP van de stick, zonder http://")
+        known = self.found.get(new["serial"])
+        if known and not new["host"]:
+            new["host"] = known["ip"]  # het IP vult de add-on zelf in
         return new
 
     def add(self, b: dict) -> str:
@@ -141,7 +149,7 @@ class SolarHub:
         return did
 
     def _unique(self, did: str, dev: dict) -> None:
-        if any(k != did and x["serial"] == dev["serial"] for k, x in self.devices.items()):
+        if dev["serial"] and any(k != did and x["serial"] == dev["serial"] for k, x in self.devices.items()):
             raise ModelError("deze stick staat er al")
 
     def update(self, did: str, b: dict) -> None:
@@ -152,7 +160,7 @@ class SolarHub:
         self._unique(did, dev)
         self.devices[did] = dev
         self._save()
-        if (dev["host"], dev["serial"]) != (old["host"], old["serial"]):
+        if (dev["host"], dev["serial"]) != (old["host"], old["serial"]):  # ook van "niet ingesteld" naar ingesteld
             self._stop(did)
             self.values.pop(did, None)
             self._start(did)
@@ -195,9 +203,43 @@ class SolarHub:
     def start(self) -> None:
         for did in self.devices:
             self._start(did)
+        self.tasks["_scan"] = asyncio.get_running_loop().create_task(self._scanner())
+
+    async def _scanner(self) -> None:
+        try:
+            self._scan = await finder(self.on_found)
+        except OSError as e:
+            log.warning("zoeken naar omvormers niet mogelijk: %s", e)
+            return
+        while True:
+            if not self.devices or any(not (dev["host"] and self.is_online(did)) for did, dev in self.devices.items()):
+                self.ask()
+            await asyncio.sleep(SCAN_EVERY)
+
+    def ask(self, target: str = "255.255.255.255") -> bool:
+        if not self._scan:
+            return False
+        discover(self._scan, target)
+        return True
+
+    def on_found(self, f: dict) -> None:
+        """Een stick antwoordt. Een leeg IP vullen we in; een ander IP alleen als we hem niet bereiken (DHCP)."""
+        new = f["serial"] not in self.found
+        self.found[f["serial"]] = {"ip": f["ip"], "mac": f["mac"], "seen": time.time()}
+        if new:
+            log.info("Solarman-stick %s gevonden op %s", f["serial"], f["ip"])
+        for did, dev in self.devices.items():
+            if dev["serial"] == f["serial"] and dev["host"] != f["ip"] and not (dev["host"] and self.is_online(did)):
+                log.info("%s gevonden op %s", dev["name"], f["ip"])
+                self.update(did, {"host": f["ip"]})
+                return
+        if new:
+            self._poke()
 
     def _start(self, did: str) -> None:
         dev = self.devices[did]
+        if not dev["host"] or not dev["serial"]:
+            return  # nog niet ingesteld
         c = SolarmanClient(dev["host"], dev["serial"], port=self.port or PORT, poll=self.poll,
                            on_values=lambda v, i=did: self._on_values(i, v), on_link=lambda _up: self._poke())
         self.clients[did] = c
@@ -213,6 +255,9 @@ class SolarHub:
         for k in list(self.tasks):
             self.tasks.pop(k).cancel()
         self.clients.clear()
+        if self._scan:
+            self._scan.close()
+            self._scan = None
 
     def _on_values(self, did: str, vals: dict) -> None:
         cur = self.values.setdefault(did, {})
@@ -240,9 +285,14 @@ class SolarHub:
 
     def status(self) -> list[dict]:
         out = []
+        now = time.time()
+        claimed = {dev["serial"] for dev in self.devices.values()}
+        free = [{"serial": str(k), "ip": v["ip"], "mac": v["mac"]} for k, v in sorted(self.found.items(), key=lambda kv: kv[1]["ip"])
+                if k not in claimed and now - v["seen"] < FOUND_KEEP]
         for did, dev in self.devices.items():
             c = self.clients.get(did)
-            out.append({"id": did, "name": dev["name"], "host": dev["host"], "serial": str(dev["serial"]), "online": self.is_online(did),
+            out.append({"id": did, "name": dev["name"], "host": dev["host"], "serial": str(dev["serial"] or ""), "online": self.is_online(did),
+                        "configured": bool(dev["host"] and dev["serial"]), "unclaimed": free, "scanning": bool(self._scan),
                         "error": c.last_error if c else "", "values": dict(self.values.get(did, {})), "shown": list(dev["shown"]),
                         "outputs": {n: self.output(f"o:{did}:{n}") for n, *_ in OUTPUTS}})
         return out
