@@ -22,8 +22,6 @@ PORT = 8899
 POLL_EVERY = 15.0  # s: de stick meldt niets uit zichzelf
 TIMEOUT = 5.0  # s: zo lang wachten op een antwoord
 MISSES = 3  # zoveel ronden zonder antwoord: niet meer bereikbaar
-# (eerste register, aantal): wat we elke ronde lezen (functiecode 3). Deye SG04LP3: zie `decode`.
-BLOCKS = ((0x0202, 16), (0x024A, 6), (0x0271, 1), (0x028D, 1), (0x02A0, 8))
 MAX_FRAME = 1024
 
 
@@ -98,36 +96,101 @@ def modbus_data(payload: bytes, function: int = 3, unit: int = 1) -> list[int]:
 
 
 # ------------------------------------------------------------ de registers (Deye SG04LP3 en verwanten)
+# Eén tabel voor alles: wat we lezen, wat op het schema een uitgang is en wat in HA een sensor wordt.
+# (sleutel, groep, naam, eenheid, registers, soort, schaal, HA-klasse, HA-staat)
+#   soort: u16, s16 (met teken), s16n (met teken, omgedraaid), u32 (twee registers, het eerste is het lage), sum (som van de registers),
+#          temp (u16, min 1000), ...
+# Tekens: `batt` en `batt_a` zijn positief bij laden (de omvormer meldt laden negatief); `grid` is positief bij afname.
+M, TI = "measurement", "total_increasing"
+FIELDS = (
+    ("pv", "Zon", "zon totaal", "W", (0x02A0, 0x02A1), "sum", 1, "power", M),
+    ("pv1", "Zon", "zon PV1", "W", (0x02A0,), "u16", 1, "power", M),
+    ("pv2", "Zon", "zon PV2", "W", (0x02A1,), "u16", 1, "power", M),
+    ("pv1_v", "Zon", "spanning PV1", "V", (0x02A4,), "u16", 0.1, "voltage", M),
+    ("pv2_v", "Zon", "spanning PV2", "V", (0x02A6,), "u16", 0.1, "voltage", M),
+    ("pv1_a", "Zon", "stroom PV1", "A", (0x02A5,), "u16", 0.1, "current", M),
+    ("pv2_a", "Zon", "stroom PV2", "A", (0x02A7,), "u16", 0.1, "current", M),
+    ("today", "Zon", "opbrengst vandaag", "kWh", (0x0211,), "u16", 0.1, "energy", TI),
+    ("total", "Zon", "opbrengst totaal", "kWh", (0x0216, 0x0217), "u32", 0.1, "energy", TI),
+    ("batt", "Accu", "accu (+ laden)", "W", (0x024E,), "s16n", 1, "power", M),
+    ("batt_a", "Accu", "accustroom (+ laden)", "A", (0x024F,), "s16n", 0.01, "current", M),
+    ("batt_v", "Accu", "accuspanning", "V", (0x024B,), "u16", 0.01, "voltage", M),
+    ("soc", "Accu", "accu %", "%", (0x024C,), "u16", 1, "battery", M),
+    ("batt_t", "Accu", "accutemperatuur", "°C", (0x024A,), "temp", 0.1, "temperature", M),
+    ("batt_in", "Accu", "accu geladen vandaag", "kWh", (0x0202,), "u16", 0.1, "energy", TI),
+    ("batt_out", "Accu", "accu ontladen vandaag", "kWh", (0x0203,), "u16", 0.1, "energy", TI),
+    ("batt_in_tot", "Accu", "accu geladen totaal", "kWh", (0x0204, 0x0205), "u32", 0.1, "energy", TI),
+    ("batt_out_tot", "Accu", "accu ontladen totaal", "kWh", (0x0206, 0x0207), "u32", 0.1, "energy", TI),
+    ("grid", "Net", "net (+ afname)", "W", (0x0271,), "s16", 1, "power", M),
+    ("grid_l1", "Net", "net L1 (externe CT)", "W", (0x0268,), "s16", 1, "power", M),
+    ("grid_l2", "Net", "net L2 (externe CT)", "W", (0x0269,), "s16", 1, "power", M),
+    ("grid_l3", "Net", "net L3 (externe CT)", "W", (0x026A,), "s16", 1, "power", M),
+    ("ict_l1", "Net", "interne CT L1", "W", (0x025C,), "s16", 1, "power", M),
+    ("ict_l2", "Net", "interne CT L2", "W", (0x025D,), "s16", 1, "power", M),
+    ("ict_l3", "Net", "interne CT L3", "W", (0x025E,), "s16", 1, "power", M),
+    ("vgrid_l1", "Net", "netspanning L1", "V", (0x0256,), "u16", 0.1, "voltage", M),
+    ("vgrid_l2", "Net", "netspanning L2", "V", (0x0257,), "u16", 0.1, "voltage", M),
+    ("vgrid_l3", "Net", "netspanning L3", "V", (0x0258,), "u16", 0.1, "voltage", M),
+    ("freq", "Net", "netfrequentie", "Hz", (0x027E,), "u16", 0.01, "frequency", M),
+    ("bought", "Net", "afgenomen vandaag", "kWh", (0x0208,), "u16", 0.1, "energy", TI),
+    ("sold", "Net", "geleverd vandaag", "kWh", (0x0209,), "u16", 0.1, "energy", TI),
+    ("bought_tot", "Net", "afgenomen totaal", "kWh", (0x020A, 0x020B), "u32", 0.1, "energy", TI),
+    ("sold_tot", "Net", "geleverd totaal", "kWh", (0x020C, 0x020D), "u32", 0.1, "energy", TI),
+    ("load", "Verbruik", "verbruik", "W", (0x028D,), "u16", 1, "power", M),
+    ("load_l1", "Verbruik", "verbruik L1", "W", (0x028A,), "u16", 1, "power", M),
+    ("load_l2", "Verbruik", "verbruik L2", "W", (0x028B,), "u16", 1, "power", M),
+    ("load_l3", "Verbruik", "verbruik L3", "W", (0x028C,), "u16", 1, "power", M),
+    ("vload_l1", "Verbruik", "spanning belasting L1", "V", (0x0284,), "u16", 0.1, "voltage", M),
+    ("vload_l2", "Verbruik", "spanning belasting L2", "V", (0x0285,), "u16", 0.1, "voltage", M),
+    ("vload_l3", "Verbruik", "spanning belasting L3", "V", (0x0286,), "u16", 0.1, "voltage", M),
+    ("load_today", "Verbruik", "verbruik vandaag", "kWh", (0x020E,), "u16", 0.1, "energy", TI),
+    ("load_tot", "Verbruik", "verbruik totaal", "kWh", (0x020F, 0x0210), "u32", 0.1, "energy", TI),
+    ("inv", "Omvormer", "omvormer uitgang", "W", (0x027C,), "s16", 1, "power", M),
+    ("inv_l1", "Omvormer", "omvormer L1", "W", (0x0279,), "s16", 1, "power", M),
+    ("inv_l2", "Omvormer", "omvormer L2", "W", (0x027A,), "s16", 1, "power", M),
+    ("inv_l3", "Omvormer", "omvormer L3", "W", (0x027B,), "s16", 1, "power", M),
+    ("cur_l1", "Omvormer", "stroom L1", "A", (0x0276,), "s16", 0.01, "current", M),
+    ("cur_l2", "Omvormer", "stroom L2", "A", (0x0277,), "s16", 0.01, "current", M),
+    ("cur_l3", "Omvormer", "stroom L3", "A", (0x0278,), "s16", 0.01, "current", M),
+    ("dc_t", "Omvormer", "temperatuur DC", "°C", (0x021C,), "temp", 0.1, "temperature", M),
+    ("ac_t", "Omvormer", "temperatuur AC", "°C", (0x021D,), "temp", 0.1, "temperature", M),
+    ("gen", "Generator", "generatorpoort", "W", (0x029B, 0x029F), "u32", 1, "power", M),
+    ("gen_today", "Generator", "generator vandaag", "kWh", (0x0218,), "u16", 0.1, "energy", TI),
+    ("gen_tot", "Generator", "generator totaal", "kWh", (0x0219, 0x021A), "u32", 0.1, "energy", TI),
+)
+GROUPS = ("Zon", "Accu", "Net", "Verbruik", "Omvormer", "Generator")
+# wat we elke ronde lezen: (eerste register, aantal); alles tussen de uitersten staat er gewoon in
+BLOCKS = ((0x0202, 28), (0x024A, 6), (0x0256, 41), (0x0284, 36))
 
 
 def s16(v: int) -> int:
     return v - 65536 if v >= 32768 else v
 
 
+def _value(regs: dict[int, int], addrs: tuple, kind: str, scale: float):
+    raw = [regs.get(a) for a in addrs]
+    if kind == "sum":
+        got = [x for x in raw if x is not None]
+        v = sum(got) if got else None
+    elif any(x is None for x in raw):
+        return None
+    elif kind == "u32":
+        v = raw[0] + (raw[1] << 16)
+    elif kind in ("s16", "s16n"):
+        v = s16(raw[0])
+        v = -v if kind == "s16n" else v
+    elif kind == "temp":
+        v = raw[0] - 1000
+    else:
+        v = raw[0]
+    if v is None:
+        return None
+    return v if scale == 1 else round(v * scale, 2)
+
+
 def decode(regs: dict[int, int]) -> dict[str, float | int | None]:
-    """Gelezen registers -> de waarden. Wat ontbreekt, is None. Tekens: `batt` is positief bij laden, `grid` positief bij afname."""
-    def one(a, scale=1.0, signed=False):
-        v = regs.get(a)
-        if v is None:
-            return None
-        v = s16(v) if signed else v
-        return round(v * scale, 2) if scale != 1.0 else v
-
-    def both(*xs):
-        got = [x for x in xs if x is not None]
-        return sum(got) if got else None
-
-    batt = one(0x024E, 1, True)
-    return {
-        "pv1": one(0x02A0), "pv2": one(0x02A1), "pv": both(one(0x02A0), one(0x02A1)),
-        "pv1_v": one(0x02A4, 0.1), "pv2_v": one(0x02A6, 0.1), "pv1_a": one(0x02A5, 0.1), "pv2_a": one(0x02A7, 0.1),
-        "load": one(0x028D), "grid": one(0x0271, 1, True),
-        "batt": -batt if batt is not None else None,  # de omvormer telt ontladen positief; wij laden
-        "batt_v": one(0x024B, 0.01), "soc": one(0x024C),
-        "batt_t": (regs[0x024A] - 1000) / 10 if 0x024A in regs else None,
-        "today": one(0x0211, 0.1), "bought": one(0x0208, 0.1), "sold": one(0x0209, 0.1),
-        "load_today": one(0x020E, 0.1), "batt_in": one(0x0202, 0.1), "batt_out": one(0x0203, 0.1),
-    }
+    """Gelezen registers -> de waarden. Wat ontbreekt, is None (onbekend), nooit 0."""
+    return {key: _value(regs, addrs, kind, scale) for key, _g, _n, _u, addrs, kind, scale, _c, _s in FIELDS}
 
 
 class SolarmanClient:

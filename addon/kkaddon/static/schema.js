@@ -343,7 +343,7 @@ const SC_AC_SW = { turbo: 'Turbo', quiet: 'Stil', light: 'Licht', xfan: 'X-fan (
 
 const scAcOutText = (o) => (o.value === null || o.value === undefined ? '?' : o.type === 'bool' ? (o.value ? '1' : '0') : `${o.value} ${o.unit || '°C'}`);
 function scAcOuts(type) { // de uitgangen van alle airco's van deze soort, als bron voor een ingang
-  return scBlocks().filter((b) => b.kind === 'airco' || b.kind === 'solar').flatMap((b) => b.outs.filter((o) => o.type === type).map((o) => ({ key: o.ref, block: b.key, name: `${b.name} · ${o.label}`, out: scAcOutText(o) })));
+  return scBlocks().filter((b) => b.kind === 'airco' || b.kind === 'solar').flatMap((b) => (b.all || b.outs).filter((o) => o.type === type).map((o) => ({ key: o.ref, block: b.key, name: `${b.name} · ${o.label}`, out: scAcOutText(o) })));
 }
 function scAcUsers(ref) { // wie deze uitgang van een airco gebruikt
   return scBlocks().filter((u) => ['module', 'sprinkler', 'action', 'airco'].includes(u.kind) && u.ports.some((p) => p.ref === ref)).map((u) => ({ key: u.key, text: u.name }));
@@ -474,7 +474,9 @@ function scSolar(b) {
 function scSolarPanel(b, props) {
   const v = b.values || {};
   const num = (x, unit, d = 0) => (x == null ? '?' : `${Number(x).toFixed(d)} ${unit}`);
-  const users = b.outs.flatMap((o) => scAcUsers(o.ref).map((u) => ({ ...u, label: o.label })));
+  const users = b.all.flatMap((o) => scAcUsers(o.ref).map((u) => ({ ...u, label: o.label })));
+  const groups = [...new Set(b.all.map((o) => o.group))];
+  const pick = groups.map((g) => `<div class="sub"><b>${esc(g)}</b></div>${b.all.filter((o) => o.group === g).map((o) => `<label class="chk"><input type="checkbox" data-soshow="${esc(o.name)}" ${b.shown.includes(o.name) ? 'checked' : ''}> ${esc(o.label)} <span class="sub">${esc(scAcOutText(o))}</span></label>`).join('')}`).join('');
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${b.online ? 'verbonden' : esc(b.error || 'verbinden…')}</span></div>
     <div class="sub">Een omvormer met een Solarman-wifistick (Deye, Sunsynk, ...), rechtstreeks over het LAN zonder cloud. De add-on leest hem elke 15 s en zet de waarden in Home Assistant als sensoren <code>sensor.kk_solar_${esc(b.id)}_…</code> (ook voor het energiedashboard). Alleen lezen: de omvormer zelf stel je hier niet bij.</div>${props}
     ${b.online ? `<h2>Nu</h2>
@@ -483,6 +485,8 @@ function scSolarPanel(b, props) {
     <div class="sub">Accu ${num(v.soc, '%')} · ${num(v.batt, 'W')} (+ laden, − ontladen) · ${num(v.batt_v, 'V', 1)} · ${num(v.batt_t, '°C', 1)}</div>
     <div class="sub">Vandaag: opbrengst ${num(v.today, 'kWh', 1)} · verbruik ${num(v.load_today, 'kWh', 1)} · afgenomen ${num(v.bought, 'kWh', 1)} · geleverd ${num(v.sold, 'kWh', 1)}</div>` : ''}
     <h2>Uitgangen gaan naar</h2>${users.map((u) => `<div class="sub">${esc(u.label)} → <a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.text)}</a></div>`).join('') || '<div class="sub">Nog nergens. Sleep een uitgang (rechts) naar Groter dan of Kleiner dan, bv. om iets te starten bij veel zon.</div>'}
+    <h2>Uitgangen op het blok</h2>
+    <div class="sub">Alle ${b.all.length} waarden zijn uitgangen. Hier kies je welke als rij op het blok staan om te verbinden; de andere kies je bij een module als bron.</div>${pick}
     <h2>Stick</h2>
     <label>IP-adres</label><input type="text" maxlength="253" data-sofield="host" spellcheck="false" autocomplete="off" placeholder="192.168.1.50" value="${esc(b.host)}">
     <label>Serienummer van de stick</label><input type="text" maxlength="10" data-sofield="serial" spellcheck="false" autocomplete="off" placeholder="10 cijfers" value="${esc(b.serial)}">
@@ -2153,6 +2157,10 @@ document.addEventListener('change', (ev) => {
       const [mac, host] = value.split('|');
       act(() => scSaveAirco(b, { mac, host }))();
     } else if (ds.awfield && (value || ds.awfield !== 'key')) act(() => scSaveAirco(b, { [ds.awfield]: value }))();
+  }
+  if (t.dataset && t.dataset.soshow && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'solar') {
+    const b = scBlock(SC.sel), shown = [...document.querySelectorAll('[data-soshow]')].filter((x) => x.checked).map((x) => x.dataset.soshow);
+    act(() => scSaveSolar(b, { shown }))();
   }
   if (t.dataset && t.dataset.sofield && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'solar') {
     const b = scBlock(SC.sel), value = t.value.trim();

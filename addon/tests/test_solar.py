@@ -77,6 +77,26 @@ def test_registers_are_decoded_with_signs_and_units():
     assert (v["pv1_v"], v["pv2_a"]) == (506.1, 5.2)
 
 
+def test_every_value_is_decoded_with_scale_sign_and_32_bits():
+    regs = {**REGS, 0x0216: 38673, 0x0217: 2, 0x0204: 45041, 0x0205: 0, 0x024F: 65536 - 7778, 0x0268: 4, 0x025E: 65532, 0x0256: 2379, 0x027E: 5004, 0x021C: 1250,
+            0x029B: 7, 0x029F: 1}
+    v = sm.decode(regs)
+    assert v["total"] == 16974.5, "twee registers, het eerste is het lage"
+    assert v["batt_in_tot"] == 4504.1 and v["batt_a"] == 77.78, "laden is positief"
+    assert (v["grid_l1"], v["ict_l3"], v["vgrid_l1"], v["freq"], v["dc_t"]) == (4, -4, 237.9, 50.04, 25.0)
+    assert v["gen"] == 65543
+    assert v["inv_l1"] is None, "niet gemeld: onbekend"
+    assert len(sm.FIELDS) == len({f[0] for f in sm.FIELDS}) == 54
+
+
+def test_every_field_fits_a_block_and_a_ref():
+    import re
+    inside = lambda a: any(s <= a < s + n for s, n in sm.BLOCKS)
+    for key, _g, _n, _u, addrs, *_ in sm.FIELDS:
+        assert all(inside(a) for a in addrs), f"{key} wordt niet gelezen"
+        assert re.fullmatch(r"[a-z0-9_]{1,12}", key), f"{key} past niet in een bron o:<id>:<naam>"
+
+
 def test_missing_registers_are_unknown_not_zero():
     v = sm.decode({0x02A0: 100})
     assert v["pv"] == 100 and v["pv2"] is None and v["load"] is None and v["batt"] is None and v["soc"] is None
@@ -300,7 +320,18 @@ def test_block_on_the_schema(tmp_path):
         try:
             b = next(x for x in schema.view(r.model, r.engine.snapshot())["blocks"] if x["key"] == f"o:{did}")
             assert b["kind"] == "solar" and b["ports"] == [] and b["rows"] == 6 and b["online"] is True
-            assert [(o["name"], o["ref"], o["value"], o["unit"]) for o in b["outs"]][:2] == [("pv", f"o:{did}:pv", 5161, "W"), ("load", f"o:{did}:load", 529, "W")]
+            assert [o["name"] for o in b["outs"]] == ["pv", "today", "batt", "soc", "grid", "load"], "standaard zes rijen, in de volgorde van de tabel"
+            assert len(b["all"]) == 54 and {o["group"] for o in b["all"]} == set(sm.GROUPS)
+            hub.update(did, {"shown": ["soc", "pv1_v", "pv"]})
+            b = next(x for x in schema.view(r.model, r.engine.snapshot())["blocks"] if x["key"] == f"o:{did}")
+            assert [o["name"] for o in b["outs"]] == ["pv", "pv1_v", "soc"] and b["rows"] == 3 and len(b["all"]) == 54, "in de volgorde van de tabel; alles blijft kiesbaar"
+            with pytest.raises(ModelError):
+                hub.update(did, {"shown": ["onzin"]})
+            hub.update(did, {"shown": []})
+            assert next(x for x in schema.view(r.model, r.engine.snapshot())["blocks"] if x["key"] == f"o:{did}")["rows"] == 1
+            hub.update(did, {"shown": ["pv", "load", "grid", "batt", "soc", "today"]})
+            b = next(x for x in schema.view(r.model, r.engine.snapshot())["blocks"] if x["key"] == f"o:{did}")
+            assert [(o["name"], o["ref"], o["value"], o["unit"]) for o in b["outs"] if o["name"] in ("pv", "load")] == [("pv", f"o:{did}:pv", 5161, "W"), ("load", f"o:{did}:load", 529, "W")]
             assert schema.view(r.model, r.engine.snapshot())["blocks"], "past in het schema"
             hub.remove(did)
             assert f"o:{did}" not in schema.existing_blocks(r.model, r.engine.snapshot())

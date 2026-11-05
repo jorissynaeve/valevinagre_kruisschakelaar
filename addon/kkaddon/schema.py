@@ -332,12 +332,18 @@ def _airco_blocks(snap: dict) -> list[dict]:
 
 
 def _solar_blocks(snap: dict) -> list[dict]:
-    """Een omvormer: alleen uitgangen rechts (zon, verbruik, net, accu, ...), te gebruiken in de logica."""
+    """Een omvormer: alleen uitgangen rechts. `outs` zijn de getoonde (de rijen van het blok), `all` alle, voor de keuzelijsten van modules."""
     from .solarhub import OUTPUTS
-    return [{"id": a["id"], "name": a["name"], "host": a["host"], "serial": a["serial"], "online": a["online"], "error": a["error"], "values": a["values"],
-             "key": f"o:{a['id']}", "kind": "solar", "source": "solar", "tech": "Omvormer · Solarman", "alias": "", "room": "", "rows": len(OUTPUTS), "ports": [],
-             "outs": [{"name": n, "type": kind, "label": label, "unit": unit, "ref": f"o:{a['id']}:{n}", "value": a["outputs"].get(n)} for n, kind, label, unit in OUTPUTS]}
-            for a in snap.get("solar", [])]
+    def out(a, n, kind, label, unit, group):
+        return {"name": n, "type": kind, "label": label, "unit": unit, "group": group, "ref": f"o:{a['id']}:{n}", "value": a["outputs"].get(n)}
+    res = []
+    for a in snap.get("solar", []):
+        every = [out(a, *o) for o in OUTPUTS]
+        shown = [o for o in every if o["name"] in a["shown"]]
+        res.append({"id": a["id"], "name": a["name"], "host": a["host"], "serial": a["serial"], "online": a["online"], "error": a["error"], "values": a["values"],
+                    "shown": a["shown"], "key": f"o:{a['id']}", "kind": "solar", "source": "solar", "tech": "Omvormer · Solarman", "alias": "", "room": "",
+                    "rows": max(len(shown), 1), "ports": [], "outs": shown, "all": every})
+    return res
 
 
 def view(model: Model, snap: dict) -> dict:

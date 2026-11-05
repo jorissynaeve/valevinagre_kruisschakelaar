@@ -3,8 +3,9 @@
 Vervangt de Solarman-integratie van HACS: de add-on leest de registers zelf (solarman.py) en toont op het schema een blok met
 uitgangen, te gebruiken in de logica, de routines en de kaarten:
 
-  pv     zonnepanelen samen (W)           load   verbruik van het huis (W)        grid   net (W), positief = afname
-  batt   accu (W), positief = laden       soc    lading van de accu (%)           today  opbrengst vandaag (kWh)
+Alle waarden die de omvormer meldt (solarman.FIELDS: zon, accu, net, verbruik, omvormer, generator; per fase, spanning, stroom,
+energie van vandaag en totaal) zijn uitgangen. Op het blok staan er standaard zes (zon, verbruik, net, accu, accu %, vandaag); de rest
+kies je in het zijpaneel, en elke uitgang is ook als bron te kiezen bij een module. `grid` is positief bij afname, `batt` bij laden.
 
 Alleen lezen: de omvormer zelf stel je hier niet bij. Een schrijfbevel naar een omvormer (werkstand, verkoopvermogen) is niet
 terug te draaien als het register niet klopt, en de registers verschillen per model.
@@ -28,29 +29,32 @@ from . import discovery as d
 from .engine import Engine
 from .logic import NUMBER
 from .model import ModelError
-from .solarman import PORT, SolarmanClient
+from .solarman import FIELDS, PORT, SolarmanClient
 
 log = logging.getLogger("kk.solar")
 
 MAX_DEVICES = 8
 HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,253}$")
 REF_RE = re.compile(r"^o:([a-z0-9_]{1,40}):([a-z0-9_]{1,12})$")
-# de uitgangen op het schema: (naam, soort, label, eenheid)
-OUTPUTS = (("pv", NUMBER, "zon", "W"), ("load", NUMBER, "verbruik", "W"), ("grid", NUMBER, "net (+ afname)", "W"),
-           ("batt", NUMBER, "accu (+ laden)", "W"), ("soc", NUMBER, "accu %", "%"), ("today", NUMBER, "vandaag", "kWh"))
-# de sensoren in HA: (waarde, naam, eenheid, device_class, state_class)
-SENSORS = (("pv", "Zonnepanelen", "W", "power", "measurement"), ("pv1", "Zonnepanelen 1", "W", "power", "measurement"),
-           ("pv2", "Zonnepanelen 2", "W", "power", "measurement"), ("pv1_v", "Spanning PV1", "V", "voltage", "measurement"),
-           ("pv2_v", "Spanning PV2", "V", "voltage", "measurement"), ("load", "Verbruik", "W", "power", "measurement"),
-           ("grid", "Net (+ afname)", "W", "power", "measurement"), ("batt", "Accu (+ laden)", "W", "power", "measurement"),
-           ("soc", "Accu", "%", "battery", "measurement"), ("batt_v", "Accuspanning", "V", "voltage", "measurement"),
-           ("batt_t", "Accutemperatuur", "°C", "temperature", "measurement"),
-           ("today", "Opbrengst vandaag", "kWh", "energy", "total_increasing"), ("bought", "Afgenomen vandaag", "kWh", "energy", "total_increasing"),
-           ("sold", "Geleverd vandaag", "kWh", "energy", "total_increasing"), ("load_today", "Verbruik vandaag", "kWh", "energy", "total_increasing"))
+# elke waarde is een uitgang (te gebruiken in de logica) en een sensor in HA. Op het blok staan er standaard zes; de rest kies je in het zijpaneel.
+OUTPUTS = tuple((k, NUMBER, label, unit, group) for k, group, label, unit, *_ in FIELDS)
+NAMES = {k for k, *_ in OUTPUTS}
+DEFAULT_SHOWN = ("pv", "load", "grid", "batt", "soc", "today")
+SENSORS = tuple((k, label[0].upper() + label[1:], unit, cls, state) for k, _g, label, unit, _a, _k, _s, cls, state in FIELDS)
 
 
 def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:24] or "omvormer"
+
+
+def _shown(raw) -> list[str]:
+    """Welke uitgangen op het blok staan: een lijst namen, in de volgorde van de tabel; ontbreekt ze, dan de standaard."""
+    if not isinstance(raw, list):
+        return list(DEFAULT_SHOWN)
+    return [n for n in NAMES_ORDER if n in raw]
+
+
+NAMES_ORDER = tuple(k for k, *_ in OUTPUTS)
 
 
 def _serial(raw) -> int:
@@ -83,7 +87,8 @@ class SolarHub:
             for k, v in (raw.get("devices") or {}).items():
                 if isinstance(v, dict) and re.fullmatch(r"[a-z0-9_]{1,40}", k):
                     try:
-                        self.devices[k] = {"name": str(v.get("name") or "Omvormer")[:60], "host": str(v.get("host") or ""), "serial": _serial(v.get("serial"))}
+                        self.devices[k] = {"name": str(v.get("name") or "Omvormer")[:60], "host": str(v.get("host") or ""), "serial": _serial(v.get("serial")),
+                                           "shown": _shown(v.get("shown"))}
                     except ModelError:
                         log.error("omvormer %s in %s heeft geen geldig serienummer", k, self.path)
         except FileNotFoundError:
@@ -108,6 +113,10 @@ class SolarHub:
             new["host"] = str(b["host"] or "").strip()[:253]
         if "serial" in b:
             new["serial"] = _serial(b["serial"])
+        if "shown" in b:
+            if not isinstance(b["shown"], list) or any(n not in NAMES for n in b["shown"]):
+                raise ModelError("onbekende uitgang")
+            new["shown"] = _shown(b["shown"])
         if not new["name"]:
             raise ModelError("geef de omvormer een naam")
         if not new["host"] or not HOST_RE.match(new["host"]):
@@ -123,7 +132,7 @@ class SolarHub:
         n = 2
         while did in self.devices:
             did, n = f"{base}_{n}", n + 1
-        dev = self._fields({"name": "Omvormer", "host": "", "serial": 0}, b)
+        dev = self._fields({"name": "Omvormer", "host": "", "serial": 0, "shown": list(DEFAULT_SHOWN)}, b)
         self._unique(did, dev)
         self.devices[did] = dev
         self._save()
@@ -225,7 +234,7 @@ class SolarHub:
     def output(self, ref: str):
         """De waarde op een uitgang `o:<id>:<naam>`, of None (onbekend: offline of niet gemeld)."""
         m = REF_RE.match(ref or "")
-        if not m or m.group(1) not in self.devices or m.group(2) not in {n for n, *_ in OUTPUTS} or not self.is_online(m.group(1)):
+        if not m or m.group(1) not in self.devices or m.group(2) not in NAMES or not self.is_online(m.group(1)):
             return None
         return self.values.get(m.group(1), {}).get(m.group(2))
 
@@ -234,7 +243,7 @@ class SolarHub:
         for did, dev in self.devices.items():
             c = self.clients.get(did)
             out.append({"id": did, "name": dev["name"], "host": dev["host"], "serial": str(dev["serial"]), "online": self.is_online(did),
-                        "error": c.last_error if c else "", "values": dict(self.values.get(did, {})),
+                        "error": c.last_error if c else "", "values": dict(self.values.get(did, {})), "shown": list(dev["shown"]),
                         "outputs": {n: self.output(f"o:{did}:{n}") for n, *_ in OUTPUTS}})
         return out
 

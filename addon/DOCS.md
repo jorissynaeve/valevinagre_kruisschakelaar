@@ -264,11 +264,16 @@ merken die de Solarman-app gebruiken. Het is een eigen blok, los van Tuya. De ad
 * **Instellen**: vul het IP-adres van de stick in en zijn **serienummer** (niet dat van de omvormer: het staat op de sticker en op de
   statuspagina van de stick). *Serienummer opzoeken* haalt het zelf van die pagina (gebruikersnaam en wachtwoord staan standaard op
   `admin`; ze worden niet bewaard). De omvormer moet in hetzelfde netwerk of via een koppeling bereikbaar zijn voor de add-on.
-* **Uitgangen** (rechts): *zon* (W), *verbruik* (W), *net* (W, positief = afname, negatief = teruglevering), *accu* (W, positief = laden),
-  *accu %* en *vandaag* (kWh opbrengst). Sleep ze naar Groter dan of Kleiner dan, En, Of, een routine of een airco-ingang: bv. een
-  boiler of laadpaal starten bij veel zon, of een airco aan bij een vol accu. Offline is de waarde onbekend, nooit 0.
-* **In HA**: per omvormer een apparaat met sensoren (zon en per string, spanningen, verbruik, net, accu, temperatuur, en de energie van
-  vandaag), met eenheid en klasse, via MQTT. De Mosquitto-broker en de MQTT-integratie zijn dus nodig.
+* **Uitgangen** (rechts): alle 54 waarden die de omvormer meldt, in zes groepen. *Zon*: totaal, per string (PV1, PV2) vermogen, spanning en
+  stroom, opbrengst vandaag en totaal. *Accu*: vermogen en stroom (positief = laden), spanning, %, temperatuur, geladen en ontladen
+  vandaag en totaal. *Net*: vermogen (positief = afname, negatief = teruglevering), per fase (externe en interne CT), netspanning per fase,
+  frequentie, afgenomen en geleverd vandaag en totaal. *Verbruik*: totaal en per fase, spanning, vandaag en totaal. *Omvormer*: uitgang
+  totaal en per fase, stroom per fase, temperatuur DC en AC. *Generator*: poort, vandaag en totaal. Op het blok staan standaard zes rijen
+  (zon, opbrengst vandaag, accu, accu %, net, verbruik); onder *Uitgangen op het blok* in het zijpaneel vink je aan welke rijen je wilt zien.
+  Elke uitgang, ook een die niet op het blok staat, kies je bij een module als bron. Sleep ze naar Groter dan of Kleiner dan, En, Of, een
+  routine of een airco-ingang: bv. een boiler of laadpaal starten bij veel zon. Offline is de waarde onbekend, nooit 0.
+* **In HA**: per omvormer een apparaat met een sensor voor elk van die 54 waarden, met eenheid en klasse (de energieën als `total_increasing`, dus
+  bruikbaar in het energiedashboard), via MQTT. De Mosquitto-broker en de MQTT-integratie zijn dus nodig.
 * **Alleen lezen**: er zijn bewust geen ingangen. Een schrijfbevel naar het verkeerde register verandert de instellingen van de omvormer
   en de registers verschillen per model.
 * **Getest met een Deye SUN-xK-SG04LP3** (driefasen hybride, 2 MPPT, lagespanningsaccu). Een ander model kan andere registers hebben:
