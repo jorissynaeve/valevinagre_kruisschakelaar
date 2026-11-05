@@ -220,3 +220,15 @@ def test_the_charger_card_has_inputs_and_an_output_instead_of_a_fixed_charger():
     m.set_card(cid, target={"device": "meter", "dp": "1", "on": "ON", "off": ""})
     t.values["meter"]["1"] = True
     assert live.press(f"kk.{cid}__run", "button", None) is False and len(t.sent) == 1, "geen stopwaarde gekozen: dan niets"
+
+
+def test_the_power_card_block_has_an_input_per_row_and_a_free_one():
+    from kkaddon import schema
+    m = Model()
+    cid = m.add_card("power", "Stroom")
+    m.set_card(cid, items=[{"tuya": "y:meter", "dp": "19", "name": "Huis"}, {"entity": "sensor.zon"}])
+    b = schema._card_blocks(m, {"tuya": []}, set())[0]
+    assert b["rows"] == 3, "twee rijen en een vrije ingang voor een nieuwe"
+    assert b["labels"][1] == "sensor.zon" and len(b["labels"]) == 2
+    m.set_card(cid, items=[{"entity": f"sensor.s{i}"} for i in range(6)])
+    assert schema._card_blocks(m, {"tuya": []}, set())[0]["rows"] == 6, "bij het maximum geen vrije ingang meer"

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from . import __version__, appdaemon_import, inventory, schema
+from . import __version__, appdaemon_import, inventory, schema, tasmota
 from .engine import Engine
 from .link import LinkError
 from .model import ENTITY_RE, Model, ModelError
@@ -473,14 +473,36 @@ async def panel_relay(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-async def panel_script(request: web.Request) -> web.Response:
+def _script_text(request: web.Request, host: str) -> str:
     """Het Berry-script voor de panel, met het adres van deze add-on erin."""
-    hub = _panels(request).port
-    host = request.query.get("hub", "").strip()
     if not re.fullmatch(r"[A-Za-z0-9.\-]{1,253}", host):
         raise ModelError("geef het IP-adres van Home Assistant mee (?hub=192.168.x.y)")
     text = (Path(__file__).parent / "berry" / "huisconfig.be").read_text(encoding="utf-8")
-    text = text.replace("@HUB_HOST@", host).replace("@HUB_PORT@", str(hub)).replace("@PANEL_PORT@", str(_panels(request).panel_port))
+    return text.replace("@HUB_HOST@", host).replace("@HUB_PORT@", str(_panels(request).port)).replace("@PANEL_PORT@", str(_panels(request).panel_port))
+
+
+async def panel_install(request: web.Request) -> web.Response:
+    """Het script op de panel zetten via de webserver van Tasmota. Het wachtwoord van die webserver wordt niet bewaard."""
+    pid = request.match_info["pid"]
+    model = request.app[CTX].model
+    p = model.panels.get(pid)
+    if p is None:
+        raise ModelError("onbekend paneel")
+    if not p["host"]:
+        raise ModelError("vul eerst het IP-adres van de panel in")
+    b = await _body(request)
+    hub = str(b.get("hub") or p.get("hub") or "").strip()
+    if hub != p.get("hub"):
+        model.set_panel(pid, hub=hub)  # onthouden voor de volgende keer
+    try:
+        done = await tasmota.install(p["host"], _script_text(request, hub), str(b.get("password") or ""))
+    except tasmota.TasmotaError as e:
+        raise ModelError(str(e)) from e
+    return web.json_response({"ok": True, "done": done})
+
+
+async def panel_script(request: web.Request) -> web.Response:
+    text = _script_text(request, request.query.get("hub", "").strip())
     return web.Response(text=text, content_type="text/plain", headers={"Content-Disposition": 'attachment; filename="huisconfig.be"'})
 
 
@@ -838,6 +860,7 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/actions/{aid}", action_put)
     r.add_delete("/api/actions/{aid}", action_delete)
     r.add_get("/api/panels/script", panel_script)
+    r.add_post("/api/panels/{pid}/install", panel_install)
     r.add_post("/api/panels", panel_post)
     r.add_put("/api/panels/{pid}", panel_put)
     r.add_delete("/api/panels/{pid}", panel_delete)

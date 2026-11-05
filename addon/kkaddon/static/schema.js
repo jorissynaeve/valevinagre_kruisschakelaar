@@ -135,9 +135,21 @@ function scChargerRows(b) { // de laadpaal: links Status, Laadtijd en Geladen (e
   return `${ins}${out}<text class="bkt" x="${b.x + 11}" y="${rowY(b, 3) + 4}">Prijs: € ${b.price} per kWh${b.price_entity ? ' of uit HA' : ''}</text>`;
 }
 
+function scPowerRows(b) { // de energiekaart: links een ingang per rij (een Tuya-waarde, of een sensor uit HA), met erbij waar de waarde vandaan komt
+  const rows = b.items.map((it, i) => {
+    const y = rowY(b, i), src = it.tuya ? b.labels[i] : it.entity || '', go = it.tuya && scBlock(scDevKey(it.tuya));
+    const text = it.tuya ? (it.name ? `${it.name} ← ${src}` : `← ${src}`) : it.entity ? (it.name ? `${it.name} ← ${src}` : `← ${src}`) : 'leeg: sleep een waarde hierheen';
+    return `<circle class="pt v-number ${it.tuya || it.entity ? '' : 'free'}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="cpin" data-i="${i}"><title>Rij ${i + 1}: sleep hierheen vanaf een waarde (rechts op een Tuya-blok), of vul een sensor uit HA in bij de zijbalk</title></circle>
+      <text class="bkt ${go ? 'away' : ''}" x="${b.x + 11}" y="${y + 4}" ${go ? `data-sc="go" data-k="${esc(go.key)}"` : ''}>${i + 1}. ${esc(scCut(text, 24))}<title>${esc(it.tuya ? `Tuya: ${src}` : it.entity ? `Home Assistant: ${src}` : 'Nog geen bron')}</title></text>`;
+  }).join('');
+  const free = b.rows > b.items.length ? `<circle class="pt free" cx="${b.x}" cy="${rowY(b, b.items.length)}" r="6" data-b="${esc(b.key)}" data-role="cpin" data-i="new"><title>Sleep hierheen vanaf een waarde (rechts op een Tuya-blok) voor een nieuwe rij</title></circle>
+    <text class="ptl" x="${b.x + 11}" y="${rowY(b, b.items.length) + 4}">+ rij</text>` : '';
+  return rows + free;
+}
+
 function scCard(b) {
   const y0 = rowY(b, 0);
-  const rows = b.type === 'charger' ? scChargerRows(b) : b.type !== 'grid' ? scCardLines(b).map((t, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}">${esc(scCut(t, 26))}</text>`).join('')
+  const rows = b.type === 'charger' ? scChargerRows(b) : b.type === 'power' ? scPowerRows(b) : b.type !== 'grid' ? scCardLines(b).map((t, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}">${esc(scCut(t, 26))}</text>`).join('')
     : b.items.map((it, i) => {
       const y = rowY(b, i), go = it.target && scBlock(it.target);
       return `<circle class="pt crd ${it.ref || it.entity ? '' : 'free'}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="citem" data-i="${i}"><title>Knop ${i + 1}: sleep hierheen vanaf een lamp, een gang van een schakelaar of de uitgang van een kaart</title></circle>
@@ -721,13 +733,11 @@ function scPanelPanel(b, props) {
     <h2>Relais</h2><div class="row">${relays}</div>
     <div class="sub">Sleep een <b>touch</b> (de knop op de panel) naar de ingang van een lamp, of een <b>relais</b> naar de uitgang. In HA heet het <code>${esc(b.gangs[0].entity)}</code>. Een knop schakelt altijd zijn eigen relais, ook zonder HA; staat de touch op een lamp, dan volgt dat relais ook die lamp.</div>
     <h2>Op de panel zetten</h2>
-    <ol class="sub" style="padding-left:18px;margin:4px 0">
-      <li>Zet de AppDaemon-app <code>nspanel-lovelace-ui</code> uit.</li>
-      <li>IP-adres van Home Assistant: <input type="text" id="pnhub" value="${esc(hub)}"> <a id="pndl" class="btn small" href="api/panels/script?hub=${encodeURIComponent(hub)}">huisconfig.be downloaden</a></li>
-      <li>Webpagina van de panel → <b>Consoles → Manage File system</b>: upload het bestand.</li>
-      <li>Zet als laatste regel in <code>autoexec.be</code>: <code>load("huisconfig.be")</code> en herstart de panel.</li>
-    </ol>
-    <div class="sub">Terugdraaien: die regel weghalen, herstarten en AppDaemon weer aanzetten.</div>
+    <label>IP-adres van Home Assistant (zoals de panel het ziet)</label><input type="text" id="pnhub" data-id="${esc(b.id)}" placeholder="192.168.0.10" value="${esc(b.hub || hub)}">
+    <label>Wachtwoord van de webpagina van de panel (leeg als er geen is; wordt niet bewaard)</label><input type="password" id="pnpass" autocomplete="off">
+    <div class="row" style="margin-top:6px"><button class="btn small primary" type="button" data-sc="pninstall" data-id="${esc(b.id)}" ${b.host ? '' : 'disabled'}>Op de panel zetten</button>
+      <a id="pndl" class="btn small" href="api/panels/script?hub=${encodeURIComponent(b.hub || hub)}" title="Zelf uploaden onder Consoles → Manage File system">huisconfig.be downloaden</a></div>
+    <div class="sub">${b.host ? 'Uploadt <code>huisconfig.be</code> naar de panel, zet <code>load("huisconfig.be")</code> achteraan <code>autoexec.be</code> (als het er nog niet staat) en herstart de panel.' : 'Vul eerst het IP-adres van de panel in en sla op.'} Zet de AppDaemon-app <code>nspanel-lovelace-ui</code> uit. Terugdraaien: die regel uit <code>autoexec.be</code> halen, herstarten en AppDaemon weer aanzetten.</div>
     <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="delpanel" data-id="${esc(b.id)}">Paneel verwijderen</button></div>`;
 }
 
@@ -735,7 +745,7 @@ const SC_CARD_HELP = {
   grid: 'Tot 8 knoppen (een lijst: 4). Een knop bedient een lamp, een entiteit uit HA, of opent een subpagina.',
   charger: 'Start/stop, de status, de laadtijd, de geladen kWh en de prijs. Sluit links waarden van een Tuya-blok aan en rechts start/stop op een instelling, van welke lader ook.',
   saver: 'Het startscherm: klok, datum, het weer met 4 dagen voorspelling en een temperatuur binnen.',
-  power: 'Het energieschema van nspanel-lovelace-ui: tot 6 rijen, elk een sensor uit HA.',
+  power: 'Het energieschema van nspanel-lovelace-ui: tot 6 rijen. Elke rij heeft links een ingang: sleep daar een waarde (rechts op een Tuya-blok) naartoe, of vul hieronder een sensor uit HA in.',
   qr: 'Een QR-code waarmee een gast op de wifi komt, met de naam en het wachtwoord ernaast.',
   airco: 'De thermostaatpagina van het paneel voor een airco: de temperatuur in de kamer en de ingestelde, een schuif om hem in te stellen en een knop per stand (uit, auto, koelen, drogen, ventileren, verwarmen).',
 };
@@ -791,7 +801,7 @@ function scCardPanel(b, props) {
     body = `${tx('weather', 'Weer', 'weather.forecast_thuis')}${tx('forecast', 'Voorspelling uit (leeg: uit het weer)', 'sensor.weather_forecast_daily')}${tx('temperature', 'Temperatuur binnen', 'sensor.temperatuur_hal')}
       ${tx('status1', 'Statuspictogram 1', 'bv. binary_sensor.voordeur')}${tx('status2', 'Statuspictogram 2', '')}`;
   } else if (b.type === 'power') {
-    const rows = b.items.map((it, i) => `<div class="tmd"><div class="row sp"><b>Rij ${i + 1}</b><button class="btn small danger" type="button" data-sc="cdpow" data-k="${esc(b.key)}" data-i="${i}" data-op="del" title="Rij weghalen">✕</button></div>
+    const rows = b.items.map((it, i) => `<div class="tmd"><div class="row sp"><div><b>Rij ${i + 1}</b><div class="sub">${it.tuya ? `ingang: Tuya · ${esc(b.labels[i])}` : it.entity ? `ingang: Home Assistant · ${esc(it.entity)}` : 'ingang: nog niets aangesloten'}</div></div><button class="btn small danger" type="button" data-sc="cdpow" data-k="${esc(b.key)}" data-i="${i}" data-op="del" title="Rij weghalen">✕</button></div>
         <label>Sensor uit Home Assistant (leeg: een open plek)</label><input type="text" spellcheck="false" data-cdpow="entity" data-i="${i}" placeholder="sensor.verbruik" value="${esc(it.entity || '')}">
         <label>Of een Tuya-datapunt</label>${scDeviceSelect(`data-cdpow="tuya" data-i="${i}"`, it.tuya, SC_HERE_Y, 'geen')}
         ${it.tuya ? scPointSelect(`data-cdpow="dp" data-i="${i}"`, it.tuya, it.dp, SC_HERE_Y) : ''}
@@ -1450,11 +1460,17 @@ async function scWireDp(a, b) { // een datapunt van een Tuya-blok: een waarde na
       if (port.type !== 'number') throw new Error(port.type === 'bool' ? 'Deze ingang verwacht een 0 of 1. Zet er een Groter dan of Kleiner dan tussen.' : 'Deze ingang verwacht een tijd, geen waarde.');
       await api('PUT', `${to.kind === 'module' ? 'modules' : 'sprinklers'}/${to.id}`, { inputs: { [port.name]: `v:${val.dp}@${dev.id}` } });
     } else if (sink.role === 'citem') await scSetItem(to, sink.i, { ref: dev.card, dp: String(val.dp), entity: null });
+    else if (sink.role === 'cpin') {
+      const items = scPowItems(to), row = { tuya: dev.card, dp: String(val.dp), entity: null };
+      if (sink.i === 'new' || +sink.i >= items.length) items.push({ name: '', icon: '', speed: 0, levels: null, ...row });
+      else items[+sink.i] = { ...items[+sink.i], ...row };
+      await api('PUT', `cards/${to.id}`, { items });
+    }
     else if (sink.role === 'cdin') {
       const ins = Object.fromEntries(to.ins.filter((x) => x.ref).map((x) => [x.name, x.ref]));
       ins[to.ins[+sink.i].name] = `v:${val.dp}@${dev.id}`;
       await api('PUT', `cards/${to.id}`, { inputs: ins });
-    } else throw new Error('Een waarde sluit je aan op de ingang van Groter dan, Kleiner dan, een sprinkler of een laadpaal, of op een knop van een kaart.');
+    } else throw new Error('Een waarde sluit je aan op de ingang van Groter dan, Kleiner dan, een sprinkler of een laadpaal, op een rij van een energiekaart, of op een knop van een kaart.');
     SC.sel = to.key;
   } else {
     const src = set === a ? b : a, from = scBlock(src.b), tb = scBlock(set.b), dev = scDevOf(tb);
@@ -1576,6 +1592,14 @@ const SC_ACTIONS = {
     delete SC.panelDraft[pid]; // bij een weigering blijft wat je getypt hebt staan
     SC.force = true;
     toast('Opgeslagen');
+    await refresh();
+  },
+  pninstall: async (d) => {
+    const hub = $('#pnhub').value.trim(), password = $('#pnpass').value;
+    if (!hub) throw new Error('Vul het IP-adres van Home Assistant in.');
+    const r = await api('POST', `panels/${d.id}/install`, { hub, password });
+    SC.force = true;
+    toast(`${r.done.join(', ')}.`, 6000);
     await refresh();
   },
   pnrelay: async (d) => {
@@ -1850,6 +1874,7 @@ function scFinish(target) {
     const tb = scBlock(toBlock.dataset.block);
     if (tb.kind === 'lamp' || (tb.kind === 'remote' && from.swRole === 'citem')) dest = { b: tb.key, lampRole: null }; // losgelaten op de lamp zelf: de poort waar je begon beslist
     else if ((tb.kind === 'panel' || tb.kind === 'screen') && from.swRole === 'cout') dest = { b: tb.key, swRole: 'pcard', i: 'new' }; // een kaart op een paneel of scherm: achteraan
+    else if (tb.kind === 'card' && tb.type === 'power' && from.swRole === 'pval') dest = { b: tb.key, swRole: 'cpin', i: 'new' }; // een waarde op een energiekaart: een nieuwe rij
     else if (tb.kind === 'card' && tb.type === 'grid' && from.swRole !== 'citem') dest = { b: tb.key, swRole: 'citem', i: 'new' };
   }
   if (dest && dest.b === from.b && dest.g === from.g && dest.i === from.i && dest.swRole === from.swRole) dest = null;

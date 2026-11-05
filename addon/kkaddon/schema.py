@@ -184,7 +184,7 @@ def _panel_blocks(model: Model, snap: dict) -> list[dict]:
     for p in snap.get("panels", []):
         m = model.panels.get(p["id"]) or {}
         cards = [{"key": f"c:{c}", "id": c, "name": model.cards[c]["name"], "type": model.cards[c]["type"]} for c in m.get("cards", []) if c in model.cards]
-        out.append({**{k: p.get(k) for k in ("id", "name", "host", "online", "error", "greeted", "last_seen", "temperature", "rssi")},
+        out.append({**{k: p.get(k) for k in ("id", "name", "host", "hub", "online", "error", "greeted", "last_seen", "temperature", "rssi")},
                     **{k: m.get(k) for k in ("locale", "timeout", "bright", "dim")}, "notes": m.get("notes", []), "cards": cards,
                     "key": f"p:{p['id']}", "kind": "panel", "source": "panel", "tech": "NSPanel", "alias": "", "room": "",
                     "gangs": [{"i": i, "label": f"Gang {i + 1}", "entity": panel_relay_entity(p["id"], i + 1), "touch": True, "relay": True, "on": p["relays"][i]} for i in range(2)]})
@@ -267,7 +267,7 @@ def _card_blocks(model: Model, snap: dict, lamps: set[str]) -> list[dict]:
             b["target_label"] = _device_label(snap, tg["device"], tg["dp"]) if tg["device"] and tg["dp"] else None
             b["rows"] = 4
         elif c["type"] == "power":
-            b["rows"] = max(len(c["items"]), 1)
+            b["rows"] = len(c["items"]) + (1 if len(c["items"]) < _cards.MAX_POWER else 0)  # een ingang per rij en een vrije om een nieuwe rij te beginnen
             b["labels"] = [(_point_label(snap, it["tuya"], it["dp"])[1] if it.get("tuya") else it.get("name") or it.get("entity") or "leeg") for it in c["items"]]
         elif c["type"] == "airco":  # de thermostaatpagina van een airco-blok (w:<id>); `device` is die airco, of None
             a = next((x for x in snap.get("airco", []) if x["id"] == c["airco"]), None)

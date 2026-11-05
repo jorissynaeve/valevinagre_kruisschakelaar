@@ -368,6 +368,9 @@ def _panel(pid, v) -> dict:
     host = v.get("host") or ""
     if not isinstance(host, str) or (host.strip() and not PANEL_HOST_RE.fullmatch(host.strip())):
         raise ModelError("paneel: geen geldig IP-adres of hostnaam")
+    hub = v.get("hub") or ""  # het adres van Home Assistant zoals de panel het ziet; leeg = het adres waarmee je de add-on opende
+    if not isinstance(hub, str) or (hub.strip() and not PANEL_HOST_RE.fullmatch(hub.strip())):
+        raise ModelError("paneel: geen geldig adres voor Home Assistant")
     raw = v.get("cards") or []
     if not isinstance(raw, list) or len(raw) > MAX_PANEL_CARDS or any(not isinstance(c, str) or not CARD_ID_RE.fullmatch(c) for c in raw):
         raise ModelError(f"paneel: maximaal {MAX_PANEL_CARDS} kaarten")
@@ -379,7 +382,7 @@ def _panel(pid, v) -> dict:
     notes = v.get("notes") or []
     if not isinstance(notes, list) or len(notes) > MAX_NOTES or any(not isinstance(n, str) for n in notes):
         raise ModelError("paneel: ongeldige meldingen")
-    return {"name": name, "host": host.strip(), "cards": list(raw), "locale": locale, "timeout": _int(v.get("timeout", 20), 0, 3600, "paneel.timeout"),
+    return {"name": name, "host": host.strip(), "hub": hub.strip(), "cards": list(raw), "locale": locale, "timeout": _int(v.get("timeout", 20), 0, 3600, "paneel.timeout"),
             "bright": _int(v.get("bright", 100), 0, 100, "paneel.bright"), "dim": _int(v.get("dim", 20), 0, 100, "paneel.dim"), "notes": [n[:MAX_NOTE] for n in notes]}
 
 
@@ -1257,7 +1260,7 @@ class Model:
         old = self.panels.get(pid)
         if old is None:
             raise ModelError("onbekend paneel")
-        unknown = set(fields) - {"name", "host", "cards", "locale", "timeout", "bright", "dim", "notes"}
+        unknown = set(fields) - {"name", "host", "hub", "cards", "locale", "timeout", "bright", "dim", "notes"}
         if unknown:
             raise ModelError(f"paneel: onbekend veld {sorted(unknown)[0]}")
         if isinstance(fields.get("cards"), list):  # de screensaver vooraan: hij is geen pagina, dus de volgorde van de pagina's blijft
