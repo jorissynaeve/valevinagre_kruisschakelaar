@@ -121,7 +121,7 @@ FLOOR_ID_RE = re.compile(r"^[a-z0-9]{1,12}$")
 GROUP_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
 DISABLE_RE = re.compile(r"^(m:)?[a-z0-9_]{1,80}$")
 # een bron: een timer, een module, of rechtstreeks een datapunt van een Tuya-toestel (v:<datapunt>@<toestel>, hier of r:..:y:<id>)
-SOURCE_RE = re.compile(r"^([tm]:[a-z0-9_]{1,80}|v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})|w:[a-z0-9_]{1,40}:(on|room|set))$")  # w: een uitgang van een airco (greehub.py)
+SOURCE_RE = re.compile(r"^([tm]:[a-z0-9_]{1,80}|v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})|w:[a-z0-9_]{1,40}:(on|room|set)|o:[a-z0-9_]{1,40}:[a-z0-9_]{1,12})$")  # w: een uitgang van een airco (greehub.py), o: van een omvormer (solarhub.py)
 VALUE_RE = re.compile(r"^v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})$")  # alleen een datapunt
 
 
@@ -692,6 +692,8 @@ def source_type(ref: str, modules: dict[str, dict], timers: dict[str, dict]) -> 
 
 def _source_type(ref: str, modules: dict[str, dict], timers: dict[str, dict]) -> str | None:
     """Wat een bron geeft: een tijd, een 0/1, of None als ze niet bestaat."""
+    if ref.startswith("o:"):
+        return NUMBER  # een omvormer staat niet in het model: is ze weg of offline, dan is de waarde onbekend, geen fout
     if ref.startswith("w:"):
         return BOOL if ref.endswith(":on") else NUMBER  # een airco staat niet in het model: is ze weg, dan is de waarde onbekend, geen fout
     if ref.startswith("v:"):
@@ -766,7 +768,7 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]], sprinkle
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|w:[a-z0-9_]{1,40}|c:[a-z0-9_]{1,40}|a:[a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:(?:g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80}|e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190})|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|w:[a-z0-9_]{1,40}|o:[a-z0-9_]{1,40}|c:[a-z0-9_]{1,40}|a:[a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:(?:g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80}|e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190})|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
 
 
 def _switch_gangs(raw) -> list[dict]:

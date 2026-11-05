@@ -255,6 +255,26 @@ andere merken die de app *Gree+* of *EWPE Smart* gebruiken. Het is een eigen blo
   ingang van een andere airco. Offline is de waarde onbekend.
 * De sleutels staan in `/data/gree.json`: in de HA-back-up, niet in *Exporteer configuratie*. Op armv7 is deze functie niet beschikbaar.
 
+## Omvormer (Deye, Sunsynk, ...: zonder Solarman-integratie of cloud)
+
+*+ Module → Omvormer* zet een omvormer-blok op de pagina, voor een omvormer met een Solarman-wifistick (LSW-3): Deye, Sunsynk en andere
+merken die de Solarman-app gebruiken. Het is een eigen blok, los van Tuya. De add-on leest de registers van de stick zelf
+(TCP 8899, Solarman V5), elke 15 s.
+
+* **Instellen**: vul het IP-adres van de stick in en zijn **serienummer** (niet dat van de omvormer: het staat op de sticker en op de
+  statuspagina van de stick). *Serienummer opzoeken* haalt het zelf van die pagina (gebruikersnaam en wachtwoord staan standaard op
+  `admin`; ze worden niet bewaard). De omvormer moet in hetzelfde netwerk of via een koppeling bereikbaar zijn voor de add-on.
+* **Uitgangen** (rechts): *zon* (W), *verbruik* (W), *net* (W, positief = afname, negatief = teruglevering), *accu* (W, positief = laden),
+  *accu %* en *vandaag* (kWh opbrengst). Sleep ze naar Groter dan of Kleiner dan, En, Of, een routine of een airco-ingang: bv. een
+  boiler of laadpaal starten bij veel zon, of een airco aan bij een vol accu. Offline is de waarde onbekend, nooit 0.
+* **In HA**: per omvormer een apparaat met sensoren (zon en per string, spanningen, verbruik, net, accu, temperatuur, en de energie van
+  vandaag), met eenheid en klasse, via MQTT. De Mosquitto-broker en de MQTT-integratie zijn dus nodig.
+* **Alleen lezen**: er zijn bewust geen ingangen. Een schrijfbevel naar het verkeerde register verandert de instellingen van de omvormer
+  en de registers verschillen per model.
+* **Getest met een Deye SUN-xK-SG04LP3** (driefasen hybride, 2 MPPT, lagespanningsaccu). Een ander model kan andere registers hebben:
+  dan zie je ontbrekende of rare waarden. Meld welk model het is.
+* Het serienummer van de stick staat in `/data/solar.json`.
+
 ## Externe apparaten (Tuya via local-tuya)
 
 Schakelaars die niet te flashen zijn, doen toch mee in je kruisschakelingen:

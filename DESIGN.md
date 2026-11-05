@@ -584,3 +584,17 @@ Code: `gree.py` (protocol en verbinding), `greehub.py` (toestellen, ingangen, ui
 - Getest met unit-tests (versleuteling beide versies, een nagebootste airco over echte UDP: MAC opzoeken, binden v1 en v2, status, bevel, stil toestel, verkeerde sleutel; de hub, MQTT, ingangen stap voor stap, uitgangen in de logica, de web-API) en met de add-on en een nagebootste airco in headless Chrome (blok, zijbalk, bevel, draden, een ingang die verandert).
 - Niet tegen de echte Toyotomi: welke versleuteling, of `TemSen` klopt, en welke schakelaars ze echt kent (wat ze niet meldt, staat niet in de zijbalk maar wel als entiteit in HA).
 - Niet ondersteund: halve graden (`TemRec`), Fahrenheit, VRF-binnenunits achter één module (`subCnt`), en een airco van een andere installatie (de koppelingen delen nog geen airco's).
+
+## 32. Omvormers met een Solarman-stick (0.22)
+
+Code: `solarman.py` (V5-protocol en client), `solarhub.py` (toestellen, uitgangen, sensoren), blok `o:<id>` (`schema.py`, `static/schema.js`), `tests/test_solar.py`.
+
+- **Waarom**: de omvormers in het subnet van de tweede installatie werden vroeger via de Solarman-integratie gelezen. Zelf doen maakt er een blok met uitgangen van, zoals de airco (§31).
+- **Eigen blok, alleen uitgangen**: `o:<id>:pv|load|grid|batt|soc|today` (`model.SOURCE_RE`, `logic.evaluate`, `engine.ref_value`, allemaal getallen). Offline is onbekend. Er zijn **geen ingangen**: een schrijfbevel naar een omvormer is niet terug te draaien als het register niet klopt.
+- **Protocol**: Modbus-RTU in een V5-frame over TCP 8899. De stick antwoordt met de lage byte van ons volgnummer (de hoge telt hij zelf) en stuurt ook hartslagen; we letten op controlecode 0x1510 en die byte, en op het serienummer van de stick. Elke ronde een nieuwe verbinding (de stick heeft er maar een paar). Drie ronden zonder antwoord is offline.
+- **Registers**: Deye SG04LP3 (lijst van de Solarman-integratie), nagelopen op een echte omvormer: zon 0x02A0/1, accu 0x024B-0x024F, net 0x0271, verbruik 0x028D, energie 0x0202-0x0211. De omvormer meldt accu laden negatief; `batt` draait dat om. Balans gemeten: zon 5137 W = verbruik 1206 + laden 3778 + net 9 + verlies.
+- **Serienummer van de stick** staat op `status.html` (`cover_mid`, basic auth, standaard admin/admin); `lookup` haalt het op en bewaart de login niet.
+
+### Niet getest / open
+- Alleen een SG04LP3 (met accu). Een stringomvormer (Deye string, Solis, ...) heeft andere registers en zou een eigen tabel nodig hebben.
+- Niet in HA zelf gedraaid (MQTT-discovery getest met unit-tests). Niet ondersteund: schrijven, derde MPPT, generatorpoort, alarmen.

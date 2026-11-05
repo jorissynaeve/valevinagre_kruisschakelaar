@@ -18,6 +18,7 @@ from .greehub import GreeHub
 from .habridge import HaBridge
 from .hasphub import HaspHub
 from .linkhub import LinkHub
+from .solarhub import SolarHub
 from .model import Model
 from .mqttbridge import MqttBridge
 from .panelhub import PanelHub
@@ -75,8 +76,12 @@ async def run() -> None:
 
     airco.changed = airco_changed
     airco.start()
+    solar = SolarHub(s.data_dir, engine)  # omvormers met een Solarman-stick, een eigen blok (o:<id>)
+    mqtt.extras.append(solar)
+    solar.changed = mqtt.resync
+    solar.start()
     await links.start()
-    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco)
+    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar)
     runner = web.AppRunner(make_app(ctx), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", s.web_port).start()
@@ -104,6 +109,7 @@ async def run() -> None:
     screens.close()
     tuya.close()
     airco.close()
+    solar.close()
     await links.close()
     engine.close()  # zet het leren uit en bewaart de staat
     await asyncio.sleep(0.2)  # laat de Learn(uit)-frames nog weggaan

@@ -22,16 +22,17 @@ STATIC = Path(__file__).parent / "static"
 CTX = web.AppKey("ctx", object)
 INGRESS_PROXY = {"172.30.32.2", "127.0.0.1", "::1"}
 # Events die de pagina moet kennen; de rest (bv. losse commando-statussen) is ruis.
-PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "airco", "link", "action"}
+PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "airco", "solar", "link", "action"}
 
 
 class Ctx:
     """Alles wat de handlers nodig hebben."""
 
-    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None) -> None:
+    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None) -> None:
         self.settings, self.engine, self.model = settings, engine, engine.model
         self.transport, self.mqtt, self.ha, self.panels, self.tuya, self.links = transport, mqtt, ha, panels, tuya, links
         self.airco = airco
+        self.solar = solar  # omvormers (solarhub.py)
         self.clients: set[web.WebSocketResponse] = set()
         engine.subscribe(self._on_event)
 
@@ -574,6 +575,39 @@ async def airco_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
+def _solar(request: web.Request):
+    hub = request.app[CTX].solar
+    if hub is None:
+        raise ModelError("omvormers zijn niet beschikbaar")
+    return hub
+
+
+async def solar_post(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    did = _solar(request).add(b)
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"o:{did}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "id": did, "key": f"o:{did}"})
+
+
+async def solar_put(request: web.Request) -> web.Response:
+    _solar(request).update(request.match_info["did"], await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def solar_lookup(request: web.Request) -> web.Response:
+    """Het serienummer van de stick opzoeken op zijn eigen statuspagina (die vraagt een wachtwoord; het wordt niet bewaard)."""
+    b = await _body(request)
+    serial = await _solar(request).lookup(str(b.get("host") or "").strip(), str(b.get("user") or "admin"), str(b.get("password") or "admin"))
+    return web.json_response({"ok": True, "serial": serial})
+
+
+async def solar_delete(request: web.Request) -> web.Response:
+    ok = _solar(request).remove(request.match_info["did"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
 async def screen_post(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     b = await _body(request)
@@ -817,6 +851,10 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/tuya/{did}", tuya_put)
     r.add_delete("/api/tuya/{did}", tuya_delete)
     r.add_post("/api/tuya/{did}/set", tuya_set)
+    r.add_post("/api/solar", solar_post)
+    r.add_post("/api/solar/lookup", solar_lookup)
+    r.add_put("/api/solar/{did}", solar_put)
+    r.add_delete("/api/solar/{did}", solar_delete)
     r.add_post("/api/airco", airco_post)
     r.add_post("/api/airco/scan", airco_scan)
     r.add_put("/api/airco/{did}", airco_put)
