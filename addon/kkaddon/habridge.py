@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Callable
 
 import aiohttp
@@ -234,13 +235,10 @@ class HaBridge:
         except (HaError, asyncio.TimeoutError):
             return sorted(self._cache, key=lambda e: e["entity_id"])
 
-    async def devices(self) -> dict:
-        """Voor de import: HA-apparaten met hun schakelaars/lichten, uit het apparaten-, entiteiten- en gebiedenregister.
-
-        Zonder rechten voor de registers (of een HA die ze niet kent) komt `registry: False` terug en blijft de lijst leeg;
-        de UI valt dan terug op losse entiteiten kiezen."""
+    async def _registers(self):
+        """(toestanden, entiteiten, apparaten, gebieden) uit HA, of None zonder verbinding of zonder rechten voor de registers."""
         if not self.connected:
-            return {"registry": False, "devices": []}
+            return None
         try:
             states = {e["entity_id"]: e for e in await self._sync()}
             ents = (await self._request({"type": "config/entity_registry/list"})).get("result") or []
@@ -251,7 +249,49 @@ class HaBridge:
                 areas = {}
         except (HaError, asyncio.TimeoutError, KeyError, TypeError) as e:
             log.debug("registers niet beschikbaar: %s", e)
+            return None
+        return states, ents, devs, areas
+
+    async def inventory(self) -> dict:
+        """Alle HA-apparaten met hun integratie, versie en adres, voor het overzicht van alle apparaten.
+
+        `ip` komt uit `configuration_url` (ESPHome zet daar het adres van zijn web_server) en is anders leeg;
+        `version` is de `sw_version` die de integratie meldt (bij ESPHome de ESPHome-versie waarmee het toestel is gebouwd)."""
+        regs = await self._registers()
+        if regs is None:
             return {"registry": False, "devices": []}
+        _, ents, devs, areas = regs
+        by_dev: dict[str, list[dict]] = {}
+        for r in ents:
+            if r.get("device_id") in devs:
+                by_dev.setdefault(r["device_id"], []).append(r)
+        out = []
+        for did, d in devs.items():
+            if d.get("disabled_by"):
+                continue
+            rs = by_dev.get(did, [])
+            plats = sorted({r.get("platform", "") for r in rs if r.get("platform")})
+            if not plats:
+                plats = sorted({i[0] for i in d.get("identifiers") or [] if isinstance(i, (list, tuple)) and i})
+            m = re.match(r"https?://\[?([0-9A-Za-z.:-]+?)\]?(?::\d+)?(?:/|$)", d.get("configuration_url") or "")
+            out.append({
+                "id": did, "name": d.get("name_by_user") or d.get("name") or did,
+                "area": areas.get(d.get("area_id") or next((r.get("area_id") for r in rs if r.get("area_id")), None), ""),
+                "platforms": plats, "manufacturer": d.get("manufacturer") or "", "model": d.get("model") or "",
+                "version": d.get("sw_version") or "", "ip": m.group(1) if m and re.match(r"^\d+\.\d+\.\d+\.\d+$", m.group(1)) else "",
+                "entities": sorted(r["entity_id"] for r in rs),
+            })
+        return {"registry": True, "devices": sorted(out, key=lambda x: x["name"].lower())}
+
+    async def devices(self) -> dict:
+        """Voor de import: HA-apparaten met hun schakelaars/lichten, uit het apparaten-, entiteiten- en gebiedenregister.
+
+        Zonder rechten voor de registers (of een HA die ze niet kent) komt `registry: False` terug en blijft de lijst leeg;
+        de UI valt dan terug op losse entiteiten kiezen."""
+        regs = await self._registers()
+        if regs is None:
+            return {"registry": False, "devices": []}
+        states, ents, devs, areas = regs
         out: dict[str, dict] = {}
         for r in ents:
             st = states.get(r.get("entity_id"))

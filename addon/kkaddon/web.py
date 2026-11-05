@@ -10,7 +10,7 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from . import __version__, appdaemon_import, schema
+from . import __version__, appdaemon_import, inventory, schema
 from .engine import Engine
 from .link import LinkError
 from .model import ENTITY_RE, Model, ModelError
@@ -668,6 +668,12 @@ async def ha_devices(request: web.Request) -> web.Response:
     return web.json_response({"connected": bool(ctx.ha and ctx.ha.connected), **r})
 
 
+async def devices_overview(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    ha = await ctx.ha.inventory() if ctx.ha else None
+    return web.json_response({"ha": bool(ha and ha["registry"]), "devices": inventory.build(ctx.engine, ha)})
+
+
 def _virtual_args(b: dict) -> tuple[str, str, list]:
     return b.get("name") or "", b.get("room") or "", b.get("gangs")
 
@@ -767,6 +773,7 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/learn/save", learn_save)
     r.add_get("/api/ha/entities", ha_entities)
     r.add_get("/api/ha/devices", ha_devices)
+    r.add_get("/api/devices", devices_overview)
     r.add_put("/api/plan", plan_put)
     r.add_post("/api/schema/convert", schema_convert)
     r.add_post("/api/schema/place", schema_place)

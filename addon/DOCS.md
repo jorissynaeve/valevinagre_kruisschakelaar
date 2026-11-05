@@ -280,6 +280,15 @@ allebei. Zo verhuis je kring per kring. *Alle kringen uitzetten* onder *Instelli
 In de zijbalk van een lamp wissel je met ⇄ één relais, en daar staat ook of de relais niet gelijk staan. *Lamp-relais kiezen op naam…*
 onder *Instellingen* maakt voor alle kringen tegelijk een stuk naam (bv. `dingtian`) tot uitgang.
 
+## Overzicht van alle apparaten
+
+Bovenaan het tabblad *Nodes* staat *Alle apparaten*: naam, type, protocol, IP-adres en versie van alles wat de add-on
+kent (ESP-NOW-nodes, externe apparaten, Tuya lokaal, Gree-airco's, NSPanels, openHASP-schermen) en van alle
+ESPHome-apparaten in Home Assistant, ook de nog niet geïmporteerde ("alleen in Home Assistant"). Klik op een kop om
+te sorteren. De versie van een ESPHome-apparaat is de ESPHome-versie waarmee het is gebouwd, dus zo zie je welke
+toestellen achterlopen. Het adres staat er alleen als het toestel een `web_server` heeft (HA kent het adres anders niet).
+ESP-NOW-nodes hebben geen IP-adres.
+
 ## Bestaande ESPHome-schakelaars tijdelijk meenemen
 
 Je hoeft de ESPHome-toestellen niet eerst te flashen. Tabblad *Nodes* → *Importeren uit Home Assistant*: vink de

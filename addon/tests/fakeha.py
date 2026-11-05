@@ -141,7 +141,8 @@ class FakeHa:
         if kind == "config/area_registry/list":
             return [{"area_id": a, "name": a.title()} for a in sorted({d["area"] for d in devs.values() if d.get("area")})]
         if kind == "config/device_registry/list":
-            return [{"id": i, "name": d["name"], "name_by_user": d.get("name_by_user"), "area_id": d.get("area")} for i, d in devs.items()]
+            return [{"id": i, "name": d["name"], "name_by_user": d.get("name_by_user"), "area_id": d.get("area"),
+                     **{k: d[k] for k in ("sw_version", "configuration_url", "manufacturer", "model") if k in d}} for i, d in devs.items()]
         out = []
         for i, d in devs.items():
             for ent in d["entities"]:

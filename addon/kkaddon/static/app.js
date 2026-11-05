@@ -10,6 +10,8 @@ let S = null; // laatste momentopname van de add-on
 let tab = 'schema';
 let L = null; // open licht-dialoog: {node, relay, picks, learning, saved}
 let tokenRefresh = 0;
+let INV = null; // overzicht van alle apparaten: {devices, ha} of {error}
+let invSort = 'name';
 
 async function api(method, path, body) {
   const r = await fetch('api/' + path, {
@@ -112,9 +114,33 @@ const CFG = {
   failed: ['bad', 'mislukt'], unmanaged: ['', 'niet beheerd'], unknown: ['', 'onbekend'], extern: ['', 'via HA'],
 };
 
+
+// ---------------------------------------------------------------- alle apparaten (naam, soort, protocol, adres, versie)
+
+async function loadInventory() {
+  try { INV = await api('GET', 'devices'); } catch (e) { INV = { error: e.message, devices: [] }; }
+  if (tab === 'nodes') render();
+}
+
+function viewInventory() {
+  if (!INV) return '<h2>Alle apparaten</h2><p class="sub">Laden…</p>';
+  if (INV.error) return `<h2>Alle apparaten</h2><p class="empty">${esc(INV.error)}</p>`;
+  const cmp = (a, b) => String(a[invSort] || '').localeCompare(String(b[invSort] || ''), 'nl', { numeric: true }) || a.name.localeCompare(b.name, 'nl', { numeric: true });
+  const rows = [...INV.devices].sort(cmp).map((d) => `<tr>
+    <td style="white-space:nowrap"><span class="dot ${d.online == null ? '' : d.online ? 'on' : 'off'}"></span><b>${esc(d.name)}</b>${d.room ? `<div class="sub">${esc(d.room)}</div>` : ''}</td>
+    <td>${esc(d.kind)}</td><td>${esc(d.protocol)}</td>
+    <td>${d.ip ? `<a href="http://${esc(d.ip)}" target="_blank" rel="noopener">${esc(d.ip)}</a>` : '–'}</td>
+    <td>${esc(d.version || '–')}</td><td class="sub">${esc(d.note)}</td></tr>`).join('');
+  const th = (k, t) => `<th><a href="#" data-act="invsort" data-k="${k}" style="color:inherit">${t}${invSort === k ? ' ▲' : ''}</a></th>`;
+  return `<div class="row" style="justify-content:space-between"><h2>Alle apparaten (${INV.devices.length})</h2><button class="btn small" data-act="invreload">Vernieuwen</button></div>
+    <div class="scroll"><table><thead><tr>${th('name', 'Naam')}${th('kind', 'Type')}${th('protocol', 'Protocol')}${th('ip', 'IP-adres')}${th('version', 'Versie')}<th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="sub">${INV.ha ? 'ESPHome-apparaten komen uit het apparatenregister van Home Assistant: adres en versie zijn wat HA daarvan weet (het adres alleen als het toestel een <code>web_server</code> heeft).' : 'Zonder koppeling met Home Assistant ontbreken ESPHome-apparaten, en het adres en de versie van externe apparaten.'}</p>
+    <h2>Nodes en externe apparaten</h2>`;
+}
+
 function viewNodes() {
   const add = '<div class="row" style="margin-top:12px"><button class="btn" data-act="vnew">Extern apparaat toevoegen (bv. Tuya)</button><button class="btn" data-act="vimport">Importeren uit Home Assistant (bv. ESPHome)</button></div>';
-  if (!S.nodes.length) return `${add}<p class="empty">Nog geen nodes gehoord. Zodra een node een heartbeat stuurt (elke 40–80 s) verschijnt hij hier.</p>`;
+  if (!S.nodes.length) return `${viewInventory()}${add}<p class="empty">Nog geen nodes gehoord. Zodra een node een heartbeat stuurt (elke 40–80 s) verschijnt hij hier.</p>`;
   const rows = S.nodes.map((n) => {
     const [cls, txt] = CFG[n.cfg_status] || ['', n.cfg_status];
     if (n.virtual) {
@@ -141,7 +167,7 @@ function viewNodes() {
         ${n.nind ? `<button class="btn small" data-act="follow" data-n="${n.id}">Indicatoren</button>` : ''}
       </div></td></tr>`;
   }).join('');
-  return `${add}<div class="scroll" style="margin-top:12px"><table><thead><tr><th>ID</th><th>Naam</th><th>Fw</th><th>Hardware</th><th>Config</th><th>Laatst gezien</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+  return `${viewInventory()}${add}<div class="scroll" style="margin-top:12px"><table><thead><tr><th>ID</th><th>Naam</th><th>Fw</th><th>Hardware</th><th>Config</th><th>Laatst gezien</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
     <p class="sub">"Niet beheerd": de node heeft een andere configuratie dan het model, maar jij hebt hem nog niet aan een licht gekoppeld, dus wordt er niets overschreven.</p>`;
 }
 
@@ -398,6 +424,8 @@ const ACTIONS = {
   },
   vnew: () => openVirtual(null),
   vimport: () => openImport(),
+  invreload: () => loadInventory(),
+  invsort: (d) => { invSort = d.k; render(); },
   vedit: (d) => openVirtual(+d.n),
   vaddgang: () => {
     V.gangs = readGangs();
@@ -426,7 +454,7 @@ document.addEventListener('click', (ev) => {
     act(ACTIONS[el.dataset.act])(el.dataset);
   }
   const t = ev.target.closest('#tabs button');
-  if (t) { tab = t.dataset.tab; render(); }
+  if (t) { tab = t.dataset.tab; render(); if (tab === 'nodes') loadInventory(); }
 });
 
 document.addEventListener('input', (ev) => {

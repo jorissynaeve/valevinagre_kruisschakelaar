@@ -277,6 +277,56 @@ def test_ha_devices_marks_what_is_already_imported(tmp_path):
     run(go())
 
 
+def test_devices_overview_merges_all_sources(tmp_path):
+    class StubHa:
+        connected = True
+
+        async def inventory(self):
+            return {"registry": True, "devices": [
+                {"id": "a", "name": "Touch 01", "area": "Gang", "platforms": ["esphome"], "manufacturer": "", "model": "", "version": "2021.8.0", "ip": "192.168.1.50", "entities": ["switch.t_0"]},
+                {"id": "b", "name": "Temp keuken", "area": "", "platforms": ["esphome"], "manufacturer": "", "model": "th10", "version": "2024.1.0", "ip": "", "entities": ["sensor.k"]},
+                {"id": "c", "name": "Zon", "area": "", "platforms": ["sun"], "manufacturer": "", "model": "", "version": "", "ip": "", "entities": ["sensor.zon"]},
+            ]}
+
+    async def go():
+        env = Env(tmp_path)
+        env.ctx.ha = StubHa()
+        env.rig.model.set_virtual(None, "Touch 01", "Gang", [{"entity": "switch.t_0", "name": "a", "lamp": True}])
+        env.rig.engine.tuya_view = lambda: [{"id": "x", "name": "Gang Tuya", "host": "192.168.1.60", "version": "3.4", "product": "4-gang", "online": True, "error": ""}]
+        env.rig.engine.airco_view = lambda: [{"id": "y", "name": "Airco living", "host": "192.168.1.70", "firmware": "V1.2", "online": False, "error": "geen antwoord"}]
+        env.rig.engine.panel_view = lambda: [{"id": "p", "name": "NSPanel gang", "host": "192.168.1.80", "online": True, "error": ""}]
+        c = await env.client()
+        try:
+            r = await (await c.get("/api/devices")).json()
+            by = {d["name"]: d for d in r["devices"]}
+            assert r["ha"] is True
+            assert by["Node 1"]["protocol"] == "ESP-NOW" and by["Node 1"]["kind"] == "1 relais, 3 knoppen"
+            assert [by["Touch 01"][k] for k in ("protocol", "ip", "version", "room")] == ["ESPHome", "192.168.1.50", "2021.8.0", "Gang"], "extern apparaat krijgt adres en versie uit HA"
+            assert [d["name"] for d in r["devices"]].count("Touch 01") == 1, "het ESPHome-apparaat achter een virtuele node komt niet dubbel"
+            assert by["Temp keuken"]["note"] == "alleen in Home Assistant" and by["Temp keuken"]["version"] == "2024.1.0"
+            assert "Zon" not in by, "alleen ESPHome uit HA, geen zon of weer"
+            assert (by["Gang Tuya"]["protocol"], by["Gang Tuya"]["ip"], by["Gang Tuya"]["version"]) == ("Tuya lokaal (protocol 3.4)", "192.168.1.60", "3.4")
+            assert (by["Airco living"]["protocol"], by["Airco living"]["version"], by["Airco living"]["online"]) == ("Gree (UDP)", "V1.2", False)
+            assert (by["NSPanel gang"]["kind"], by["NSPanel gang"]["ip"]) == ("NSPanel", "192.168.1.80")
+        finally:
+            await c.close()
+
+    run(go())
+
+
+def test_devices_overview_without_ha_still_lists_the_rest(tmp_path):
+    async def go():
+        env = Env(tmp_path)
+        c = await env.client()
+        try:
+            r = await (await c.get("/api/devices")).json()
+            assert r["ha"] is False and [d["name"] for d in r["devices"]] == ["Node 1", "Node 2"]
+        finally:
+            await c.close()
+
+    run(go())
+
+
 def test_ha_devices_without_link_is_empty_not_an_error(tmp_path):
     async def go():
         env = Env(tmp_path)

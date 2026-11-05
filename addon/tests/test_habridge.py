@@ -165,6 +165,29 @@ ESP_REGISTRY = {"devices": {
 }}
 
 
+INV_REGISTRY = {"devices": {
+    "d_touch": {"name": "Touch 01", "area": "gang", "platform": "esphome", "sw_version": "2021.8.0 (compiled Aug 2021)", "configuration_url": "http://192.168.1.50:80",
+                "entities": ["switch.t_0", ("switch.t_wifi_led", {"entity_category": "config"})]},
+    "d_zon": {"name": "Zon", "platform": "sun", "entities": ["sensor.temp"]},
+}}
+
+
+def test_inventory_gives_platform_version_and_address_for_all_devices():
+    async def go():
+        ha = FakeHa(entities={"switch.t_0": "on", "switch.t_wifi_led": "on", "sensor.temp": "20"}, registry=INV_REGISTRY)
+        async with Env(ha, with_device=False) as e:
+            await e.until(lambda: e.bridge.connected)
+            r = await e.bridge.inventory()
+            by = {d["name"]: d for d in r["devices"]}
+            t = by["Touch 01"]
+            assert r["registry"] is True and list(by) == ["Touch 01", "Zon"]
+            assert t["platforms"] == ["esphome"] and t["version"].startswith("2021.8.0") and t["ip"] == "192.168.1.50" and t["area"] == "Gang"
+            assert t["entities"] == ["switch.t_0", "switch.t_wifi_led"], "ook config-entiteiten: het gaat om het apparaat, niet om de bediening"
+            assert by["Zon"]["ip"] == "" and by["Zon"]["version"] == ""
+
+    run(go())
+
+
 def test_devices_group_switches_per_ha_device_without_config_entities():
     async def go():
         ha = FakeHa(entities={"switch.t_0": "on", "switch.t_1": "off", "switch.t_2": "off", "switch.t_wifi_led": "on", "switch.t_off": "off", "switch.zonder_apparaat": "off", "sensor.temp": "20"}, registry=ESP_REGISTRY)
