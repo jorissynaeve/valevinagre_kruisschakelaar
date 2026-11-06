@@ -133,3 +133,13 @@ def test_apply_without_ha_says_so(tmp_path):
             await hub.apply({"rows": HUIS})
         assert len(hub.cfg["rows"]) == 5  # wel opgeslagen
     asyncio.run(go())
+
+
+def test_a_never_configured_energy_dashboard_is_filled_from_scratch(tmp_path):
+    async def go():
+        ha = meters()
+        ha.energy = None  # HA: "No prefs"
+        async with Env(ha, tmp_path) as env:
+            await env.hub.apply({"rows": HUIS})
+            assert len(ha.energy["device_consumption"]) == 5 and len(ha.energy["energy_sources"][0]["flow_from"]) == 5
+    asyncio.run(go())

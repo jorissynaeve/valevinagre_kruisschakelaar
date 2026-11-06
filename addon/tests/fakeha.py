@@ -109,7 +109,10 @@ class FakeHa:
                 self.saves += 1
                 await ws.send_json({"id": i, "type": "result", "success": True, "result": None})
             elif t == "energy/get_prefs":
-                await ws.send_json({"id": i, "type": "result", "success": True, "result": self.energy})
+                if self.energy is None:  # echte HA: nog nooit ingesteld is een fout
+                    await ws.send_json({"id": i, "type": "result", "success": False, "error": {"code": "not_found", "message": "No prefs"}})
+                else:
+                    await ws.send_json({"id": i, "type": "result", "success": True, "result": self.energy})
             elif t == "energy/save_prefs":
                 self.energy = {k: m[k] for k in ("energy_sources", "device_consumption") if k in m}
                 self.energy_saves += 1

@@ -369,7 +369,12 @@ class HaBridge:
 
     async def energy_prefs(self) -> dict:
         """De instellingen van het energiedashboard van HA (/energy)."""
-        return (await self._request({"type": "energy/get_prefs"})).get("result") or {}
+        try:
+            return (await self._request({"type": "energy/get_prefs"})).get("result") or {}
+        except HaError as e:
+            if "no prefs" in str(e).lower():  # het energiedashboard is nog nooit ingesteld: HA antwoordt met een fout in plaats van een lege lijst
+                return {}
+            raise
 
     async def save_energy_prefs(self, prefs: dict) -> None:
         await self._request({"type": "energy/save_prefs", "energy_sources": prefs["energy_sources"], "device_consumption": prefs["device_consumption"]})
