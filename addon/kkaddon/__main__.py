@@ -19,6 +19,7 @@ from .habridge import HaBridge
 from .hasphub import HaspHub
 from .linkhub import LinkHub
 from .energyhub import EnergyHub
+from .remotesensors import RemoteSensors
 from .solarhub import SolarHub
 from .model import Model
 from .mqttbridge import MqttBridge
@@ -81,6 +82,9 @@ async def run() -> None:
     mqtt.extras.append(solar)
     solar.changed = mqtt.resync
     solar.start()
+    remote = RemoteSensors(s.data_dir, links)  # de kWh-tellers van gekoppelde Tuya-toestellen als sensoren in HA, voor het energiedashboard
+    mqtt.extras.append(remote)
+    links.changed = mqtt.resync
     energy = EnergyHub(s.data_dir, ha)  # het energiedashboard van HA invullen vanuit de meters
     await links.start()
     ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar, energy)

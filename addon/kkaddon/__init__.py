@@ -1,2 +1,2 @@
 """Home Assistant add-on voor het ESP-NOW kruisschakelaar-netwerk."""
-__version__ = "0.26.2"
+__version__ = "0.27.0"

@@ -296,8 +296,10 @@ elke meter apart hoeft aan te klikken:
   Zonder prijs toont HA alleen kWh.
 * *Opslaan en naar HA schrijven* zet het in het dashboard van HA. De add-on past alleen zijn eigen regels aan: wat je in HA zelf toevoegt blijft
   staan, en een meter die je hier weghaalt verdwijnt daar ook weer. Je kunt zo vaak schrijven als je wilt.
-* De meters moeten in **deze** HA staan. Een Tuya-stroommeter die je op deze installatie toevoegt is dat al; een toestel dat via een koppeling
-  (*Andere installaties*) binnenkomt is alleen een blok op het schema en geen sensor, dus dat kan hier nog niet.
+* De meters moeten in **deze** HA staan. Een Tuya-stroommeter die je op deze installatie toevoegt is dat al. Een meter bij een andere
+  installatie (*Andere installaties*, bv. het huisje in een ander subnet) komt vanaf 0.27.0 ook als sensor in HA, zodra je dat toestel daar
+  gekozen hebt: elk datapunt in kWh wordt `sensor.kk_remote_<installatie>_<toestel>_<dp>`. Valt de verbinding weg, dan blijven de sensoren
+  staan (niet beschikbaar) met hun geschiedenis.
 * Nieuwere HA-versies hebben per netaansluiting een eigen bron (met naam); oudere hebben één netbron met lijsten. De add-on schrijft het
   formaat dat HA aanvaardt.
 * Instellingen staan in `/data/energy.json`.

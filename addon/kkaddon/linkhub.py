@@ -99,6 +99,7 @@ class LinkHub:
         self.conns: dict[str, Conn] = {}
         self._fed: dict[str, str] = {}  # r:<installatie>:e:<entiteit> -> laatst aan de kringen gegeven stand
         self.listening, self.error = False, ""
+        self.changed = None  # de MQTT-brug: de stand van een andere installatie is veranderd (remotesensors.py)
         self._runner: web.AppRunner | None = None
         self._tasks: set[asyncio.Task] = set()
         self._seq = 0
@@ -648,6 +649,8 @@ class LinkHub:
 
     def _poke(self) -> None:
         self.engine._emit("link", log=False)
+        if self.changed:
+            self.changed()
 
     def tick(self) -> None:
         """Elke seconde: wat veranderd is naar elke verbonden installatie."""
