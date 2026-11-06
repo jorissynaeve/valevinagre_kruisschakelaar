@@ -283,6 +283,23 @@ merken die de Solarman-app gebruiken. Het is een eigen blok, los van Tuya. De ad
   dan zie je ontbrekende of rare waarden. Meld welk model het is.
 * Het serienummer van de stick staat in `/data/solar.json`.
 
+## Energie (alle huisjes op één pagina, met prijzen)
+
+Home Assistant heeft al een energiedashboard (**Energie** in de zijbalk van HA). Het tabblad *Energie* vult het in, zodat je niet in HA
+elke meter apart hoeft aan te klikken:
+
+* Elke rij is een meter met een **rol**: *Huis* (telt mee in het net én staat als apparaat in het overzicht, zo zie je alle huisjes naast
+  elkaar), *Net: afname*, *Net: teruglevering*, *Zon*, *Accu* (ontladen en laden zijn twee meters) of *Apparaat* (laadpaal, airco, ...).
+* De lijst *Meters die HA kent* toont alle sensoren met een kWh-teller: de stroommeters van de Tuya-toestellen (*Energie totaal*) en de
+  totalen van de omvormers. Eén klik maakt er een rij van.
+* **Prijs**: een bedrag in € per kWh (`0,31`) of een sensor met de prijs (dynamisch tarief), voor afname en teruglevering, of per rij.
+  Zonder prijs toont HA alleen kWh.
+* *Opslaan en naar HA schrijven* zet het in het dashboard van HA. De add-on past alleen zijn eigen regels aan: wat je in HA zelf toevoegt blijft
+  staan, en een meter die je hier weghaalt verdwijnt daar ook weer. Je kunt zo vaak schrijven als je wilt.
+* De meters moeten in **deze** HA staan. Een Tuya-stroommeter die je op deze installatie toevoegt is dat al; een toestel dat via een koppeling
+  (*Andere installaties*) binnenkomt is alleen een blok op het schema en geen sensor, dus dat kan hier nog niet.
+* Instellingen staan in `/data/energy.json`.
+
 ## Externe apparaten (Tuya via local-tuya)
 
 Schakelaars die niet te flashen zijn, doen toch mee in je kruisschakelingen:

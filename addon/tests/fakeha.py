@@ -35,6 +35,8 @@ class FakeHa:
         self.auth_ok = 0
         self.overview: dict | None = {"views": [{"title": "Zwembad", "path": "zwembad", "cards": []}]}  # de opgeslagen Overview; None: automatisch
         self.saves = 0
+        self.energy: dict = {"energy_sources": [], "device_consumption": []}  # het energiedashboard
+        self.energy_saves = 0
         self.dashboards: dict[str, str] = {}  # dashboard-id -> url_path (de extra dashboards in de zijbalk)
 
     # ---- toestand
@@ -106,6 +108,12 @@ class FakeHa:
                 self.overview = m["config"]
                 self.saves += 1
                 await ws.send_json({"id": i, "type": "result", "success": True, "result": None})
+            elif t == "energy/get_prefs":
+                await ws.send_json({"id": i, "type": "result", "success": True, "result": self.energy})
+            elif t == "energy/save_prefs":
+                self.energy = {k: m[k] for k in ("energy_sources", "device_consumption") if k in m}
+                self.energy_saves += 1
+                await ws.send_json({"id": i, "type": "result", "success": True, "result": self.energy})
             elif t == "render_template":
                 self.tpl_subs[m["template"]] = (ws, i)
                 await ws.send_json({"id": i, "type": "result", "success": True, "result": None})

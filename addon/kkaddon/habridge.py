@@ -367,6 +367,13 @@ class HaBridge:
         except (HaError, asyncio.TimeoutError) as e:
             log.warning("sjabloon niet te volgen: %s", e)
 
+    async def energy_prefs(self) -> dict:
+        """De instellingen van het energiedashboard van HA (/energy)."""
+        return (await self._request({"type": "energy/get_prefs"})).get("result") or {}
+
+    async def save_energy_prefs(self, prefs: dict) -> None:
+        await self._request({"type": "energy/save_prefs", "energy_sources": prefs["energy_sources"], "device_consumption": prefs["device_consumption"]})
+
     async def _send(self, msg: dict) -> None:
         try:
             if self._ws and not self._ws.closed:

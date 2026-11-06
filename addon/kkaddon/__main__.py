@@ -18,6 +18,7 @@ from .greehub import GreeHub
 from .habridge import HaBridge
 from .hasphub import HaspHub
 from .linkhub import LinkHub
+from .energyhub import EnergyHub
 from .solarhub import SolarHub
 from .model import Model
 from .mqttbridge import MqttBridge
@@ -80,8 +81,9 @@ async def run() -> None:
     mqtt.extras.append(solar)
     solar.changed = mqtt.resync
     solar.start()
+    energy = EnergyHub(s.data_dir, ha)  # het energiedashboard van HA invullen vanuit de meters
     await links.start()
-    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar)
+    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar, energy)
     runner = web.AppRunner(make_app(ctx), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", s.web_port).start()

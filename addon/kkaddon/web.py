@@ -28,11 +28,12 @@ PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "
 class Ctx:
     """Alles wat de handlers nodig hebben."""
 
-    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None) -> None:
+    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None, energy=None) -> None:
         self.settings, self.engine, self.model = settings, engine, engine.model
         self.transport, self.mqtt, self.ha, self.panels, self.tuya, self.links = transport, mqtt, ha, panels, tuya, links
         self.airco = airco
         self.solar = solar  # omvormers (solarhub.py)
+        self.energy = energy  # het energiedashboard van HA (energyhub.py)
         self.clients: set[web.WebSocketResponse] = set()
         engine.subscribe(self._on_event)
 
@@ -640,6 +641,28 @@ async def solar_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
+def _energy(request: web.Request):
+    hub = request.app[CTX].energy
+    if hub is None:
+        raise ModelError("energie is niet beschikbaar")
+    return hub
+
+
+async def energy_get(request: web.Request) -> web.Response:
+    return web.json_response(_energy(request).view())
+
+
+async def energy_put(request: web.Request) -> web.Response:
+    _energy(request).save(await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def energy_apply(request: web.Request) -> web.Response:
+    """Opslaan en in het energiedashboard van HA zetten."""
+    res = await _energy(request).apply(await _body(request))
+    return web.json_response({"ok": True, **res})
+
+
 async def screen_post(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     b = await _body(request)
@@ -884,6 +907,9 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/tuya/{did}", tuya_put)
     r.add_delete("/api/tuya/{did}", tuya_delete)
     r.add_post("/api/tuya/{did}/set", tuya_set)
+    r.add_get("/api/energy", energy_get)
+    r.add_put("/api/energy", energy_put)
+    r.add_post("/api/energy/apply", energy_apply)
     r.add_post("/api/solar", solar_post)
     r.add_post("/api/solar/lookup", solar_lookup)
     r.add_post("/api/solar/scan", solar_scan)
