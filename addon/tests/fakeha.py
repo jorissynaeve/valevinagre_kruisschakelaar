@@ -37,6 +37,7 @@ class FakeHa:
         self.saves = 0
         self.energy: dict = {"energy_sources": [], "device_consumption": []}  # het energiedashboard
         self.energy_saves = 0
+        self.energy_legacy = False  # True: een oudere HA met flow_from/flow_to; anders het nieuwe formaat (een netbron per aansluiting)
         self.dashboards: dict[str, str] = {}  # dashboard-id -> url_path (de extra dashboards in de zijbalk)
 
     # ---- toestand
@@ -113,6 +114,8 @@ class FakeHa:
                     await ws.send_json({"id": i, "type": "result", "success": False, "error": {"code": "not_found", "message": "No prefs"}})
                 else:
                     await ws.send_json({"id": i, "type": "result", "success": True, "result": self.energy})
+            elif t == "energy/save_prefs" and (bad := self._energy_error(m)):
+                await ws.send_json({"id": i, "type": "result", "success": False, "error": {"code": "invalid_format", "message": bad}})
             elif t == "energy/save_prefs":
                 self.energy = {k: m[k] for k in ("energy_sources", "device_consumption") if k in m}
                 self.energy_saves += 1
@@ -146,6 +149,16 @@ class FakeHa:
         self.subs.pop(ws, None)
         self.sockets.discard(ws)
         return ws
+
+    def _energy_error(self, m: dict) -> str:
+        for n, src in enumerate(m.get("energy_sources") or []):
+            if src.get("type") != "grid":
+                continue
+            if self.energy_legacy and "flow_from" not in src:
+                return f"required key not provided at energy_sources[{n}].flow_from"
+            if not self.energy_legacy and "flow_from" in src:
+                return f"not a valid option at energy_sources[{n}].flow_from"
+        return ""
 
     def _registry(self, kind: str) -> list[dict]:
         devs = self.registry["devices"]

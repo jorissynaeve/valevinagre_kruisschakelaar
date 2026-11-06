@@ -29,8 +29,8 @@ function enRow(r, i) {
   const batt = r.role === 'battery';
   return `<tr>
     <td><select data-en="role" data-i="${i}">${roles}</select></td>
-    <td><input type="text" list="enlist" spellcheck="false" autocomplete="off" data-en="entity" data-i="${i}" value="${esc(r.entity)}" placeholder="${batt ? 'accu ontladen (kWh)' : 'sensor (kWh)'}">
-      ${batt ? `<input type="text" list="enlist" spellcheck="false" autocomplete="off" data-en="entity_to" data-i="${i}" value="${esc(r.entity_to || '')}" placeholder="accu laden (kWh)" style="margin-top:4px">` : ''}
+    <td><input type="text" list="enlist" spellcheck="false" autocomplete="off" data-en="entity" data-i="${i}" value="${esc(r.entity)}" placeholder="${batt ? 'accu ontladen (kWh)' : r.role === 'grid_out' ? 'teruglevering (kWh)' : 'afname (kWh)'}">
+      ${batt || ['house', 'grid_in'].includes(r.role) ? `<input type="text" list="enlist" spellcheck="false" autocomplete="off" data-en="entity_to" data-i="${i}" value="${esc(r.entity_to || '')}" placeholder="${batt ? 'accu laden (kWh)' : 'teruglevering (kWh), mag leeg'}" style="margin-top:4px">` : ''}
       <div class="sub">${esc(enValue(r.entity))}</div></td>
     <td>${['house', 'device'].includes(r.role) ? `<input type="text" data-en="name" data-i="${i}" maxlength="60" value="${esc(r.name)}" placeholder="bv. Huisje 1">` : ''}</td>
     <td>${priced ? `<input type="text" list="enprice" spellcheck="false" data-en="price" data-i="${i}" value="${esc(r.price ?? '')}" placeholder="standaard" style="width:110px">` : ''}</td>
@@ -51,7 +51,7 @@ function viewEnergyBody() {
     <datalist id="enprice">${EN.prices.map((c) => `<option value="${esc(c.entity)}">${esc(c.name)}</option>`).join('')}</datalist>
     <div class="scroll"><table><thead><tr><th>Rol</th><th>Meter in HA</th><th>Naam</th><th>€ per kWh</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="row" style="margin-top:6px"><button class="btn small" type="button" data-enact="add" data-role="house">+ Rij</button>
-      <span class="sub"><b>Huis</b>: telt mee in het net en staat apart in het overzicht, zo zie je alle huisjes naast elkaar. <b>Net</b>: afname of teruglevering zonder apart overzicht. <b>Accu</b>: ontladen en laden zijn twee meters.</span></div>
+      <span class="sub"><b>Huis</b>: een eigen aansluiting met afname en eventueel teruglevering, apart in het overzicht, zo zie je alle huisjes naast elkaar. <b>Net</b>: afname of teruglevering zonder apart overzicht. <b>Accu</b>: ontladen en laden zijn twee meters.</span></div>
     <h3>Prijs</h3>
     <div class="row"><label style="margin:0">Afname</label><input type="text" list="enprice" data-en="price_in" value="${esc(EN.price_in ?? '')}" placeholder="bv. 0,31" style="width:140px">
       <label style="margin:0">Teruglevering</label><input type="text" list="enprice" data-en="price_out" value="${esc(EN.price_out ?? '')}" placeholder="bv. 0,05" style="width:140px"></div>

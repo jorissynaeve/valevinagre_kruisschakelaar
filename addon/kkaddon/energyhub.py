@@ -84,6 +84,8 @@ def clean(raw: dict) -> dict:
         seen.add((role, row["entity"]))
         if role == "battery":
             row["entity_to"] = _entity(r.get("entity_to"), f"rij {i} (accu laden)")
+        elif role in ("house", "grid_in") and str(r.get("entity_to") or "").strip():  # de teruglevering van dezelfde aansluiting
+            row["entity_to"] = _entity(r.get("entity_to"), f"rij {i} (teruglevering)")
         if role in ("house", "grid_in", "grid_out"):
             row["price"] = parse_price(r.get("price"), f"rij {i}")
         rows.append(row)
@@ -104,43 +106,67 @@ def _price_fields(price) -> dict:
     return {"entity_energy_price": price if isinstance(price, str) else None, "number_energy_price": price if isinstance(price, float) else None}
 
 
-def merge(prefs: dict, cfg: dict, managed: set[str]) -> dict:
-    """De voorkeuren die in HA moeten komen: wat er stond, zonder onze oude en nieuwe regels, plus de nieuwe regels."""
+def _is_legacy(prefs: dict) -> bool | None:
+    """True als HA het oude netformaat (flow_from/flow_to) heeft, False bij het nieuwe (een bron per aansluiting), None als er nog geen netbron is."""
+    for s in prefs.get("energy_sources") or []:
+        if s.get("type") == "grid":
+            return "flow_from" in s
+    return None
+
+
+def merge(prefs: dict, cfg: dict, managed: set[str], legacy: bool = False) -> dict:
+    """De voorkeuren die in HA moeten komen: wat er stond, zonder onze oude en nieuwe regels, plus de nieuwe regels.
+
+    Nieuwe HA: elke aansluiting (huis, afname, teruglevering) is een eigen netbron met naam, afname, teruglevering en prijzen.
+    Oudere HA (`legacy`): één netbron met de lijsten flow_from en flow_to."""
     drop = entities(cfg) | managed
-    sources = [dict(s) for s in prefs.get("energy_sources") or []]
-    grid = next((s for s in sources if s.get("type") == "grid"), None)
-    keep = []
-    for s in sources:
-        if s is grid:
-            keep.append(s)
-        elif s.get("type") == "solar" and s.get("stat_energy_from") in drop:
+    sources = []
+    grid = None
+    for s in (dict(x) for x in prefs.get("energy_sources") or []):
+        t = s.get("type")
+        if t == "grid":
+            if "flow_from" in s:  # oud formaat: één bron met lijsten
+                grid = grid or s  # bij legacy komt het blok onderaan terug, met onze regels erbij; anders migreert HA het zelf
+                continue
+            elif s.get("stat_energy_from") in drop or s.get("stat_energy_to") in drop:
+                continue
+        elif t == "solar" and s.get("stat_energy_from") in drop:
             continue
-        elif s.get("type") == "battery" and (s.get("stat_energy_from") in drop or s.get("stat_energy_to") in drop):
+        elif t == "battery" and (s.get("stat_energy_from") in drop or s.get("stat_energy_to") in drop):
             continue
-        else:
-            keep.append(s)
-    sources = keep
+        sources.append(s)
+    devices = [d for d in prefs.get("device_consumption") or [] if d.get("stat_consumption") not in drop]
     flow_from = [f for f in (grid or {}).get("flow_from") or [] if f.get("stat_energy_from") not in drop]
     flow_to = [f for f in (grid or {}).get("flow_to") or [] if f.get("stat_energy_to") not in drop]
-    devices = [d for d in prefs.get("device_consumption") or [] if d.get("stat_consumption") not in drop]
     for r in cfg["rows"]:
-        role, ent = r["role"], r["entity"]
-        if role in ("house", "grid_in"):
-            price = r.get("price") if r.get("price") is not None else cfg["price_in"]
-            flow_from.append({"stat_energy_from": ent, "stat_cost": None, **_price_fields(price)})
-        if role == "grid_out":
-            price = r.get("price") if r.get("price") is not None else cfg["price_out"]
-            flow_to.append({"stat_energy_to": ent, "stat_compensation": None, **_price_fields(price)})
+        role, ent, to = r["role"], r["entity"], r.get("entity_to")
+        price_in = r.get("price") if r.get("price") is not None and role != "grid_out" else cfg["price_in"]
+        price_out = r.get("price") if role == "grid_out" and r.get("price") is not None else cfg["price_out"]
+        if role in ("house", "grid_in", "grid_out"):
+            if legacy:
+                if role != "grid_out":
+                    flow_from.append({"stat_energy_from": ent, "stat_cost": None, **_price_fields(price_in)})
+                for out in ([ent] if role == "grid_out" else [to] if to else []):
+                    flow_to.append({"stat_energy_to": out, "stat_compensation": None, **_price_fields(price_out)})
+            else:
+                export = {"entity_energy_price_export": price_out if isinstance(price_out, str) else None, "number_energy_price_export": price_out if isinstance(price_out, float) else None}
+                src = {"type": "grid", "stat_energy_from": None if role == "grid_out" else ent, "stat_energy_to": ent if role == "grid_out" else to or None,
+                       "stat_cost": None, **_price_fields(None if role == "grid_out" else price_in), "stat_compensation": None, **export, "cost_adjustment_day": 0.0}
+                if r["name"]:
+                    src["name"] = r["name"]
+                sources.append(src)
         if role in ("house", "device"):
             devices.append({"stat_consumption": ent, **({"name": r["name"]} if r["name"] else {})})
         if role == "solar":
             sources.append({"type": "solar", "stat_energy_from": ent, "config_entry_solar_forecast": None})
         if role == "battery":
-            sources.append({"type": "battery", "stat_energy_from": ent, "stat_energy_to": r["entity_to"]})
-    if grid is not None:
-        grid["flow_from"], grid["flow_to"] = flow_from, flow_to
-    elif flow_from or flow_to:
-        sources.insert(0, {"type": "grid", "flow_from": flow_from, "flow_to": flow_to, "cost_adjustment_day": 0.0})
+            sources.append({"type": "battery", "stat_energy_from": ent, "stat_energy_to": to})
+    if legacy:
+        if grid is not None:
+            grid["flow_from"], grid["flow_to"] = flow_from, flow_to
+            sources.insert(0, grid)
+        elif flow_from or flow_to:
+            sources.insert(0, {"type": "grid", "flow_from": flow_from, "flow_to": flow_to, "cost_adjustment_day": 0.0})
     return {"energy_sources": sources, "device_consumption": devices}
 
 
@@ -207,17 +233,27 @@ class EnergyHub:
             prefs = await self.ha.energy_prefs()
         except Exception as e:
             raise ModelError(f"het energiedashboard van HA is niet te lezen (heeft de koppeling beheerdersrechten?): {e}") from e
-        new = merge(prefs, self.cfg, self.managed)
-        try:
-            await self.ha.save_energy_prefs(new)
-        except Exception as e:
-            raise ModelError(f"HA weigert de energie-instellingen: {e}") from e
+        legacy = _is_legacy(prefs)
+        order = [legacy] if legacy is not None else [False, True]  # zonder netbron weten we het niet: eerst het nieuwe formaat, dan het oude
+        err: Exception | None = None
+        for lg in order:
+            new = merge(prefs, self.cfg, self.managed, legacy=lg)
+            try:
+                await self.ha.save_energy_prefs(new)
+                break
+            except Exception as e:
+                err = err or e
+        else:
+            raise ModelError(f"HA weigert de energie-instellingen: {err}") from err
         self.managed = entities(self.cfg)
         self._save()
-        grid = next((s for s in new["energy_sources"] if s.get("type") == "grid"), {})
-        priced = sum(1 for f in grid.get("flow_from", []) if f.get("number_energy_price") is not None or f.get("entity_energy_price"))
-        self.applied = (f"{len(grid.get('flow_from', []))} afnamemeters ({priced} met prijs), {len(grid.get('flow_to', []))} teruglevering, "
-                        f"{sum(1 for s in new['energy_sources'] if s['type'] == 'solar')} zon, {sum(1 for s in new['energy_sources'] if s['type'] == 'battery')} accu, "
-                        f"{len(new['device_consumption'])} apparaten")
+        srcs = new["energy_sources"]
+        grids = [s for s in srcs if s.get("type") == "grid"]
+        if grids and "flow_from" in grids[0]:
+            n_in, n_out = len(grids[0]["flow_from"]), len(grids[0]["flow_to"])
+        else:
+            n_in, n_out = sum(1 for g in grids if g.get("stat_energy_from")), sum(1 for g in grids if g.get("stat_energy_to"))
+        self.applied = (f"{n_in} afnamemeters, {n_out} terugleveringsmeters, {sum(1 for s in srcs if s['type'] == 'solar')} zon, "
+                        f"{sum(1 for s in srcs if s['type'] == 'battery')} accu, {len(new['device_consumption'])} apparaten")
         log.info("energiedashboard in HA bijgewerkt: %s", self.applied)
         return {"summary": self.applied}
