@@ -178,3 +178,10 @@ textarea { width: 100%; font: 13px/1.4 ui-monospace, SFMono-Regular, Consolas, m
 #scpanel label.chk { display: flex; align-items: center; gap: 6px; margin: 2px 0 0; color: inherit; font-size: 13px; }
 #scpanel label.chk input { width: auto; margin: 0; }
 .sclog { font-size: 12px; margin-top: 4px; } .sclog th, .sclog td { padding: 3px 5px; white-space: nowrap; }
+
+.num { text-align: right; white-space: nowrap; } .invoice { margin-top: 10px; } .invoice table { margin: 10px 0; }
+@media print {
+  header, nav, #banner, #toast, .noprint { display: none !important; }
+  body.printing-invoice main > *:not(#chargebox), body.printing-invoice #chargebox > *:not(#chinvoice) { display: none !important; }
+  #chinvoice { border: 0; padding: 0; } body { background: #fff; color: #000; } table { border-radius: 0; }
+}

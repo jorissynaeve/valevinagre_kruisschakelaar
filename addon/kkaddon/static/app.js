@@ -207,6 +207,7 @@ function render() {
   if (tab === 'schema') { // het kader blijft staan, anders verspring je bij elke druk terug naar de linkerbovenhoek
     if (!$('#scsvg')) { $('#main').innerHTML = viewSchema(); SC.lastPanel = ''; }
     schemaUpdate();
+  } else if (tab === 'sessions') { if (!$('#chargebox')) $('#main').innerHTML = viewCharge(); // de filters blijven staan
   } else if (tab === 'energy') { if (!$('#energybox')) $('#main').innerHTML = viewEnergy(); // wat je typt blijft staan
   } else if (tab !== 'settings' || !$('#keybox')) $('#main').innerHTML = { nodes: viewNodes, log: viewLog, settings: viewSettings }[tab]();
   else linksUpdate(); // de rest van Instellingen blijft staan, de verbindingen niet

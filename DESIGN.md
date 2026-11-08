@@ -616,6 +616,8 @@ Code: `chargehub.py` (sessies, log, wat wie ziet, omzetting), blok `k:<id>` (`sc
 - **Omzetting** (`adopt`, bij het opstarten): een kaart met `legacy` (de oude velden, door `model._card` bewaard tot dan) wordt een blok `k:<toestel>` of een verwijzing `r:<inst>:k:<toestel>` (en die wordt hier gekozen via `link.use_unchecked`, want de catalogus is er nog niet). Een Feyree-lader zonder kaart krijgt eenmalig een blok. Ingangen van een ander toestel dan dat van start/stop worden losgelaten (met een waarschuwing in de log).
 - **HA**: per laadpaal drie MQTT-sensoren (`Laadsessie`, `Laatste sessie`, `Laatste sessie door`).
 
+- **Tabblad Laden (0.29)**: `GET /api/charge/sessions` geeft de hele log (max 500), de namen van de laadpalen, de lopende sessies en de naam van deze installatie. Filter, totalen, CSV en factuur zijn client-side (`static/charge.js`): een factuur is de sessies van één huis (`by`) met start in de periode, de som van de bedragen uit de log, afgedrukt via de printfunctie van de browser (CSS `@media print`). Geen factuurnummering of opslag van facturen: de log is de bron.
+
 ### Niet getest / open
 - Getest met unit-tests (regels voor start en stop, verbergen, einde van een sessie, de meter die opnieuw begint, herstart, omzetting, de web-API en csv) en met drie hubs over echte TCP: een huis start, een ander ziet alleen bezet en kan niet starten, stoppen of langs het datapunt, de starter valt weg en de sessie loopt door tot de laadpaal klaar is.
 - Niet tegen de echte Feyree: of `charing` ook echt de status tijdens het laden is, of de meter (25) per sessie opnieuw begint, en of de laadtijd (120) tijdens het laden loopt.

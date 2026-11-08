@@ -472,6 +472,10 @@ async def charge_run(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def charge_sessions(request: web.Request) -> web.Response:
+    return web.json_response(_charge(request).sessions())
+
+
 async def charge_csv(request: web.Request) -> web.Response:
     cid = request.match_info.get("cid")
     return web.Response(text="﻿" + _charge(request).csv(cid), content_type="text/csv", charset="utf-8",
@@ -956,6 +960,7 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/solar/{did}", solar_put)
     r.add_delete("/api/solar/{did}", solar_delete)
     r.add_post("/api/charge", charge_post)
+    r.add_get("/api/charge/sessions", charge_sessions)
     r.add_get("/api/charge/log.csv", charge_csv)
     r.add_get("/api/charge/{cid}/log.csv", charge_csv)
     r.add_put("/api/charge/{cid}", charge_put)

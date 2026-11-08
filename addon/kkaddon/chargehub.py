@@ -460,6 +460,11 @@ class ChargeHub:
                         "log": [e for e in reversed(self.log) if e["charger"] == cid][:100]})
         return out
 
+    def sessions(self) -> dict:
+        """Alle sessies van alle laadpalen, voor de pagina Laden (filter, CSV en factuur gebeuren daar). `by` is het id van het huis."""
+        return {"me": self.home(), "chargers": {cid: c["name"] for cid, c in self.chargers.items()}, "sessions": list(self.log),
+                "active": [{"charger": cid, "by": s["by"], "name": s["name"], "start": int(s["start"])} for cid, s in self.active.items()]}
+
     def csv(self, cid: str | None = None) -> str:
         buf = io.StringIO()
         w = csv.writer(buf, delimiter=";")

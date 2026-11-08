@@ -283,7 +283,11 @@ def test_the_web_api_adds_runs_and_removes_a_charger_and_serves_the_log(tmp_path
             st = await (await c.get("/api/state")).json()
             assert st["charge"][0]["session"]["name"] == "Dit huis"
             assert (await c.delete("/api/charge/lader")).status == 400, "er loopt een sessie"
+            live = await (await c.get("/api/charge/sessions")).json()
+            assert live["me"] == "Dit huis" and live["chargers"] == {"lader": "Laadpaal"} and live["sessions"] == [] and live["active"][0]["name"] == "Dit huis"
             assert (await c.post("/api/charge/lader/stop")).status == 200
+            done = await (await c.get("/api/charge/sessions")).json()
+            assert done["active"] == [] and done["sessions"][0]["by"] == "" and done["sessions"][0]["charger"] == "lader", "alles voor de pagina Laden: filter en factuur gebeuren daar"
             r = await c.get("/api/charge/lader/log.csv")
             text = await r.text()
             assert r.status == 200 and "text/csv" in r.headers["Content-Type"] and "Dit huis" in text and "attachment" in r.headers["Content-Disposition"]
