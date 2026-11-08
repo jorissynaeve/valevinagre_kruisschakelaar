@@ -41,9 +41,9 @@ CHARGER_REF = re.compile(r"^(k:[a-z0-9_]{1,40}|r:[a-z0-9_]{1,40}:k:[a-z0-9_]{1,4
 # DeviceState van de lader. Gemeten is alleen `connect`; de rest is een gok op wat zo'n lader meldt. Wat we niet kennen tonen we zoals het komt.
 STATUS = {
     "nl": {"connect": "Aangesloten", "charing": "Aan het laden", "charging": "Aan het laden", "free": "Vrij", "idle": "Vrij", "available": "Vrij",
-           "wait": "Wacht", "waiting": "Wacht", "finish": "Klaar", "charge_end": "Klaar", "end": "Klaar", "fault": "Storing", "error": "Storing"},
+           "wait": "Wacht", "waiting": "Wacht", "no_connect": "Niet aangesloten", "qr_wait": "Wacht op QR", "finish": "Klaar", "charge_end": "Klaar", "end": "Klaar", "fault": "Storing", "error": "Storing"},
     "en": {"connect": "Connected", "charing": "Charging", "charging": "Charging", "free": "Free", "idle": "Free", "available": "Free",
-           "wait": "Waiting", "waiting": "Waiting", "finish": "Done", "charge_end": "Done", "end": "Done", "fault": "Fault", "error": "Fault"},
+           "wait": "Waiting", "waiting": "Waiting", "no_connect": "Not connected", "qr_wait": "Waiting for QR", "finish": "Done", "charge_end": "Done", "end": "Done", "fault": "Fault", "error": "Fault"},
 }
 CHARGING = {"charing", "charging"}
 
