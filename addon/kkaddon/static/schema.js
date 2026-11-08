@@ -26,7 +26,7 @@ const SC_GANGED = ['switch', 'panel', 'tuya', 'remote']; // blokken met gangen: 
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
 const scW = (b) => (b.kind === 'lamp' ? LAMP_W : b.kind === 'tuya' || (b.kind === 'remote' && b.sub === 'tuya') ? TUYA_W : SW_W);
-const scRows = (b) => (b.kind === 'card' || b.kind === 'remote' || b.kind === 'action' || b.kind === 'airco' || b.kind === 'solar' ? b.rows : b.kind === 'panel' || b.kind === 'screen' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
+const scRows = (b) => (b.kind === 'card' || b.kind === 'remote' || b.kind === 'action' || b.kind === 'airco' || b.kind === 'solar' || b.kind === 'charge' ? b.rows : b.kind === 'panel' || b.kind === 'screen' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
 const scH = (b) => SC_HEAD + scRows(b) * SC_ROW + SC_FOOT;
 const rowY = (b, i) => b.y + SC_HEAD + i * SC_ROW + SC_ROW / 2;
 const scPageName = (id) => (S.schema.pages.find((p) => p.id === id) || {}).name || '';
@@ -50,6 +50,7 @@ function scType(b) { // bepaalt de kleur van het blok
   if (b.kind === 'lamp' || b.kind === 'timer') return b.kind;
   if (b.kind === 'module') return b.out === 'bool' ? 'logic' : 'time';
   if (b.kind === 'sprinkler' || b.kind === 'action') return 'spr';
+  if (b.kind === 'charge') return 'tuya';
   if (b.kind === 'panel' || b.kind === 'screen' || b.kind === 'tuya' || b.kind === 'airco' || b.kind === 'solar' || b.kind === 'card' || b.kind === 'remote') return b.kind;
   if (b.source === 'node') return 'node';
   if (b.source === 'virtual') return 'ext';
@@ -112,7 +113,7 @@ const SC_CARD_NL = { grid: 'Knoppen', charger: 'Laadpaal', saver: 'Screensaver',
 
 function scCardLines(b) { // wat een kaart zonder knoppen op haar blok laat zien
   if (b.type === 'power' && b.labels) return b.labels.length ? b.labels : ['Nog geen rijen'];
-  if (b.type === 'charger') return [b.device ? `Lader: ${b.device.name}${b.device.online ? '' : ' (offline)'}` : 'Nog geen lader gekozen', `€ ${b.price} per kWh${b.price_entity ? ' of uit HA' : ''}`];
+  if (b.type === 'charger') return [b.device ? `Laadpaal: ${b.device.name}${b.device.online ? '' : ' (offline)'}` : b.charger ? 'Deze laadpaal is weg' : 'Nog geen laadpaal gekozen', 'Start, stop en de sessie'];
   if (b.type === 'saver') return [b.weather ? `Weer: ${b.weather}` : 'Geen weer', b.temperature ? `Binnen: ${b.temperature}` : 'Geen temperatuur', [b.status1, b.status2].filter(Boolean).length ? `${[b.status1, b.status2].filter(Boolean).length} statuspictogram(men)` : 'Klok en datum'];
   if (b.type === 'airco') return [b.device ? `Airco: ${b.device.name}${b.device.online ? '' : ' (offline)'}` : 'Nog geen airco gekozen', 'Temperatuur en stand'];
   if (b.type === 'power') return b.items.length ? b.items.map((it) => it.entity ? (it.name || it.entity) : 'leeg') : ['Nog geen rijen'];
@@ -120,20 +121,6 @@ function scCardLines(b) { // wat een kaart zonder knoppen op haar blok laat zien
 }
 
 const scDevKey = (dev) => (dev.startsWith('r:') ? dev : `y:${dev}`); // het blok van een toestel
-
-function scChargerRows(b) { // de laadpaal: links Status, Laadtijd en Geladen (een waarde elk), rechts start/stop naar een instelling
-  const ins = b.ins.map((x, i) => {
-    const y = rowY(b, i), src = x.ref ? scSrc(x.ref) : null;
-    return `<circle class="pt v-number ${x.ref ? '' : 'free'}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="cdin" data-i="${i}"><title>${x.label}: sleep hierheen vanaf een waarde (rechts op een Tuya-blok)</title></circle>
-      ${x.ref ? `<text class="bkt away" x="${b.x + 11}" y="${y + 4}" ${src && src.key ? `data-sc="go" data-k="${esc(src.key)}"` : ''}>${x.label}: ${esc(scCut(x.src || '', 17))}<title>${esc(x.src || '')} (nu ${esc(src ? src.out : '?')})</title></text>`
-    : `<text class="ptl" x="${b.x + 11}" y="${y + 4}">+ ${x.label.toLowerCase()}</text>`}`;
-  }).join('');
-  const y1 = rowY(b, 1), dev = b.target.device;
-  const out = `<circle class="pt v-bool ${b.target_label ? '' : 'free'}" cx="${b.x + SW_W}" cy="${y1}" r="6" data-b="${esc(b.key)}" data-role="cdout" data-i="1"><title>Start/stop: sleep naar een instelling (links op een Tuya-blok), bv. Laden</title></circle>
-    <text class="ptl" x="${b.x + SW_W - 11}" y="${y1 + 4}" text-anchor="end">start/stop</text>
-    ${b.target_label ? `<text class="stub" x="${b.x + SW_W + 11}" y="${y1 + 4}" data-sc="go" data-k="${esc(scDevKey(dev))}">→ ${esc(scCut(b.target_label, 26))}<title>${esc(b.target_label)}: starten ${esc(b.target.on || '(niets)')}, stoppen ${esc(b.target.off || '(niets)')}</title></text>` : ''}`;
-  return `${ins}${out}<text class="bkt" x="${b.x + 11}" y="${rowY(b, 3) + 4}">Prijs: € ${b.price} per kWh${b.price_entity ? ' of uit HA' : ''}</text>`;
-}
 
 function scPowerRows(b) { // de energiekaart: links een ingang per rij (een Tuya-waarde, of een sensor uit HA), met erbij waar de waarde vandaan komt
   const rows = b.items.map((it, i) => {
@@ -149,7 +136,7 @@ function scPowerRows(b) { // de energiekaart: links een ingang per rij (een Tuya
 
 function scCard(b) {
   const y0 = rowY(b, 0);
-  const rows = b.type === 'charger' ? scChargerRows(b) : b.type === 'power' ? scPowerRows(b) : b.type !== 'grid' ? scCardLines(b).map((t, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}">${esc(scCut(t, 26))}</text>`).join('')
+  const rows = b.type === 'power' ? scPowerRows(b) : b.type !== 'grid' ? scCardLines(b).map((t, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}">${esc(scCut(t, 26))}</text>`).join('')
     : b.items.map((it, i) => {
       const y = rowY(b, i), go = it.target && scBlock(it.target);
       return `<circle class="pt crd ${it.ref || it.entity ? '' : 'free'}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="citem" data-i="${i}"><title>Knop ${i + 1}: sleep hierheen vanaf een lamp, een gang van een schakelaar of de uitgang van een kaart</title></circle>
@@ -168,7 +155,9 @@ function scCard(b) {
 function scRemote(b, tags) { // een lamp, gang of Tuya-toestel van een andere installatie: alleen-lezen, te bedienen
   if (b.sub === 'tuya') return scRemoteTuya(b);
   const st = b.on === true ? 'on' : b.on === null || b.on === undefined ? 'unknown' : '';
-  const rows = b.sub === 'gang'
+  const rows = b.sub === 'charger'
+    ? scRemoteCharger(b).map((t, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}">${esc(scCut(t, 28))}</text>`).join('')
+    : b.sub === 'gang'
     ? `<text class="bkt" x="${b.x + SW_W / 2}" y="${rowY(b, 0) + 4}" text-anchor="middle">${b.on === true ? 'aan' : b.on === false ? 'uit' : 'onbekend'}${b.busy ? ' · bezet' : ''}</text>${scGangPorts(b, b.gangs[0], SW_W, tags)}`
     : b.sub === 'lamp'
     ? `<circle class="bulb ${st}" cx="${b.x + 22}" cy="${rowY(b, 0)}" r="9" data-sc="rtoggle" data-k="${esc(b.key)}"><title>Aan of uit zetten (via ${esc(b.peerName)})</title></circle>
@@ -179,12 +168,12 @@ function scRemote(b, tags) { // een lamp, gang of Tuya-toestel van een andere in
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 28))}</text>
-    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">↔ ${esc(scCut(b.peerName, 16))} · ${{ lamp: 'Lamp', gang: 'Gang', tuya: 'Tuya' }[b.sub] || b.sub}${b.online ? '' : ' · offline'}</text>${rows}</g>`;
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">↔ ${esc(scCut(b.peerName, 16))} · ${{ lamp: 'Lamp', gang: 'Gang', tuya: 'Tuya', charger: 'Laadpaal' }[b.sub] || b.sub}${b.online ? '' : ' · offline'}</text>${rows}</g>`;
 }
 
 function scRemotePanel(b) {
   const opt = (v, cur, text) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(text)}</option>`;
-  const users = scBlocks().filter((c) => c.kind === 'card' && ((c.items || []).some((it) => it.ref === b.key) || c.tuya === b.key));
+  const users = scBlocks().filter((c) => c.kind === 'card' && ((c.items || []).some((it) => it.ref === b.key) || c.charger === b.key));
   let body;
   if (b.sub === 'gang') {
     body = `<div class="row"><button class="btn small" type="button" data-sc="rcmd" data-k="${esc(b.key)}" data-op="on" ${b.linked && !b.busy ? '' : 'disabled'}>Aan</button>
@@ -192,6 +181,11 @@ function scRemotePanel(b) {
       ${b.busy ? `<div class="sub" style="color:var(--warn)">Bezet: deze gang zit bij ${esc(b.peerName)} in een actieve kring. Daar beslist die kring; een bevel van hier wordt geweigerd.</div>` : ''}
       <h2>Aansluiten</h2>${scGangRows(b)}
       <div class="sub">Sleep de <b>touch</b> naar de ingang van een lamp, of het <b>relais</b> naar de uitgang. De kring draait hier; de druk komt via ${esc(b.peerName)}. Valt de koppeling weg, dan doet deze gang niet mee; komt ze terug, dan neemt de touch de stand van de lamp over.</div>`;
+  } else if (b.sub === 'charger') {
+    const v = b.cv || {}, can = b.linked && b.online && v.act;
+    body = `<h2>Laden</h2><div class="sub">${scRemoteCharger(b).filter(Boolean).map(esc).join(' · ')}</div>
+      <div class="row"><button class="btn small ${v.act === 'stop' ? 'danger' : ''}" type="button" data-sc="rcmd" data-k="${esc(b.key)}" data-op="${v.act === 'stop' ? 'stop' : 'start'}" ${can ? '' : 'disabled'}>${v.act === 'stop' ? 'Stop' : 'Start'}</button></div>
+      <div class="sub">${esc(b.peerName)} noteert wie start en wanneer. Tijdens een sessie van een ander huis zie je hier alleen <i>bezet</i>, en alleen wie gestart heeft kan stoppen.</div>`;
   } else if (b.sub === 'lamp') {
     body = `<div class="row"><button class="btn small" type="button" data-sc="rcmd" data-k="${esc(b.key)}" data-op="on" ${b.linked ? '' : 'disabled'}>Aan</button>
       <button class="btn small" type="button" data-sc="rcmd" data-k="${esc(b.key)}" data-op="off" ${b.linked ? '' : 'disabled'}>Uit</button></div>
@@ -204,7 +198,7 @@ function scRemotePanel(b) {
     body = rw.length ? `<h2>Bedienen</h2>${rw.map((p) => `<label>${esc(p.name)}${p.unit ? ` (${esc(p.unit)})` : ''}</label>${control(p)}`).join('')}<div class="sub">Een wijziging gaat via ${esc(b.peerName)} naar het toestel.</div>` : '';
   }
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${b.linked ? (b.online ? 'online' : 'toestel offline') : `${esc(b.peerName)} niet verbonden`}</span></div>
-    <div class="sub">Van de installatie <b>${esc(b.peerName)}</b>. Instellen en hernoemen doe je daar; hier kun je het bedienen${b.sub === 'gang' ? ' en op een lamp aansluiten' : ` en aan een kaart hangen${b.sub === 'lamp' ? ' (sleep een knop van een rasterkaart naar dit blok)' : ' (kies het bij een laadpaalkaart)'}`}.</div>
+    <div class="sub">Van de installatie <b>${esc(b.peerName)}</b>. Instellen en hernoemen doe je daar; hier kun je het bedienen${b.sub === 'gang' ? ' en op een lamp aansluiten' : ` en aan een kaart hangen${b.sub === 'lamp' ? ' (sleep een knop van een rasterkaart naar dit blok)' : b.sub === 'charger' ? ' (kies het bij een laadpaalkaart)' : ' (kies het bij een kaart)'}`}.</div>
     <label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
     ${body}
     <h2>Gebruikt door</h2>${users.map((c) => `<div class="sub"><a href="#" data-sc="go" data-k="${esc(c.key)}">${esc(c.name)}</a></div>`).join('') || '<div class="sub">Nog geen kaart.</div>'}`;
@@ -289,12 +283,12 @@ function scDpUsers(dev, dp, out) { // wie dit datapunt gebruikt: rechts (een waa
   dp = String(dp);
   if (!out) {
     return scBlocks().filter((a) => (a.kind === 'action' && a.device === dev.id && String(a.dp) === dp)
-      || (a.kind === 'card' && a.type === 'charger' && a.target.device === dev.id && String(a.target.dp) === dp)).map((a) => ({ key: a.key, text: a.name }));
+      || (a.kind === 'charge' && a.device === dev.id && String(a.target.dp) === dp)).map((a) => ({ key: a.key, text: a.name }));
   }
   const v = `v:${dp}@${dev.id}`;
   return scBlocks().filter((u) => ((u.kind === 'module' || u.kind === 'sprinkler') && u.ports.some((x) => x.ref === v)) || (u.kind === 'module' && u.type === 'dp' && u.device === dev.id && String(u.dp) === dp)
     || (u.kind === 'card' && (u.items || []).some((it) => (it.ref === dev.card || it.tuya === dev.card) && String(it.dp) === dp))
-    || (u.kind === 'card' && (u.ins || []).some((x) => x.ref === v)) || (u.kind === 'airco' && u.ports.some((x) => x.ref === v))).map((u) => ({ key: u.key, text: u.name }));
+    || (u.kind === 'charge' && u.device === dev.id && Object.values(u.dps).includes(dp)) || (u.kind === 'airco' && u.ports.some((x) => x.ref === v))).map((u) => ({ key: u.key, text: u.name }));
 }
 
 function scTyRow(b, p, i, left, w) { // een datapunt met een poort: links instellen (een 0/1 maakt een routine), rechts een waarde
@@ -566,23 +560,81 @@ function scValueInput(attrs, p, cur) { // de waarde die een routine zet: een keu
   return `<input type="text" ${attrs} maxlength="40" placeholder="leeg = niets" value="${esc(cur)}"${p && p.min != null ? ` title="van ${p.min} tot ${p.max}"` : ''}>`;
 }
 
-function scChargerWhen(b) { // welke statuswaarden Start en welke Stop geven (start_when / stop_when van de kaart)
-  const ref = (b.ins.find((x) => x.name === 'status') || {}).ref;
-  if (!ref) return '<div class="sub">Sluit eerst de ingang <b>Status</b> aan. Zonder status toont de knop Stop zolang het datapunt op de startwaarde staat, anders Start.</div>';
-  const m = /^v:(\d+)@(.+)$/.exec(ref), p = m && scPointOf(m[2], m[1], SC_HERE);
+function scChargeWhen(b) { // welke statuswaarden Start geven (start_when) en welke Stop (stop_when) op het laadpaal-blok
+  const dp = b.dps.status, p = dp && b.device ? scPointOf(b.device, dp, SC_HERE) : null;
+  if (!dp) return '<div class="sub">Kies eerst een datapunt voor de <b>status</b>. Zonder status mag je starten zolang het datapunt van start/stop niet op de startwaarde staat.</div>';
   const start = b.start_when || [], stop = b.stop_when || [], low = (xs) => xs.map((x) => x.toLowerCase());
   const now = p && p.value != null && p.value !== '' ? `<div class="sub">De status is nu <code>${esc(p.value)}</code>.</div>` : '';
-  const help = '<div class="sub">Staat de status op een waarde bij <b>Start</b>, dan start de knop; bij <b>Stop</b> stopt hij; bij een andere waarde toont het paneel alleen de status, zonder knop. Laat je alles leeg, dan toont de knop Stop zolang het datapunt op de startwaarde staat (of de status zegt dat hij laadt), anders Start.</div>';
+  const help = '<div class="sub">Staat de status op een waarde bij <b>Start</b>, dan mag je starten; elke andere waarde laat geen start toe (de kaart toont dan alleen de status). Tijdens een sessie kun je altijd stoppen. Laat je alles leeg, dan mag je starten zolang hij niet laadt.</div>';
   if (p && p.type === 'enum' && p.options && p.options.length) {
-    const extra = [...start, ...stop].filter((x) => !low(p.options).includes(x.toLowerCase())); // een waarde die het toestel niet (meer) meldt
+    const extra = [...start, ...stop].filter((x) => !low(p.options).includes(x.toLowerCase()));
     const rows = [...p.options, ...extra].map((o) => {
       const cur = low(stop).includes(o.toLowerCase()) ? 'stop' : low(start).includes(o.toLowerCase()) ? 'start' : '';
-      return `<div class="row sp"><code>${esc(o)}</code><select data-cdstat="${esc(o)}">${[['', 'niets'], ['start', 'Start'], ['stop', 'Stop']].map(([v, l]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
+      return `<div class="row sp"><code>${esc(o)}</code><select data-chstat="${esc(o)}">${[['', 'niets'], ['start', 'Start'], ['stop', 'Stop']].map(([v, l]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
     }).join('');
     return rows + now + help;
   }
-  return `<label>Start bij (waarden met komma's)</label><input type="text" spellcheck="false" data-cdwhen="start_when" placeholder="bv. connect, finish" value="${esc(start.join(', '))}">
-    <label>Stop bij (waarden met komma's)</label><input type="text" spellcheck="false" data-cdwhen="stop_when" placeholder="bv. charing" value="${esc(stop.join(', '))}">${now}${help}`;
+  return `<label>Start bij (waarden met komma's)</label><input type="text" spellcheck="false" data-chwhen="start_when" placeholder="bv. connect, finish" value="${esc(start.join(', '))}">
+    <label>Stop bij (waarden met komma's)</label><input type="text" spellcheck="false" data-chwhen="stop_when" placeholder="bv. charing" value="${esc(stop.join(', '))}">${now}${help}`;
+}
+
+// ---------------------------------------------------------------- laadpaal: een Tuya-toestel met sessies en een log (k:<id>)
+
+function scChargeLines(b) { // wat het blok toont: de stand, en de kWh van de sessie of het tarief
+  const v = b.view || {}, busy = v.phase && v.phase !== 'free';
+  const l1 = !b.device ? 'Nog geen toestel gekozen' : !v.online ? 'offline' : !busy ? `vrij${v.status ? ` · ${v.status}` : ''}` : `bezig · ${v.phase === 'other' ? v.by : b.session ? b.session.name : ''}`;
+  const l2 = busy ? `${v.energy != null ? v.energy.toFixed(2) : '—'} kWh${v.cost != null ? ` · € ${v.cost.toFixed(2)}` : ''}` : `€ ${b.price} per kWh${b.price_entity ? ' of uit HA' : ''}`;
+  return [l1, l2];
+}
+
+function scCharge(b) {
+  const v = b.view || {}, busy = v.phase && v.phase !== 'free', dev = b.device && scBlock(`y:${b.device}`), lines = scChargeLines(b);
+  return `<g class="bk crdb t-tuya ${SC.sel === b.key ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
+    <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
+    <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
+    <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 22))}</text>
+    <text class="bkbadge ${busy ? 'ok' : ''}" x="${b.x + SW_W - 12}" y="${b.y + 18}" text-anchor="end">${busy ? 'bezig' : 'vrij'}</text>
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Laadpaal${dev ? ` · ${esc(scCut(dev.name, 18))}` : ''}</text>
+    ${lines.map((t, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}">${esc(scCut(t, 28))}<title>${esc(t)}</title></text>`).join('')}</g>`;
+}
+
+const scStamp = (t) => new Date(t * 1000).toLocaleString('nl-BE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const scDur = (s) => `${Math.floor(s / 3600)}u${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}`;
+
+function scChargePanel(b, props) {
+  const v = b.view || {}, busy = v.phase && v.phase !== 'free', opt = (val, cur, t) => `<option value="${esc(val)}" ${val === cur ? 'selected' : ''}>${esc(t)}</option>`;
+  const dps = (name, keep) => scPointSelect(`data-chdp="${name}"`, b.device, b.dps[name] || '', SC_HERE, keep);
+  const pt = b.device && b.target.dp ? scPointOf(b.device, b.target.dp, SC_HERE) : null;
+  const rows = b.log.map((e) => `<tr><td>${scStamp(e.start)}</td><td>${esc(e.name)}</td><td>${scDur(e.seconds)}</td><td>${e.kwh == null ? '—' : e.kwh.toFixed(2)}</td><td>${e.cost == null ? '—' : `€ ${e.cost.toFixed(2)}`}</td><td title="${esc(e.reason)}">${esc(scCut(e.reason, 20))}</td></tr>`).join('');
+  const state = b.session ? `Bezig: <b>${esc(b.session.name)}</b> sinds ${scStamp(b.session.start)}${b.session.seen ? '' : ' (wacht tot de laadpaal laadt)'}` : 'Vrij';
+  const run = b.session ? `<button class="btn small danger" type="button" data-sc="chrun" data-id="${esc(b.id)}" data-op="stop" ${v.act === 'stop' ? '' : 'disabled'}>${b.session.by === '' ? 'Stop' : 'Stop (als eigenaar)'}</button>`
+    : `<button class="btn small" type="button" data-sc="chrun" data-id="${esc(b.id)}" data-op="start" ${v.act === 'start' ? '' : 'disabled'}>Start</button>`;
+  return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${busy ? 'ok' : ''}">${esc(scChargeLines(b)[0])}</span></div>
+    <div class="sub">Een laadpaal met laadsessies. Andere installaties (andere subnets) bedienen hem via dit blok: <b>één sessie tegelijk</b>, alleen wie gestart heeft kan stoppen (jij altijd), en tijdens een sessie zien zij niets dan <i>bezet</i>. Elke sessie komt in de log hieronder.</div>${props}
+    <h2>Nu</h2><div class="sub">${state}</div><div class="row">${run}</div>
+    <h2>Log</h2>${rows ? `<table class="sclog"><tr><th>Start</th><th>Wie</th><th>Duur</th><th>kWh</th><th>Kosten</th><th>Einde</th></tr>${rows}</table>` : '<div class="sub">Nog geen sessies.</div>'}
+    <div class="row" style="margin-top:6px"><a class="btn small" href="api/charge/${esc(b.id)}/log.csv" download>CSV downloaden</a></div>
+    <h2>Instellingen</h2>
+    <label>Tuya-toestel</label><select data-chf="device"><option value="">kies een toestel…</option>${scBlocks().filter((t) => t.kind === 'tuya').map((t) => opt(t.id, b.device, t.name)).join('')}</select>
+    <div class="sub">Dit toestel wordt niet meer rechtstreeks aan andere installaties aangeboden; zij gaan via dit blok.</div>
+    <label>Status</label>${dps('status')}
+    <label>Laadtijd</label>${dps('time')}
+    <label>Geladen (kWh, de meter)</label>${dps('energy', (x) => x.type !== 'enum' && x.type !== 'bool')}
+    <label>Start/stop: datapunt</label>${scPointSelect('data-chtarget="dp"', b.device, b.target.dp, SC_HERE, (x) => x.rw)}
+    <label>Waarde om te starten</label>${scValueInput('data-chtarget="on"', pt, b.target.on)}
+    <label>Waarde om te stoppen</label>${scValueInput('data-chtarget="off"', pt, b.target.off)}
+    <h2>Starten volgens de status</h2>${scChargeWhen(b)}
+    <h2>Prijs</h2><label>Prijs per kWh (€)</label><input type="number" min="0" max="100" step="0.01" data-chf="price" value="${esc(b.price)}">
+    <label>Of de prijs uit een entiteit van HA (wint als ze een getal geeft)</label><input type="text" spellcheck="false" data-chf="price_entity" placeholder="bv. sensor.stroomprijs" value="${esc(b.price_entity || '')}">
+    <div class="sub">Kosten = kWh van de sessie × de prijs op het moment dat ze eindigt, zoals in de log. De kWh is de meterstand aan het eind min die aan het begin; begint de teller van de laadpaal opnieuw, dan telt de nieuwe teller.</div>
+    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="delcharge" data-id="${esc(b.id)}">Laadpaal verwijderen</button></div>`;
+}
+
+function scRemoteCharger(b) { // de laadpaal van een andere installatie: wat de eigenaar mij laat zien
+  const v = b.cv || {}, busy = v.phase === 'busy', mine = v.phase === 'mine';
+  const l1 = !b.linked ? 'niet verbonden' : !b.online ? 'offline' : busy ? 'bezet' : mine ? 'jij laadt' : `vrij${v.status ? ` · ${v.status}` : ''}`;
+  const l2 = mine && v.energy != null ? `${v.energy.toFixed(2)} kWh${v.cost != null ? ` · € ${v.cost.toFixed(2)}` : ''}` : busy ? 'een ander huis laadt' : '';
+  return [l1, l2];
 }
 
 function scAction(b) {
@@ -779,19 +831,12 @@ function scCardPanel(b, props) {
       <div class="sub">Een waarde (bv. het vermogen van een stroommeter) toont de lijstweergave het best: het raster toont alleen het pictogram en de naam.</div>
       <div class="sub">Sleep naar een knop (links op het blok) vanaf een <b>lamp</b>, een <b>gang</b> van een schakelaar, of de <b>uitgang</b> van een andere kaart (dan wordt het een subpagina). Pictogrammen: de MDI-naam, bv. <code>ceiling-light</code>; wat het scherm niet kent wordt een uitroepteken.</div>`;
   } else if (b.type === 'charger') {
-    const pt = scPointOf(b.target.device, b.target.dp, SC_HERE);
-    body = `<h2>Ingangen</h2>${b.ins.map((x) => `<div class="scc"><div><b>${x.label}</b><div class="sub">${x.ref ? esc(x.src || x.ref) : 'niet aangesloten: sleep een waarde (rechts op een Tuya-blok) naar de poort links'}</div></div>
-        ${x.ref ? `<button class="btn small danger" type="button" data-sc="cdinclear" data-k="${esc(b.key)}" data-name="${x.name}" title="Loskoppelen">✕</button>` : ''}</div>`).join('')}
-      <h2>Start/stop</h2>
-      <label>Toestel</label>${scDeviceSelect('data-cdtarget="device"', b.target.device, SC_HERE)}
-      <label>Datapunt</label>${scPointSelect('data-cdtarget="dp"', b.target.device, b.target.dp, SC_HERE, (x) => x.rw)}
-      <label>Waarde om te starten</label>${scValueInput('data-cdtarget="on"', pt, b.target.on)}
-      <label>Waarde om te stoppen</label>${scValueInput('data-cdtarget="off"', pt, b.target.off)}
-      <div class="sub">Of sleep de uitgang <b>start/stop</b> (rechts op het blok) naar een instelling van een Tuya-blok, hier of van een andere installatie.</div>
-      <h2>Start of stop volgens de status</h2>${scChargerWhen(b)}
-      <h2>Prijs</h2><label>Prijs per kWh (€)</label><input type="number" min="0" max="100" step="0.01" data-cdfield="price" value="${esc(b.price)}">
-      ${tx('price_entity', 'Of de prijs uit een entiteit van HA (wint als ze een getal geeft)', 'bv. sensor.stroomprijs')}
-      <div class="sub">Prijs = Geladen × de prijs per kWh.</div>`;
+    const here = scBlocks().filter((x) => x.kind === 'charge'), far = scBlocks().filter((x) => x.kind === 'remote' && x.sub === 'charger');
+    const o = (x, name) => opt(x.key, b.charger, `${name}${x.online ? '' : ' (offline)'}`);
+    body = `<label>Laadpaal</label><select data-cdfield="charger"><option value="">${here.length || far.length ? 'kies een laadpaal…' : 'nog geen laadpaal'}</option>
+      ${b.charger && !b.device ? `<option value="${esc(b.charger)}" selected>${esc(b.charger)} (weg of niet gekozen)</option>` : ''}
+      ${here.map((x) => o(x, x.name)).join('')}${far.length ? `<optgroup label="Van andere installaties">${far.map((x) => o(x, `${x.name} (${x.peerName})`)).join('')}</optgroup>` : ''}</select>
+      <div class="sub">De kaart toont de status en de sessie, en start of stopt. De instellingen en de log staan op het blok van de laadpaal. Een laadpaal van een andere installatie kies je eerst bij <b>Instellingen → Koppelingen</b>.</div>`;
   } else if (b.type === 'airco') {
     const aircos = scBlocks().filter((x) => x.kind === 'airco');
     body = `<label>Airco</label><select data-cdfield="airco">${opt('', b.airco, aircos.length ? 'kies een airco' : 'nog geen airco: zet er een op het schema')}${aircos.map((x) => opt(x.id, b.airco, x.name)).join('')}</select>
@@ -1029,7 +1074,7 @@ function scModulePanel(b, props) {
 
 // Het menu "+ Module": alles wat je op een pagina kunt zetten, per soort
 const SC_MENU = [
-  ['Toestellen', [['lamp', 'Lamp', 'met touches en relais'], ['switch', 'Schakelaar', 'een toestel uit Home Assistant'], ['panel', 'NSPanel', 'scherm met twee relais'], ['screen', 'Scherm', 'aanraakscherm met openHASP'], ['tuya', 'Tuya', 'toestel rechtstreeks over het LAN'], ['airco', 'Airco', 'Gree, Toyotomi, ... over het LAN'], ['solar', 'Omvormer', 'Deye, Sunsynk, ... met een Solarman-stick']]],
+  ['Toestellen', [['lamp', 'Lamp', 'met touches en relais'], ['switch', 'Schakelaar', 'een toestel uit Home Assistant'], ['panel', 'NSPanel', 'scherm met twee relais'], ['screen', 'Scherm', 'aanraakscherm met openHASP'], ['tuya', 'Tuya', 'toestel rechtstreeks over het LAN'], ['airco', 'Airco', 'Gree, Toyotomi, ... over het LAN'], ['charge', 'Laadpaal', 'sessies en log op een Tuya-toestel'], ['solar', 'Omvormer', 'Deye, Sunsynk, ... met een Solarman-stick']]],
   ['Tijd', [['timer', 'Timer', 'intervallen per dag, geeft 0 of 1'], ['sunrise', 'Zonsopgang', 'tijd van vandaag'], ['sunset', 'Zonsondergang', 'tijd van vandaag'], ['time', 'Vaste tijd', 'bv. 02:30']]],
   ['Waarden', [['number', 'Getal', 'bv. aantal cycli'], ['dp', 'Tuya-waarde', 'een datapunt als getal']]],
   ['Rekenen', [['add', 'Optellen', 'tijd + tijd'], ['sub', 'Aftrekken', 'tijd − tijd']]],
@@ -1074,7 +1119,7 @@ function scInner(list) {
   const shown = new Set(list.map((b) => b.key));
   const wires = !SC_WIRES ? '' : conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
   const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b)
-    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'airco' ? scAirco(b) : b.kind === 'solar' ? scSolar(b) : b.kind === 'card' ? scCard(b) : b.kind === 'action' ? scAction(b) : b.kind === 'remote' ? scRemote(b, tags) : b.kind === 'panel' || b.kind === 'screen' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
+    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'airco' ? scAirco(b) : b.kind === 'charge' ? scCharge(b) : b.kind === 'solar' ? scSolar(b) : b.kind === 'card' ? scCard(b) : b.kind === 'action' ? scAction(b) : b.kind === 'remote' ? scRemote(b, tags) : b.kind === 'panel' || b.kind === 'screen' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
   return `<g class="wires">${wires}</g>${blocks}<path id="sctemp" class="wire temp"/>`; // draden onder de blokken: anders liggen ze over de poorten
 }
 
@@ -1110,7 +1155,7 @@ function scPortPos(p) {
   if (b.kind === 'action') return [b.x, rowY(b, 0)];
   if (b.kind === 'airco' || b.kind === 'solar') return [p.role === 'acout' ? b.x + SC_AC_W : b.x, rowY(b, +p.i)];
   if (p.role === 'pval' || p.role === 'pset') return [p.role === 'pval' ? b.x + TUYA_W : b.x, rowY(b, +p.i)];
-  if (b.kind === 'card') return p.role === 'cout' ? [b.x + SW_W, rowY(b, 0)] : p.role === 'cdout' ? [b.x + SW_W, rowY(b, 1)] : [b.x, rowY(b, p.i === 'new' ? b.items.length : +p.i)];
+  if (b.kind === 'card') return p.role === 'cout' ? [b.x + SW_W, rowY(b, 0)] :  [b.x, rowY(b, p.i === 'new' ? b.items.length : +p.i)];
   if ((b.kind === 'panel' || b.kind === 'screen') && p.role === 'pcard') return [b.x, rowY(b, b.gangs.length + (p.i === 'new' ? b.cards.length : +p.i))];
   if (p.role === 'disable') return [b.x, rowY(b, scRows(b) - 1)];
   if (p.role === 'control') return [b.x, rowY(b, scRows(b) - 2)];
@@ -1137,7 +1182,7 @@ function scTray() {
     return `<h2>${title}</h2>${all.map(item).join('') || '<div class="sub">Geen.</div>'}`;
   };
   return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Tuya instellen', 'action') + part('Panelen', 'panel')
-    + part('Kaarten', 'card') + part('Schermen', 'screen') + part('Tuya', 'tuya') + part('Airco', 'airco') + part('Omvormer', 'solar') + part('Andere installaties', 'remote');
+    + part('Kaarten', 'card') + part('Schermen', 'screen') + part('Tuya', 'tuya') + part('Airco', 'airco') + part('Laadpaal', 'charge') + part('Omvormer', 'solar') + part('Andere installaties', 'remote');
 }
 
 function scPanel() {
@@ -1150,7 +1195,7 @@ function scPanel() {
   const pages = `<label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
   const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'switch' ? b.alias : b.name)}" placeholder="${esc(b.tech)}">
     <div class="sub">Technische naam: <code>${esc(b.tech)}</code></div>${pages}`;
-  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : b.kind === 'tuya' ? scTuyaPanel(b, props) : b.kind === 'airco' ? scAircoPanel(b, props) : b.kind === 'solar' ? scSolarPanel(b, props) : b.kind === 'card' ? scCardPanel(b, props) : b.kind === 'action' ? scActionPanel(b, props) : b.kind === 'remote' ? scRemotePanel(b) : scSwitchPanel(b, props);
+  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : b.kind === 'tuya' ? scTuyaPanel(b, props) : b.kind === 'airco' ? scAircoPanel(b, props) : b.kind === 'charge' ? scChargePanel(b, props) : b.kind === 'solar' ? scSolarPanel(b, props) : b.kind === 'card' ? scCardPanel(b, props) : b.kind === 'action' ? scActionPanel(b, props) : b.kind === 'remote' ? scRemotePanel(b) : scSwitchPanel(b, props);
 }
 
 function scConnRow(b, c, i, dir) {
@@ -1465,25 +1510,10 @@ async function scWireDp(a, b) { // een datapunt van een Tuya-blok: een waarde na
       if (sink.i === 'new' || +sink.i >= items.length) items.push({ name: '', icon: '', speed: 0, levels: null, ...row });
       else items[+sink.i] = { ...items[+sink.i], ...row };
       await api('PUT', `cards/${to.id}`, { items });
-    }
-    else if (sink.role === 'cdin') {
-      const ins = Object.fromEntries(to.ins.filter((x) => x.ref).map((x) => [x.name, x.ref]));
-      ins[to.ins[+sink.i].name] = `v:${val.dp}@${dev.id}`;
-      await api('PUT', `cards/${to.id}`, { inputs: ins });
-    } else throw new Error('Een waarde sluit je aan op de ingang van Groter dan, Kleiner dan, een sprinkler of een laadpaal, op een rij van een energiekaart, of op een knop van een kaart.');
+    } else throw new Error('Een waarde sluit je aan op de ingang van Groter dan, Kleiner dan, of een sprinkler, op een rij van een energiekaart, of op een knop van een kaart.');
     SC.sel = to.key;
   } else {
     const src = set === a ? b : a, from = scBlock(src.b), tb = scBlock(set.b), dev = scDevOf(tb);
-    if (src.role === 'cdout') { // de knop van een laadpaal: start en stop zetten dit datapunt
-      const pt = dev.points.find((x) => String(x.dp) === String(set.dp)), opts = (pt && pt.options) || [];
-      const guess = opts.includes('OpenCharging') && opts.includes('CloseCharging') ? ['OpenCharging', 'CloseCharging'] : pt && pt.type === 'bool' ? ['ON', 'OFF'] : ['', ''];
-      await api('PUT', `cards/${from.id}`, { target: { device: dev.id, dp: String(set.dp), on: guess[0], off: guess[1] } });
-      SC.sel = from.key;
-      if (!guess[0]) toast('Kies bij de kaart de waarde om te starten en om te stoppen.', 6000);
-      SC.force = true;
-      await refresh();
-      return;
-    }
     if (!(src.role === 'tout' || (src.role === 'mout' && from.out === 'bool'))) throw new Error('Een instelling stuur je vanaf de uitgang van een timer of een 0/1-module (bv. Groter dan).');
     const pt = dev.points.find((x) => String(x.dp) === String(set.dp));
     const r = await api('POST', 'actions', { name: `${tb.name} · ${pt ? pt.name : set.dp}`.slice(0, 60), page: tb.page || SC.page, ...scFreeSpot('module', tb.page || SC.page) });
@@ -1566,6 +1596,7 @@ const SC_ACTIONS = {
       : d.type === 'screen' ? await api('POST', 'screens', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'tuya' ? await api('POST', 'tuya', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'airco' ? await api('POST', 'airco', { page: SC.page, ...scFreeSpot('module') })
+      : d.type === 'charge' ? await api('POST', 'charge', { page: SC.page, name: 'Laadpaal', ...scFreeSpot('module') })
       : d.type === 'solar' ? await api('POST', 'solar', { page: SC.page, ...scFreeSpot('module') })
       : await api('POST', 'modules', { type: d.type, page: SC.page, ...scFreeSpot('module') });
     SC.sel = SC.reveal = r.key;
@@ -1643,9 +1674,17 @@ const SC_ACTIONS = {
   },
   rtoggle: (d) => scRemoteCmd(scBlock(d.k), { op: 'toggle' }),
   rcmd: (d) => scRemoteCmd(scBlock(d.k), { op: d.op }),
-  cdinclear: (d) => {
-    const b = scBlock(d.k);
-    return scSaveCard(b, { inputs: Object.fromEntries(b.ins.filter((x) => x.ref && x.name !== d.name).map((x) => [x.name, x.ref])) });
+  chrun: async (d) => {
+    try {
+      await api('POST', `charge/${d.id}/${d.op}`, {});
+    } finally {
+      SC.force = true;
+      await refresh();
+    }
+  },
+  delcharge: async (d) => {
+    if (!confirm('Deze laadpaal verwijderen? De log gaat niet weg, maar kaarten en andere installaties verliezen hem.')) return;
+    await api('DELETE', `charge/${d.id}`);
   },
   delaction: async (d) => {
     if (!confirm('Deze routine verwijderen? Wat ze al gezet heeft blijft zo staan.')) return;
@@ -2009,6 +2048,7 @@ document.addEventListener('change', (ev) => {
         else if (b.kind === 'screen') await api('PUT', `screens/${b.id}`, { name });
         else if (b.kind === 'tuya') await api('PUT', `tuya/${b.id}`, { name });
         else if (b.kind === 'airco') await api('PUT', `airco/${b.id}`, { name });
+        else if (b.kind === 'charge') await api('PUT', `charge/${b.id}`, { name });
         else if (b.kind === 'solar') await api('PUT', `solar/${b.id}`, { name });
         else if (b.kind === 'card') await api('PUT', `cards/${b.id}`, { name });
         else if (b.kind === 'action') await api('PUT', `actions/${b.id}`, { name });
@@ -2094,24 +2134,20 @@ document.addEventListener('change', (ev) => {
     t.blur();
     act(() => scSaveCard(card, { [f]: value }))();
   }
-  if (t.dataset && t.dataset.cdtarget && card) {
-    const f = t.dataset.cdtarget, v = t.value.trim();
-    const target = f === 'device' ? { device: v, dp: '', on: '', off: '' } : f === 'dp' ? { ...card.target, dp: v, on: '', off: '' } : { ...card.target, [f]: v };
-    t.blur();
-    act(() => scSaveCard(card, { target }))();
-  }
-  if (t.dataset && t.dataset.cdwhen && card) {
-    const f = t.dataset.cdwhen, value = t.value.split(',').map((x) => x.trim()).filter(Boolean);
-    t.blur();
-    act(() => scSaveCard(card, { [f]: value }))();
-  }
-  if (t.dataset && t.dataset.cdstat != null && card) { // één statuswaarde: niets, Start of Stop
-    const o = t.dataset.cdstat.toLowerCase(), drop = (xs) => (xs || []).filter((x) => x.toLowerCase() !== o);
-    const start_when = drop(card.start_when), stop_when = drop(card.stop_when);
-    if (t.value === 'start') start_when.push(t.dataset.cdstat);
-    if (t.value === 'stop') stop_when.push(t.dataset.cdstat);
-    t.blur();
-    act(() => scSaveCard(card, { start_when, stop_when }))();
+  const chg = SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'charge' ? scBlock(SC.sel) : null;
+  if (chg && t.dataset) {
+    const save = (patch) => { t.blur(); act(async () => { try { await api('PUT', `charge/${chg.id}`, patch); } finally { SC.force = true; await refresh(); } })(); };
+    if (t.dataset.chf) save({ [t.dataset.chf]: t.dataset.chf === 'price' ? (t.value.trim() === '' ? 0 : +t.value) : t.value.trim() });
+    else if (t.dataset.chdp) save({ inputs: { [t.dataset.chdp]: t.value } });
+    else if (t.dataset.chtarget) save({ target: t.dataset.chtarget === 'dp' ? { dp: t.value, on: '', off: '' } : { [t.dataset.chtarget]: t.value.trim() } });
+    else if (t.dataset.chwhen) save({ [t.dataset.chwhen]: t.value.split(',').map((x) => x.trim()).filter(Boolean) });
+    else if (t.dataset.chstat != null) { // één statuswaarde: niets, Start of Stop
+      const o = t.dataset.chstat.toLowerCase(), drop = (xs) => (xs || []).filter((x) => x.toLowerCase() !== o);
+      const start_when = drop(chg.start_when), stop_when = drop(chg.stop_when);
+      if (t.value === 'start') start_when.push(t.dataset.chstat);
+      if (t.value === 'stop') stop_when.push(t.dataset.chstat);
+      save({ start_when, stop_when });
+    }
   }
   if (t.dataset && t.dataset.cditem && card) {
     const f = t.dataset.cditem, i = +t.dataset.i, items = scItems(card);

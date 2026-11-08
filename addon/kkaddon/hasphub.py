@@ -66,7 +66,7 @@ class _Env:
 
     def _live(self) -> _cards.Live:
         h = self.hub
-        return _cards.Live(h.engine.model, h.engine, h.tuya, h.ha.states.get, h.linkhub)
+        return _cards.Live(h.engine.model, h.engine, h.tuya, h.ha.states.get, h.linkhub, None, h.charge)
 
     def dynamic(self, entity: str, lang: str):
         return self._live().value(entity, lang)
@@ -79,7 +79,8 @@ class _Env:
 class HaspHub:
     def __init__(self, ha: HaBridge, engine: Engine, clock: Callable[[], float] = time.monotonic, settle: tuple[float, float, float] = (1.0, 3.0, 0.05)) -> None:
         self.ha, self.engine, self._clock = ha, engine, clock
-        self.tuya = None  # TuyaHub: Tuya-waarden en de laadpaal op een kaart
+        self.tuya = None  # TuyaHub: Tuya-waarden op een kaart
+        self.charge = None  # ChargeHub: de laadpaal op een kaart
         self.linkhub = None  # LinkHub: lampen en laders van andere installaties op een kaart
         self.settle = settle  # s: na `idle off`, na `clearpage`, tussen twee stukken ontwerp
         self.publish: Callable[[str, str], bool] = lambda _t, _p: False  # de MQTT-brug

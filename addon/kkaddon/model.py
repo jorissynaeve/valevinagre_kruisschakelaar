@@ -459,6 +459,32 @@ def _status_list(v) -> list[str]:
     return out
 
 
+def _legacy_charger(v: dict) -> dict | None:
+    """De instellingen die tot 0.27 op de laadpaalkaart zelf stonden. Alleen om over te zetten naar een laadpaal-blok (chargehub.adopt)."""
+    src = v.get("legacy") if isinstance(v.get("legacy"), dict) else v
+    if not any(src.get(k) for k in ("tuya", "inputs", "target")):
+        return None
+    ins, tgt = src.get("inputs") or {}, src.get("target") or {}
+    if src.get("tuya"):  # tot 0.15 koos je een Feyree-lader: dat zijn deze datapunten (zie tuyahub.FEYREE)
+        dev = _device_ref(src["tuya"])
+        ins = {"status": f"v:101@{dev}", "time": f"v:120@{dev}", "energy": f"v:25@{dev}"}
+        tgt = {"device": dev, "dp": "124", "on": "OpenCharging", "off": "CloseCharging"}
+    if not isinstance(ins, dict) or set(ins) - {"status", "time", "energy"} or not isinstance(tgt, dict):
+        raise ModelError("laadpaal: onbekende ingang")
+    for k, r in ins.items():
+        if r is not None and (not isinstance(r, str) or not VALUE_RE.match(r)):
+            raise ModelError(f"laadpaal: {k} moet een datapunt van een Tuya-toestel zijn")
+    vals = {}
+    for k in ("on", "off"):
+        x = tgt.get(k, "")
+        if not isinstance(x, (str, int, float)) or isinstance(x, bool) or len(str(x)) > 40:
+            raise ModelError("laadpaal: een waarde van hoogstens 40 tekens")
+        vals[k] = str(x).strip()
+    return {"inputs": {k: r for k, r in ins.items() if r}, "target": {"device": _device_ref(tgt.get("device")), "dp": _dp(tgt.get("dp")), **vals},
+            "start_when": _status_list(src.get("start_when")), "stop_when": _status_list(src.get("stop_when")),
+            "price": _num(src.get("price", 0.30), 0, 100, "prijs per kWh"), "price_entity": _opt_entity(src.get("price_entity"), "prijs")}
+
+
 def _card(cid, v) -> dict:
     """Een kaart voor een NSPanel (zie cards.py)."""
     if not isinstance(cid, str) or not CARD_ID_RE.fullmatch(cid) or not isinstance(v, dict):
@@ -491,28 +517,13 @@ def _card(cid, v) -> dict:
             clean.append({"ref": ref, "entity": ent, "name": _plain(_name(it.get("name"), "knop.name"), "knop.name"), "icon": _icon_name(it.get("icon")), "dp": dp})
         out.update(layout=layout, items=clean)
     elif t == "charger":
-        ins, tgt = v.get("inputs") or {}, v.get("target") or {}
-        if v.get("tuya"):  # tot 0.15 koos je een Feyree-lader: dat zijn deze datapunten (zie tuyahub.FEYREE)
-            dev = _device_ref(v["tuya"])
-            ins = {"status": f"v:101@{dev}", "time": f"v:120@{dev}", "energy": f"v:25@{dev}"}
-            tgt = {"device": dev, "dp": "124", "on": "OpenCharging", "off": "CloseCharging"}
-        if not isinstance(ins, dict) or set(ins) - set(_cards.CHARGER_INPUTS) or not isinstance(tgt, dict):
-            raise ModelError("laadpaal: onbekende ingang")
-        for k, r in ins.items():
-            if r is not None and (not isinstance(r, str) or not VALUE_RE.match(r)):
-                raise ModelError(f"laadpaal: {k} moet een datapunt van een Tuya-toestel zijn")
-        vals = {}
-        for k in ("on", "off"):
-            x = tgt.get(k, "")
-            if not isinstance(x, (str, int, float)) or isinstance(x, bool) or len(str(x)) > 40:
-                raise ModelError("laadpaal: een waarde van hoogstens 40 tekens")
-            vals[k] = str(x).strip()
-        whens = {k: _status_list(v.get(k)) for k in ("start_when", "stop_when")}
-        both = {s.lower() for s in whens["start_when"]} & {s.lower() for s in whens["stop_when"]}
-        if both:
-            raise ModelError(f"laadpaal: de status {sorted(both)[0]!r} kan niet starten én stoppen")
-        out.update(inputs={k: r for k, r in ins.items() if r}, target={"device": _device_ref(tgt.get("device")), "dp": _dp(tgt.get("dp")), **vals}, **whens,
-                   price=_num(v.get("price", 0.30), 0, 100, "prijs per kWh"), price_entity=_opt_entity(v.get("price_entity"), "prijs"))
+        ref = v.get("charger") or ""
+        if not isinstance(ref, str) or (ref and not _cards.CHARGER_REF.fullmatch(ref)):
+            raise ModelError("laadpaal: ongeldige laadpaal")
+        out["charger"] = ref  # k:<id> van deze installatie, of r:<installatie>:k:<id>; leeg = nog niet gekozen
+        legacy = None if ref else _legacy_charger(v)
+        if legacy:  # de instellingen van voor 0.28: chargehub.adopt maakt er een laadpaal-blok van en wist ze hier
+            out["legacy"] = legacy
     elif t == "airco":
         ac = v.get("airco") or ""
         if not isinstance(ac, str) or (ac and not AIRCO_ID_RE.fullmatch(ac)):
@@ -771,7 +782,7 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]], sprinkle
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|w:[a-z0-9_]{1,40}|o:[a-z0-9_]{1,40}|c:[a-z0-9_]{1,40}|a:[a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:(?:g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80}|e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190})|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|w:[a-z0-9_]{1,40}|o:[a-z0-9_]{1,40}|c:[a-z0-9_]{1,40}|k:[a-z0-9_]{1,40}|a:[a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:(?:g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80}|k:[a-z0-9_]{1,40}|e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190})|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
 
 
 def _switch_gangs(raw) -> list[dict]:
@@ -1356,7 +1367,7 @@ class Model:
         old = self.cards.get(cid)
         if old is None:
             raise ModelError("onbekende kaart")
-        unknown = set(fields) - (set(old) - {"type"}) - ({"tuya"} if old["type"] == "charger" else set())  # tuya: een Feyree-lader in één keer
+        unknown = set(fields) - (set(old) - {"type"})
         if unknown:
             raise ModelError(f"kaart: onbekend veld {sorted(unknown)[0]}")
         cards = {**self.cards, cid: _card(cid, {**old, **fields})}

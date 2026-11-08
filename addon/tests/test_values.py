@@ -1,7 +1,11 @@
 """Waarden van Tuya-toestellen: als ingang van de logica, op een kaart van het NSPanel, en de routine Tuya instellen."""
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from kkaddon import cards
+from kkaddon.chargehub import ChargeHub
 from kkaddon.engine import Engine
 from kkaddon.logic import evaluate
 from kkaddon.model import Model, ModelError
@@ -23,7 +27,7 @@ class FakeTuya:
             return {"dp": dp, "name": name, "value": v, "unit": unit, "rw": rw, "type": "", "options": [], "hide": False, "diag": False}
         names = {"19": ("Vermogen", "kW"), "1": ("Aan", ""), "124": ("Laden", ""), "115": ("Laadstroom", "A")}
         return [{"id": d, "name": d.capitalize(), "online": self.online[d],
-                 "points": [pt(dp, v, names[dp][0], names[dp][1], d == "lader") for dp, v in self.values[d].items()]} for d in self.devices]
+                 "points": [pt(dp, v, names.get(dp, (dp, ""))[0], names.get(dp, (dp, ""))[1], d == "lader") for dp, v in self.values[d].items()]} for d in self.devices]
 
     def set(self, did, dp, value):
         if self.refuse:
@@ -200,26 +204,52 @@ def test_an_input_can_point_straight_at_a_datapoint():
     assert r.e.ref_value("v:19@meter") == 2.5 and r.e.ref_value(f"m:{r.hoog}") is False
 
 
-def test_the_charger_card_has_inputs_and_an_output_instead_of_a_fixed_charger():
+def test_a_charger_card_of_before_0_28_becomes_a_block_once(tmp_path):
     m = Model()
-    m.load_dict({"version": 1, "cards": {"oud": {"type": "charger", "name": "Oud", "tuya": "r:atelier:y:lader", "price": 0.3}}}, save=False)
-    assert m.cards["oud"]["inputs"] == {"status": "v:101@r:atelier:y:lader", "time": "v:120@r:atelier:y:lader", "energy": "v:25@r:atelier:y:lader"}
-    assert m.cards["oud"]["target"] == {"device": "r:atelier:y:lader", "dp": "124", "on": "OpenCharging", "off": "CloseCharging"}, "een Feyree-kaart van vroeger blijft werken"
-    cid = m.add_card("charger", "Stekker")
-    m.set_card(cid, inputs={"energy": "v:19@meter"}, target={"device": "meter", "dp": "1", "on": "ON", "off": "OFF"})  # een slimme stekker als lader
-    with pytest.raises(ModelError, match="datapunt"):
-        m.set_card(cid, inputs={"status": "m:iets"})
-    with pytest.raises(ModelError, match="onbekende ingang"):
-        m.set_card(cid, inputs={"vermogen": "v:19@meter"})
-    t = FakeTuya()
-    live = cards.Live(m, tuya=t)
-    run = live.value(f"kk.{cid}__run", "nl")
+    m.load_dict({"version": 1, "cards": {"oud": {"type": "charger", "name": "Oud", "tuya": "r:atelier:y:lader", "price": 0.3},
+                                          "stekker": {"type": "charger", "name": "Stekker", "inputs": {"energy": "v:19@meter", "time": "v:1@lader"}, "price": 0.2,
+                                                      "target": {"device": "meter", "dp": "1", "on": "ON", "off": "OFF"}},
+                                          "leeg": {"type": "charger", "name": "Leeg"}}}, save=False)
+    assert m.cards["oud"]["legacy"]["target"] == {"device": "r:atelier:y:lader", "dp": "124", "on": "OpenCharging", "off": "CloseCharging"}, "een Feyree-kaart van vroeger"
+    hub = ChargeHub(tmp_path, Engine(KEY, m, lambda raw: None), FakeTuya())
+    used = []
+    hub.adopt(SimpleNamespace(use_unchecked=lambda pid, obj: used.append((pid, obj))))
+    assert m.cards["oud"]["charger"] == "r:atelier:k:lader" and "legacy" not in m.cards["oud"], "bij de andere installatie dezelfde naam: k:<toestel>"
+    assert used == [("atelier", "k:lader")], "en die wordt hier gekozen, want de catalogus is er nog niet"
+    assert m.cards["stekker"]["charger"] == "k:meter" and "legacy" not in m.cards["stekker"]
+    c = hub.chargers["meter"]
+    assert c["name"] == "Stekker" and c["device"] == "meter" and c["inputs"] == {"energy": "19"}, "een ingang van een ander toestel wordt losgelaten"
+    assert c["target"] == {"dp": "1", "on": "ON", "off": "OFF"} and c["price"] == 0.2
+    assert m.cards["leeg"]["charger"] == "", "een kaart zonder lader blijft leeg"
+    assert json.loads((tmp_path / "charge.json").read_text())["chargers"]["meter"]["name"] == "Stekker"
+    hub.adopt(None)  # nog eens doet niets
+    assert list(hub.chargers) == ["meter"]
+    live = cards.Live(m, tuya=hub.tuya, charge=hub)
+    assert live.value("kk.stekker__run", "nl")["kind"] == "text", "hij laadt al, zonder dat de add-on startte: eerst opmerken (tick), dan is er iets te stoppen"
+    hub.tick()
+    assert hub.active["meter"]["by"] == "-", "een sessie die niet via de add-on begon staat als lokaal"
+    run = live.value("kk.stekker__run", "nl")
     assert run["kind"] == "button" and run["name"] == "Stekker" and run["value"] == "Stop", "aan staat op de startwaarde: Stop; zonder status de naam van de kaart"
-    assert live.value(f"kk.{cid}__energy", "nl")["value"] == "2.50 kW" and live.value(f"kk.{cid}__time", "nl")["value"] == "—"
-    assert live.press(f"kk.{cid}__run", "button", None) and t.sent == [("meter", "1", "OFF")]
-    m.set_card(cid, target={"device": "meter", "dp": "1", "on": "ON", "off": ""})
-    t.values["meter"]["1"] = True
-    assert live.press(f"kk.{cid}__run", "button", None) is False and len(t.sent) == 1, "geen stopwaarde gekozen: dan niets"
+    assert live.press("kk.stekker__run", "button", None) and hub.tuya.sent == [("meter", "1", "OFF")]
+    assert hub.log[-1]["name"] == "Lokaal (aan de laadpaal)" and hub.log[-1]["reason"] == "gestopt door de eigenaar"
+    assert live.value("kk.stekker__run", "nl")["value"] == "Start" and live.press("kk.stekker__run", "button", None) and hub.tuya.sent[-1] == ("meter", "1", "ON")
+    hub.update("meter", {"target": {"off": ""}})
+    assert live.press("kk.stekker__run", "button", None) is False and len(hub.tuya.sent) == 2, "geen stopwaarde gekozen: dan niets"
+
+
+def test_a_feyree_charger_without_a_card_gets_a_block_so_other_houses_keep_it(tmp_path):
+    t = FakeTuya()
+    t.devices = {"feyree": {}}
+    t.values = {"feyree": {"101": "connect", "124": "CloseCharging"}}
+    t.online = {"feyree": True}
+    st = t.status
+    t.status = lambda: [{**x, "product": "Feyree EV-lader"} for x in st()]
+    hub = ChargeHub(tmp_path, Engine(KEY, Model(), lambda raw: None), t)
+    hub.adopt(None)
+    assert hub.chargers["feyree"]["target"] == {"dp": "124", "on": "OpenCharging", "off": "CloseCharging"} and hub.chargers["feyree"]["inputs"]["energy"] == "25"
+    hub.remove("feyree")
+    hub.adopt(None)
+    assert not hub.chargers, "wie het blok weghaalt krijgt het niet terug"
 
 
 def test_the_power_card_block_has_an_input_per_row_and_a_free_one():

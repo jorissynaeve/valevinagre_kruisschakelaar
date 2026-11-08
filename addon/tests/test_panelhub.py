@@ -9,6 +9,7 @@ from aiohttp.test_utils import TestServer
 
 from fakeha import FakeHa
 from kkaddon import cards, panelhub, schema
+from kkaddon.chargehub import ChargeHub
 from kkaddon.engine import Engine
 from kkaddon.habridge import HaBridge
 from kkaddon.model import Model, ModelError
@@ -338,13 +339,16 @@ def test_a_lamp_of_the_addon_and_the_charger_are_shown_and_operated_from_the_pan
         async with Env(tmp_path) as e:
             model = e.engine.model
             e.hub.tuya = FakeTuya()
+            e.hub.charge = ChargeHub(tmp_path, e.engine, e.hub.tuya)
+            cid = e.hub.charge.add({"name": "Laadpaal", "device": "lader", "inputs": {"status": "101", "time": "120", "energy": "25"}, "price": 0.25,
+                                    "target": {"dp": "124", "on": "OpenCharging", "off": "CloseCharging"}})
             model.set_groups([{"id": "hal", "name": "Hal", "entities": [EAT, KITCHEN]}])
             model.set_group("hal", enabled=True, lamp=[KITCHEN])
             pid = model.add_panel("Gang", "127.0.0.1")
             model.add_card("grid", "Licht")
             model.set_card("licht", items=[{"ref": "g:hal"}])
             model.add_card("charger", "Laadpaal")
-            model.set_card("laadpaal", tuya="lader", price=0.25)
+            model.set_card("laadpaal", charger=f"k:{cid}")
             model.set_panel(pid, cards=["licht", "laadpaal"])
             await e.until(lambda: e.bridge.connected)
             await e.until(lambda: e.engine.groups.members["hal"][1].known is not None, what="stand van de kring")
@@ -362,12 +366,14 @@ def test_a_lamp_of_the_addon_and_the_charger_are_shown_and_operated_from_the_pan
             await e.until(lambda: any(s.startswith("entityUpd~Laadpaal~") for s in e.fake.screen()), what="laadpaal")
             page = next(s for s in e.fake.screen() if s.startswith("entityUpd~Laadpaal~"))
             assert "~button~kk.laadpaal__run~" in page and "~Aangesloten~Start" in page
-            assert "~Laadtijd~01:02:03" in page and "~Geladen~3.50 kWh" in page and "~Prijs~€ 0.88" in page
+            assert "~Laadtijd~—" in page and "~Geladen~—" in page, "buiten een sessie toont de kaart niets van de vorige"
             e.touch("event,buttonPress2,kk.laadpaal__run,button")
             await e.until(lambda: e.hub.tuya.sent == [("lader", "124", "OpenCharging")], what="starten")
+            e.hub.tuya.values["25"] = 4.5
             await e.until(lambda: any("~Aangesloten~Stop" in s for s in e.fake.screen()), what="knop wordt Stop")
+            await e.until(lambda: any("~Laadtijd~01:02:03" in s and "~Geladen~1.00 kWh" in s and "~Prijs~€ 0.25" in s for s in e.fake.screen()), what="de sessie op het scherm")
             e.hub.tuya.online = False
-            await e.until(lambda: any("~Lader offline~" in s for s in e.fake.screen()), what="offline")
+            await e.until(lambda: any("~Laadpaal offline~" in s for s in e.fake.screen()), what="offline")
             e.touch("event,buttonPress2,kk.laadpaal__run,button")
             await asyncio.sleep(0.1)
             assert len(e.hub.tuya.sent) == 1, "een lader die weg is krijgt geen bevel"
@@ -439,8 +445,8 @@ def test_the_web_api_adds_edits_and_removes_panels_and_serves_the_script(tmp_pat
                 assert (await c.post(f"/api/panels/{pid}/yaml", json={"yaml": "a: ["})).status == 400
                 r = await c.post("/api/cards", json={"type": "charger", "page": "hal", "x": 0, "y": 400})
                 assert r.status == 200 and (await r.json())["key"] == "c:laadpaal"
-                assert (await c.put("/api/cards/laadpaal", json={"price": 0.31, "tuya": "lader"})).status == 200
-                assert (await c.put("/api/cards/laadpaal", json={"price": -1})).status == 400
+                assert (await c.put("/api/cards/laadpaal", json={"charger": "k:lader"})).status == 200
+                assert (await c.put("/api/cards/laadpaal", json={"charger": "y:lader"})).status == 400, "alleen een laadpaal-blok"
                 assert (await c.put("/api/cards/laadpaal", json={"items": []})).status == 400, "een laadpaal heeft geen knoppen"
                 assert (await c.put("/api/cards/light", json={"items": [{"ref": "c:screensaver"}]})).status == 400, "een screensaver is geen subpagina"
                 assert (await c.put("/api/cards/light", json={"items": [{"name": "a~b"}]})).status == 400, "een ~ breekt het scherm"

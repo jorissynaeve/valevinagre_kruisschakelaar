@@ -22,16 +22,17 @@ STATIC = Path(__file__).parent / "static"
 CTX = web.AppKey("ctx", object)
 INGRESS_PROXY = {"172.30.32.2", "127.0.0.1", "::1"}
 # Events die de pagina moet kennen; de rest (bv. losse commando-statussen) is ruis.
-PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "airco", "solar", "link", "action"}
+PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "airco", "solar", "charge", "link", "action"}
 
 
 class Ctx:
     """Alles wat de handlers nodig hebben."""
 
-    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None, energy=None) -> None:
+    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None, energy=None, charge=None) -> None:
         self.settings, self.engine, self.model = settings, engine, engine.model
         self.transport, self.mqtt, self.ha, self.panels, self.tuya, self.links = transport, mqtt, ha, panels, tuya, links
         self.airco = airco
+        self.charge = charge  # laadpalen met sessies (chargehub.py)
         self.solar = solar  # omvormers (solarhub.py)
         self.energy = energy  # het energiedashboard van HA (energyhub.py)
         self.clients: set[web.WebSocketResponse] = set()
@@ -436,6 +437,45 @@ async def link_cmd(request: web.Request) -> web.Response:
     except LinkError as e:
         raise ModelError(str(e)) from e
     return web.json_response({"ok": True})
+
+
+def _charge(request: web.Request):
+    hub = request.app[CTX].charge
+    if hub is None:
+        raise ModelError("laadpalen zijn niet beschikbaar")
+    return hub
+
+
+async def charge_post(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    cid = _charge(request).add(b)
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"k:{cid}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "id": cid, "key": f"k:{cid}"})
+
+
+async def charge_put(request: web.Request) -> web.Response:
+    _charge(request).update(request.match_info["cid"], await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def charge_delete(request: web.Request) -> web.Response:
+    ok = _charge(request).remove(request.match_info["cid"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
+async def charge_run(request: web.Request) -> web.Response:
+    """Starten of stoppen vanuit de pagina van de eigenaar: de eigenaar is zelf de starter (of stopt een sessie van een ander)."""
+    hub, cid = _charge(request), request.match_info["cid"]
+    (hub.start if request.match_info["op"] == "start" else hub.stop)(cid, hub.who_self())
+    return web.json_response({"ok": True})
+
+
+async def charge_csv(request: web.Request) -> web.Response:
+    cid = request.match_info.get("cid")
+    return web.Response(text="﻿" + _charge(request).csv(cid), content_type="text/csv", charset="utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="laadsessies{"-" + cid if cid else ""}.csv"'})
 
 
 async def card_post(request: web.Request) -> web.Response:
@@ -915,6 +955,12 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/solar/scan", solar_scan)
     r.add_put("/api/solar/{did}", solar_put)
     r.add_delete("/api/solar/{did}", solar_delete)
+    r.add_post("/api/charge", charge_post)
+    r.add_get("/api/charge/log.csv", charge_csv)
+    r.add_get("/api/charge/{cid}/log.csv", charge_csv)
+    r.add_put("/api/charge/{cid}", charge_put)
+    r.add_delete("/api/charge/{cid}", charge_delete)
+    r.add_post("/api/charge/{cid}/{op:start|stop}", charge_run)
     r.add_post("/api/airco", airco_post)
     r.add_post("/api/airco/scan", airco_scan)
     r.add_put("/api/airco/{did}", airco_put)

@@ -178,6 +178,7 @@ class Engine:
         self.airco_view: Callable[[], list[dict]] | None = None  # de airco's, zonder sleutels (greehub.py)
         self.airco_value: Callable[[str], Any] | None = None  # een uitgang van een airco: w:<id>:on|room|set
         self.solar_view: Callable[[], list[dict]] | None = None  # de omvormers (solarhub.py)
+        self.charge_view: Callable[[], list[dict]] | None = None  # de laadpalen met hun sessies (chargehub.py)
         self.solar_value: Callable[[str], Any] | None = None  # een uitgang van een omvormer: o:<id>:pv|load|grid|batt|soc|today
         self.link_view: Callable[[], dict] | None = None  # koppelingen met andere installaties, zonder sleutel (linkhub.py)
         self._at(SPRINKLER_TICK, self._sprinkler_tick)
@@ -849,6 +850,7 @@ class Engine:
             "tuya": self.tuya_view() if self.tuya_view else [],
             "airco": self.airco_view() if self.airco_view else [],
             "solar": self.solar_view() if self.solar_view else [],
+            "charge": self.charge_view() if self.charge_view else [],
             "links": self.link_view() if self.link_view else {"me": {"id": "", "name": "", "port": 0, "has_key": False, "listening": False, "error": ""}, "peers": [], "remote": {}},
             "screens": self.screen_view() if self.screen_view else [{"id": k, **s, "online": False, "phase": "idle", "error": "", "missing": [], "uptime": None, "received": 0, "plates": []}
                                                                     for k, s in self.model.screens.items()],

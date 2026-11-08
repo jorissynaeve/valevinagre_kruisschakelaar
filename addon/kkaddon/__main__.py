@@ -13,6 +13,7 @@ import sys
 from aiohttp import web
 
 from . import __version__, settings as cfg
+from .chargehub import ChargeHub
 from .engine import Engine
 from .greehub import GreeHub
 from .habridge import HaBridge
@@ -67,6 +68,13 @@ async def run() -> None:
     mqtt.extras.append(tuya)
     tuya.changed = mqtt.resync
     tuya.start()
+    charge = ChargeHub(s.data_dir, engine, tuya)  # laadpalen met sessies, een eigen blok (k:<id>) bovenop een Tuya-toestel
+    charge.state, charge.home, charge.peer_name = ha.states.get, lambda: links.me["name"] or "Dit huis", links.peer_name
+    links.charge = charge
+    panels.charge, screens.charge = charge, charge
+    mqtt.extras.append(charge)
+    charge.changed = mqtt.resync
+    charge.adopt(links)  # de laadpaalkaarten van voor 0.28 omzetten naar een blok (eenmalig)
     airco = GreeHub(s.data_dir, engine)  # airco's met een Gree-module, een eigen blok (w:<id>) los van Tuya
     mqtt.extras.append(airco)
     panels.airco = airco  # de airco-kaart op het paneel
@@ -87,7 +95,7 @@ async def run() -> None:
     links.changed = mqtt.resync
     energy = EnergyHub(s.data_dir, ha)  # het energiedashboard van HA invullen vanuit de meters
     await links.start()
-    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar, energy)
+    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar, energy, charge)
     runner = web.AppRunner(make_app(ctx), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", s.web_port).start()
@@ -106,7 +114,15 @@ async def run() -> None:
             engine.tick()
             await asyncio.sleep(0.01)
 
-    tasks = [asyncio.create_task(ticker()), asyncio.create_task(mqtt.run()), asyncio.create_task(ha.run()), asyncio.create_task(panels.run()), asyncio.create_task(screens.run()), asyncio.create_task(links.run())]
+    async def charging() -> None:
+        while True:
+            try:
+                charge.tick()
+            except Exception:  # noqa: BLE001 - een fout in één ronde mag de sessies niet voorgoed stilleggen
+                log.exception("laadsessies")
+            await asyncio.sleep(1.0)
+
+    tasks = [asyncio.create_task(ticker()), asyncio.create_task(mqtt.run()), asyncio.create_task(ha.run()), asyncio.create_task(panels.run()), asyncio.create_task(screens.run()), asyncio.create_task(links.run()), asyncio.create_task(charging())]
     await stop.wait()
     log.info("afsluiten")
     for t in tasks:

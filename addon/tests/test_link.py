@@ -162,36 +162,6 @@ def test_two_houses_share_their_devices_and_the_owner_executes_a_command(tmp_pat
     run(go())
 
 
-def test_a_remote_charger_on_a_panel_card(tmp_path):
-    async def go():
-        a, b = House(tmp_path, "hoofdhuis"), House(tmp_path, "atelier")
-        b.hub.tuya = FakeTuya()
-        await a.start()
-        await b.start()
-        try:
-            a.hub.add_peer("127.0.0.1", b.hub.port)
-            await until(lambda: "y:lader" in a.hub.status()["remote"].get("atelier", {}).get("catalog", {}))
-            a.hub.set_use("atelier", "y:lader", True)
-            await until(lambda: a.hub.object("atelier", "y:lader") is not None and a.hub.object("atelier", "y:lader")["online"])
-            m = a.engine.model
-            m.add_card("charger")
-            m.set_card("laadpaal", tuya="r:atelier:y:lader")
-            live = cards.Live(m, link=a.hub)
-            assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Aangesloten", "value": "Start", "color": cards.DEFAULT_COLOR}
-            assert live.value("kk.laadpaal__energy", "nl")["value"] == "2.00 kWh"
-            assert live.press("kk.laadpaal__run", "button", None) is True
-            await until(lambda: b.hub.tuya.sent == [("124", "OpenCharging")], what="starten via de andere installatie")
-            await until(lambda: live.value("kk.laadpaal__run", "nl")["value"] == "Stop", what="knop wordt Stop")
-            await b.stop()
-            await until(lambda: not a.hub.is_up("atelier"))
-            assert live.value("kk.laadpaal__run", "nl")["name"] == "Lader offline"
-            assert live.press("kk.laadpaal__run", "button", None) is False
-        finally:
-            await a.stop()
-
-    run(go())
-
-
 def test_a_wrong_key_is_refused_and_two_listings_leave_one_connection(tmp_path):
     async def go():
         a, b, c = House(tmp_path, "hoofdhuis"), House(tmp_path, "atelier"), House(tmp_path, "garage", key=link.new_key())
@@ -232,19 +202,19 @@ def test_the_key_and_name_stay_out_of_the_model_and_the_status(tmp_path):
 
 def test_what_0_12_already_used_on_the_schema_or_a_card_stays_chosen(tmp_path):
     (tmp_path / "link.json").write_text(json.dumps({"id": "hoofdhuis", "name": "Hoofdhuis", "key": SECRET, "peers": [],
-                                                    "known": {"atelier": {"name": "Atelier", "objects": {"y:lader": {"kind": "tuya", "name": "Feyree"},
+                                                    "known": {"atelier": {"name": "Atelier", "objects": {"k:lader": {"kind": "charger", "name": "Laadpaal"},
                                                                                                         "g:hal": {"kind": "lamp", "name": "Hal"},
                                                                                                         "g:tuin": {"kind": "lamp", "name": "Tuin"}}}}}), encoding="utf-8")
     m = Model()
     m.add_card("charger")
-    m.set_card("laadpaal", tuya="r:atelier:y:lader")
+    m.set_card("laadpaal", charger="r:atelier:k:lader")
     m.set_schema({**m.schema, "pages": [{"id": "hal", "name": "Hal"}], "blocks": {"r:atelier:g:hal": {"page": "hal", "x": 0, "y": 0}}})
     hub = LinkHub(tmp_path, Engine(KEY, m, lambda raw: None))
-    assert sorted(hub.use["atelier"]) == ["g:hal", "y:lader"], "de tuin stond nergens: die wordt niet vanzelf gekozen"
+    assert sorted(hub.use["atelier"]) == ["g:hal", "k:lader"], "de tuin stond nergens: die wordt niet vanzelf gekozen"
     assert json.loads((tmp_path / "link.json").read_text())["use"] == hub.use, "en dat is bewaard: de volgende start kiest niets meer vanzelf"
     hub.set_use("atelier", "g:hal", False)
     again = LinkHub(tmp_path, Engine(KEY, m, lambda raw: None))
-    assert again.use["atelier"] == ["y:lader"], "een keuze die je daarna maakt, blijft"
+    assert again.use["atelier"] == ["k:lader"], "een keuze die je daarna maakt, blijft"
 
 
 class OwnHa:

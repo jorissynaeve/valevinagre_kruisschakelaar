@@ -129,7 +129,7 @@ Wat er op het scherm staat, bouw je uit **kaarten**: eigen blokken op het schema
 | Kaart | Wat ze toont |
 |---|---|
 | **Knoppen** | Een raster tot 8 knoppen (of een lijst tot 4). Een knop bedient een **lamp** van het schema, een **entiteit** uit HA, of opent een **subpagina**. |
-| **Laadpaal** | Start/stop, de status, de laadtijd, de geladen kWh en de prijs (vast tarief per kWh, of een entiteit uit HA die wint als ze een getal geeft). Werkt met elke lader: sleep links een waarde van een Tuya-blok naar *Status*, *Laadtijd* en *Geladen*, en rechts *start/stop* naar een instelling (bv. *Laden*); kies bij de kaart de waarde om te starten en te stoppen. Onder *Start of stop volgens de status* zet je per statuswaarde wat de knop doet: bv. `connect` en `finish` → Start, `charing` → Stop. Bij een andere status toont het paneel alleen de status, zonder knop. Laat je dat leeg, dan toont de knop Stop zolang hij laadt, anders Start. |
+| **Laadpaal** | Start/stop, de status, de laadtijd, de geladen kWh en de prijs van één laadsessie. Kies bij de kaart een **laadpaal** (het blok *Laadpaal*, hier of van een andere installatie, zie *Laadpaal met sessies*). Buiten een sessie toont de kaart alleen de status; tijdens jouw sessie ook tijd, kWh en prijs; tijdens een sessie van een ander huis alleen *Laadpaal bezet*. |
 | **Screensaver** | Het startscherm: klok, datum, weer met 4 dagen voorspelling, een temperatuur binnen en tot 2 statuspictogrammen. Eén per paneel; ze is geen pagina. |
 | **Energie** | Het energieschema, tot 6 sensoren, met per sensor eventueel twee grenzen voor de kleur (groen, oranje, rood). |
 | **Wifi (QR)** | Een QR-code voor het gastnetwerk, met de naam en het wachtwoord ernaast. |
@@ -179,7 +179,7 @@ Omdat zo'n routine een lader kan starten, is ze voorzichtig:
 
 ## Andere installaties (een ander subnet)
 
-Staat een deel van het huis in een ander subnet, met een eigen Home Assistant en een eigen Huisconfig, dan bieden die installaties elkaar hun **lampen** (kringen en lichten op het netwerk), **gangen** (de touch en het relais van een schakelaar) en **Tuya-toestellen** aan. Je kiest per installatie wat je ervan wilt gebruiken, bv. alleen de laadpaal en de stroommeter. Zo kan een NSPanel in het ene subnet de laadpaal in het andere starten.
+Staat een deel van het huis in een ander subnet, met een eigen Home Assistant en een eigen Huisconfig, dan bieden die installaties elkaar hun **lampen** (kringen en lichten op het netwerk), **gangen** (de touch en het relais van een schakelaar), **laadpalen** en **Tuya-toestellen** aan. Je kiest per installatie wat je ervan wilt gebruiken, bv. alleen de laadpaal en de stroommeter. Zo kan een NSPanel in het ene subnet de laadpaal in het andere starten.
 
 1. **Naam**: tabblad *Instellingen* → *Andere installaties* → geef elke installatie een eigen naam (bv. *Hoofdhuis*, *Atelier*). De id die eruit volgt blijft, ook als je de naam later verandert.
 2. **Koppelsleutel**: maak op één installatie een sleutel (*Nieuwe sleutel*), **kopieer hem vóór je opslaat**, en plak hem bij elke andere. Alle installaties van het huis gebruiken dezelfde sleutel. De add-on toont hem na het opslaan niet meer.
@@ -189,7 +189,7 @@ Staat een deel van het huis in een ander subnet, met een eigen Home Assistant en
 
 Wat je gekozen hebt, staat links in de lijst onder *Andere installaties* en zet je als blok op het schema. Zo'n blok is **alleen-lezen**: je kunt het bedienen (aan/uit, een datapunt van een Tuya-toestel) en aan een kaart hangen, maar instellen, hernoemen en aansluiten op touches doe je bij de installatie waar het toestel hangt. Die beslist ook: een lamp die daar vastgehouden wordt door haar aan/uit-ingang, weigert een bevel.
 
-* **Op een kaart**: sleep een knop van een rasterkaart naar een lamp van een andere installatie, of kies bij een laadpaalkaart een lader onder *Van andere installaties*.
+* **Op een kaart**: sleep een knop van een rasterkaart naar een lamp van een andere installatie, of kies bij een laadpaalkaart een laadpaal onder *Van andere installaties*.
 * **In een kring (een touch hier, een lamp daar)**: kies bij de andere installatie een **gang**: een schakelaar uit HA, een extern apparaat, een Tuya-relais of een relais van een NSPanel. Ze verschijnt als blok met een touch en een relais, net als een schakelaar. Sleep de touch naar de ingang van een lamp hier, of het relais naar de uitgang. Een druk op die touch schakelt dan de lamp hier, en de LED van de touch volgt de lamp. Dat werkt alleen op een lamp via Home Assistant (een kring), niet op een licht op het netwerk.
   * **De kring draait waar de lamp gedefinieerd is.** De installatie van de touch voert alleen uit wat de kring vraagt.
   * **Valt de koppeling weg**, dan werkt alles in elk subnet gewoon door, maar de touch daar schakelt de lamp hier niet meer (zijn eigen relais wel). **Komt ze terug**, dan neemt de touch de stand van de lamp over: de lamp heeft gelijk, en er gaat niets vanzelf aan of uit.
@@ -205,6 +205,18 @@ Wat je gekozen hebt, staat links in de lijst onder *Andere installaties* en zet 
    de lijst. Tijdens het leren schakelt er niets. Kies per schakelaar *wisselen*, *aan* of *uit*.
 3. *Opslaan*. De add-on stuurt de configuratie naar de betrokken nodes en toont in het logboek wanneer die
    bevestigd is. De indicator (LED) van een touch volgt automatisch het licht dat die knop bedient.
+
+## Laadpaal met sessies
+
+*+ Module → Toestellen → Laadpaal* maakt een blok op een **Tuya-toestel van deze installatie** (bv. de Feyree-lader). Het blok houdt de laadsessies bij en is wat andere installaties (andere subnets, met een eigen HA) bedienen, in plaats van de ruwe datapunten.
+
+* **Eén sessie tegelijk.** Wie start, is de *starter*. Een tweede start wordt geweigerd (*de laadpaal is bezet*). Alleen de starter kan stoppen; de eigenaar (de installatie waar de laadpaal hangt) altijd, als noodknop. Dat staat dan in de log.
+* **Verborgen voor de anderen.** Tijdens een sessie krijgt een andere installatie niets dan *bezet*: geen status, tijd, kWh of naam van de starter. Dat beslist de eigenaar vóór het versturen, het gaat niet over de lijn. Het Tuya-toestel zelf wordt daarom niet meer aan andere installaties aangeboden: ze gaan via het blok. (Gevolg: een kaart of module bij een andere installatie die dat toestel rechtstreeks las, ziet het niet meer; kies daar de laadpaal.)
+* **Log.** Elke sessie krijgt een regel: wie (welke installatie), start, einde, duur, kWh, kosten en waarom ze eindigde (gestopt door de starter of de eigenaar, klaar of losgekoppeld, niet gestart). Zie het blok in de zijbalk; *CSV downloaden* geeft alles voor Excel. Laadt de paal zonder dat de add-on startte (kaart of app van de auto), dan staat dat er als *Lokaal (aan de laadpaal)*. In HA verschijnen per laadpaal drie sensoren: *Laadsessie* (vrij of bezet), *Laatste sessie* (kWh) en *Laatste sessie door*.
+* **Tarief.** Op het blok: een vast bedrag per kWh, of een entiteit van HA die wint als ze een getal geeft. De kosten in de log gebruiken het tarief op het moment dat de sessie eindigt.
+* **Verbinding weg.** Valt de verbinding met de starter weg, dan loopt de sessie door. Ze eindigt als de laadpaal klaar is, of als de starter (of de eigenaar) stopt. Ook een herstart van de add-on onthoudt wie er laadt. Is de laadpaal zelf offline, dan wordt er niets afgesloten.
+* **Instellingen** (op het blok): het toestel, de datapunten voor status, laadtijd en geladen kWh, het datapunt en de waarden om te starten en te stoppen, en per statuswaarde of je mag starten (bv. `connect`, `finish`). De kWh van een sessie is de meterstand aan het eind min die aan het begin; begint de teller opnieuw, dan telt de nieuwe teller.
+* **Bij het bijwerken naar 0.28** worden de bestaande laadpaalkaarten eenmalig omgezet: een lader van deze installatie wordt een blok (met de instellingen van de kaart), een lader bij een andere installatie wordt een verwijzing naar het blok dat die installatie op dezelfde manier maakt. Een Feyree-lader zonder kaart krijgt ook een blok. **Werk alle installaties tegelijk bij**: de koppeling weigert een andere versie.
 
 ## Tuya rechtstreeks (zonder HACS, LocalTuya of cloud)
 

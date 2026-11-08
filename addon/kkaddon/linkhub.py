@@ -89,6 +89,7 @@ class LinkHub:
         self.engine, self.model = engine, engine.model
         self.port, self.retry, self._clock = port, retry, clock
         self.tuya = None  # TuyaHub: zijn toestellen delen en bedienen
+        self.charge = None  # ChargeHub: zijn laadpalen delen en laten starten of stoppen (met de starter erbij)
         self.ha = None  # HaBridge: de stand van de gangen, en ze schakelen (attach_ha)
         self.me = {"id": "", "name": ""}
         self.key_text = ""
@@ -137,9 +138,8 @@ class LinkHub:
         refs = {k for k in m.schema["blocks"] if k.startswith("r:")}
         for c in m.cards.values():
             refs |= {it["ref"] for it in c.get("items", []) if c["type"] == "grid" and (it.get("ref") or "").startswith("r:")}
-            if c["type"] == "charger":  # de toestellen op de ingangen en op start/stop
-                devs = [r.partition("@")[2] for r in c["inputs"].values()] + [c["target"]["device"]]
-                refs |= {d for d in devs if d.startswith("r:")}
+            if c["type"] == "charger" and c.get("charger", "").startswith("r:"):  # de laadpaal van een andere installatie
+                refs.add(c["charger"])
             for it in c.get("items", []):  # een waarde op een knop of een energierij
                 for d in (it.get("ref") if it.get("dp") else None, it.get("tuya")):
                     if d and d.startswith("r:"):
@@ -261,6 +261,12 @@ class LinkHub:
             self._spawn(self._send_want(conn))
         self._poke()
 
+    def use_unchecked(self, pid: str, obj: str) -> None:
+        """Kiezen zonder dat de catalogus al bekend is: de omzetting van een laadpaalkaart bij het bijwerken (chargehub.adopt)."""
+        if ID_RE.match(pid) and OBJ_RE.match(obj) and obj not in self.use.setdefault(pid, []):
+            self.use[pid].append(obj)
+            self._save()
+
     def used(self, pid: str) -> set[str]:
         return set(self.use.get(pid, []))
 
@@ -359,8 +365,9 @@ class LinkHub:
             dev = m.schema["names"].get(f"d:{sid}") or s["name"]
             for g in s["gangs"]:
                 out.setdefault(g["entity"], f"{dev} · {g['name'] or g['entity']}")
+        managed = self.charge.devices_used() if self.charge else set()
         for t in (self.tuya.status() if self.tuya else []):
-            for p in _tuya_relays(t):
+            for p in ([] if t["id"] in managed else _tuya_relays(t)):
                 out.setdefault(tuya_entity(t["id"], p["dp"]), f"{t['name']} · {p['name']}")
         for pid, p in sorted(m.panels.items()):
             for n in (1, 2):
@@ -371,8 +378,10 @@ class LinkHub:
         """Entiteiten in een actieve kring van deze installatie: die stuurt hier al iemand."""
         return {x for g in self.model.groups.values() if g["enabled"] for x in g["entities"]}
 
-    def export(self) -> dict[str, dict]:
+    def export(self, peer: str | None = None) -> dict[str, dict]:
+        """Wat deze installatie aanbiedt, zoals `peer` het mag zien (een laadpaal tijdens een sessie van een ander: alleen "bezet")."""
         e, out = self.engine, {}
+        managed = self.charge.devices_used() if self.charge else set()
         for g in e.groups.view():
             basis = [m for m in g["members"] if m["lamp"] and m["on"] is not None] or g["members"]
             on = None if all(m["on"] is None for m in basis) else any(m["on"] for m in basis)
@@ -380,7 +389,11 @@ class LinkHub:
         for (n, r), l in sorted(self.model.lights.items()):
             info = e.nodes.get(n)
             out[f"l{n}.{r}"] = {"kind": "lamp", "name": l.name or f"{self.model.node_name(n)} relais {r + 1}", "on": e.light_state(n, r), "online": bool(info and info.online), "held": False}
+        if self.charge is not None and peer is not None:
+            out.update(self.charge.export(peer))
         for t in (self.tuya.status() if self.tuya else []):
+            if t["id"] in managed:
+                continue  # een laadpaal: andere installaties gaan via het blok, anders omzeilen ze de sessie en zien ze alles
             pts = [{k: p[k] for k in ("dp", "code", "name", "value", "unit", "rw", "type", "options", "min", "max", "step", "hide", "diag")} for p in t["points"]]
             out[f"y:{t['id']}"] = {"kind": "tuya", "name": t["name"], "online": t["online"], "product": t["product"], "points": pts}
         states, busy = (self.ha.states if self.ha else {}), self._busy()
@@ -398,9 +411,21 @@ class LinkHub:
         if obj not in conn.want:
             return "dit toestel is niet gekozen bij de andere installatie"
         log.info("bevel van %s: %s %s", self.peer_name(peer), obj, op or f"{m.get('dp')}={m.get('value')}")
+        if obj.startswith("k:"):  # een laadpaal: de eigenaar noteert wie start, en alleen die kan stoppen
+            if self.charge is None or obj[2:] not in self.charge.chargers:
+                return "onbekende laadpaal"
+            if op not in ("start", "stop"):
+                return "ongeldig bevel"
+            try:
+                (self.charge.start if op == "start" else self.charge.stop)(obj[2:], self.charge.who_peer(peer))
+            except ModelError as err:
+                return str(err)
+            return None
         if obj.startswith("y:"):
             if self.tuya is None or obj[2:] not in self.tuya.devices:
                 return "onbekend Tuya-toestel"
+            if self.charge is not None and obj[2:] in self.charge.devices_used():
+                return "dit toestel hoort bij een laadpaal: bedien de laadpaal"
             try:
                 self.tuya.set(obj[2:], str(m.get("dp")), str(m.get("value")))
             except ModelError as err:
@@ -596,7 +621,7 @@ class LinkHub:
 
     async def _push(self, conn: Conn) -> None:
         """De catalogus aan iedereen; de stand alleen van wat de andere kant gekozen heeft. Telkens alleen als er iets veranderd is."""
-        objs = self.export()
+        objs = self.export(conn.peer)
         catalog = json.dumps({k: {"kind": v["kind"], "name": v["name"], **({"busy": v["busy"]} if "busy" in v else {})} for k, v in objs.items()},
                              sort_keys=True, ensure_ascii=False)
         if catalog != conn.sent_catalog:
@@ -613,7 +638,7 @@ class LinkHub:
             objs = m.get("objects")
             if not isinstance(objs, dict) or len(objs) > MAX_OBJECTS:
                 return
-            clean = {k: v for k, v in objs.items() if isinstance(k, str) and OBJ_RE.match(k) and isinstance(v, dict) and v.get("kind") in ("lamp", "tuya", "gang")}
+            clean = {k: v for k, v in objs.items() if isinstance(k, str) and OBJ_RE.match(k) and isinstance(v, dict) and v.get("kind") in ("lamp", "tuya", "gang", "charger")}
             if t == "state":
                 use = self.used(conn.peer)
                 self.remote[conn.peer] = {k: v for k, v in clean.items() if k in use}

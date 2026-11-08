@@ -6,9 +6,12 @@ from types import SimpleNamespace
 import pytest
 
 from kkaddon import cards
+from kkaddon.chargehub import ChargeHub
+from kkaddon.engine import Engine
 from kkaddon.model import Model, ModelError
 from kkaddon.panel import Panel
 
+from rig import KEY
 from test_panel import FakeEnv
 
 YAML = (Path(__file__).parent / "data" / "nspanel1.yaml").read_text(encoding="utf-8")
@@ -117,53 +120,76 @@ class FakeTuya:
         self.sent.append((dp, value))
 
 
-def charger(**kw):
+class Clock:
+    def __init__(self):
+        self.t = 1_700_000_000.0
+
+    def __call__(self):
+        return self.t
+
+
+def charger(tmp_path, tuya, clock=None, **cfg):
+    """Een model met een laadpaalkaart die wijst naar een laadpaal-blok op het Tuya-toestel `lader`."""
     m = Model()
+    hub = ChargeHub(tmp_path, Engine(KEY, m, lambda raw: None), tuya, clock=clock or Clock())
+    cid = hub.add({"name": "Laadpaal", "device": "lader", "inputs": {"status": "101", "time": "120", "energy": "25"},
+                   "target": {"dp": "124", "on": "OpenCharging", "off": "CloseCharging"}, **cfg})
     m.add_card("charger")
-    if kw:
-        m.set_card("laadpaal", **kw)
-    return m
+    m.set_card("laadpaal", charger=f"k:{cid}")
+    return m, hub
 
 
-def test_the_charger_rows():
-    m = charger(tuya="lader", price=0.3, price_entity="sensor.tarief")
-    t = FakeTuya({"101": "charing", "124": "OpenCharging", "25": 10, "120": "02:00:00"})
-    live = cards.Live(m, tuya=t, state=lambda e: ("0.2", {}) if e == "sensor.tarief" else None)
+def test_the_charger_rows(tmp_path):
+    t = FakeTuya({"101": "connect", "124": "CloseCharging", "25": 10, "120": "02:00:00"})
+    m, hub = charger(tmp_path, t, price=0.3, price_entity="sensor.tarief")
+    hub.state = lambda e: ("0.2", {}) if e == "sensor.tarief" else None
+    live = cards.Live(m, tuya=t, charge=hub)
+    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Aangesloten", "value": "Start", "color": cards.DEFAULT_COLOR}
+    assert live.value("kk.laadpaal__energy", "nl")["value"] == "—", "buiten een sessie toont de kaart niets van de vorige"
+    assert live.press("kk.laadpaal__run", "button", None) is True and t.sent == [("124", "OpenCharging")]
+    t.values.update({"101": "charing", "25": 12.5})
     assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Aan het laden", "value": "Stop", "color": cards.CHARGE_COLOR}
-    assert live.value("kk.laadpaal__price", "nl") == {"kind": "text", "value": "€ 2.00"}, "de HA-entiteit wint van het vaste tarief"
     assert live.value("kk.laadpaal__run", "en")["name"] == "Charging"
-    assert live.press("kk.laadpaal__run", "button", None) is True and t.sent == [("124", "CloseCharging")]
-    live = cards.Live(m, tuya=t, state=lambda e: ("unknown", {}))
-    assert live.value("kk.laadpaal__price", "nl")["value"] == "€ 3.00", "geeft de entiteit geen getal, dan het vaste tarief"
-    t.values = {"101": "iets_nieuws", "124": "CloseCharging"}
+    assert live.value("kk.laadpaal__energy", "nl")["value"] == "2.50 kWh", "de kWh van deze sessie, niet de meterstand"
+    assert live.value("kk.laadpaal__time", "nl")["value"] == "02:00:00"
+    assert live.value("kk.laadpaal__price", "nl") == {"kind": "text", "value": "€ 0.50"}, "de HA-entiteit wint van het vaste tarief"
+    t.values["101"] = "iets_nieuws"
     assert live.value("kk.laadpaal__run", "nl")["name"] == "iets_nieuws", "een onbekende stand tonen we zoals ze komt"
-    assert live.value("kk.laadpaal__energy", "nl")["value"] == "—" and live.value("kk.laadpaal__price", "nl")["value"] == "—"
-    assert cards.Live(charger(), tuya=t).value("kk.laadpaal__run", "nl")["name"] == "Start/stop niet aangesloten"
-    assert cards.Live(m, tuya=None).value("kk.laadpaal__run", "nl")["name"] == "Lader offline"
-    assert cards.Live(m, tuya=t).value("kk.weg__run", "nl") is None
+    assert live.press("kk.laadpaal__run", "button", None) is True and t.sent[-1] == ("124", "CloseCharging")
+    assert hub.log[-1]["kwh"] == 2.5 and hub.log[-1]["cost"] == 0.5 and hub.log[-1]["name"] == "Dit huis"
+    assert live.value("kk.laadpaal__price", "nl")["value"] == "—"
+    blank = Model()
+    blank.add_card("charger")
+    assert cards.Live(blank, charge=hub).value("kk.laadpaal__run", "nl")["name"] == "Geen laadpaal gekozen"
+    assert cards.Live(m, charge=None).value("kk.laadpaal__run", "nl")["name"] == "Laadpaal offline"
+    assert cards.Live(m, charge=hub).value("kk.weg__run", "nl") is None
+    with pytest.raises(ModelError, match="ongeldige laadpaal"):
+        m.set_card("laadpaal", charger="y:lader")
 
 
-def test_the_status_decides_start_or_stop_from_two_lists():
-    m = charger(tuya="lader", start_when="connect, Finish", stop_when=["charing", "wait"])
-    assert m.cards["laadpaal"]["start_when"] == ["connect", "Finish"] and m.cards["laadpaal"]["stop_when"] == ["charing", "wait"]
+def test_the_status_decides_start_from_two_lists(tmp_path):
     t = FakeTuya({"101": "wait", "124": "CloseCharging"})
-    live = cards.Live(m, tuya=t)
-    assert live.value("kk.laadpaal__run", "nl")["value"] == "Stop", "de status wint van het datapunt van start/stop"
-    assert live.press("kk.laadpaal__run", "button", None) is True and t.sent == [("124", "CloseCharging")]
-    t.values = {"101": "finish", "124": "OpenCharging"}  # hoofdletters tellen niet
+    m, hub = charger(tmp_path, t, start_when="connect, Finish", stop_when=["charing", "wait"])
+    cid = next(iter(hub.chargers))
+    assert hub.chargers[cid]["start_when"] == ["connect", "Finish"] and hub.chargers[cid]["stop_when"] == ["charing", "wait"]
+    live = cards.Live(m, tuya=t, charge=hub)
+    assert live.value("kk.laadpaal__run", "nl") == {"kind": "text", "name": "Wacht", "value": "", "color": cards.DEFAULT_COLOR}, "in de stoplijst en geen sessie: niets te starten"
+    assert live.press("kk.laadpaal__run", "button", None) is False and t.sent == []
+    t.values["101"] = "finish"  # hoofdletters tellen niet
     assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Klaar", "value": "Start", "color": cards.DEFAULT_COLOR}
-    assert live.press("kk.laadpaal__run", "button", None) is True and t.sent[-1] == ("124", "OpenCharging")
-    t.values = {"101": "fault", "124": "CloseCharging"}
-    assert live.value("kk.laadpaal__run", "nl") == {"kind": "text", "name": "Storing", "value": "", "color": cards.DEFAULT_COLOR}, "in geen lijst: geen knop"
-    assert live.press("kk.laadpaal__run", "button", None) is False and len(t.sent) == 2
+    assert live.press("kk.laadpaal__run", "button", None) is True and t.sent == [("124", "OpenCharging")]
+    t.values["101"] = "wait"
+    assert live.value("kk.laadpaal__run", "nl")["value"] == "Stop", "in een sessie kun je altijd stoppen"
+    hub.stop(cid, hub.who_self())
     t.values = {"124": "CloseCharging"}
     assert live.value("kk.laadpaal__run", "nl")["kind"] == "text", "status niet te lezen: niets"
-    m.set_card("laadpaal", inputs={})
-    assert live.value("kk.laadpaal__run", "nl")["value"] == "Start", "zonder status-ingang zoals vroeger"
+    hub.update(cid, {"inputs": {"status": ""}})
+    t.values = {"124": "CloseCharging"}
+    assert live.value("kk.laadpaal__run", "nl")["value"] == "Start", "zonder status-ingang: starten zolang hij niet laadt"
     with pytest.raises(ModelError, match="starten én stoppen"):
-        m.set_card("laadpaal", start_when=["connect"], stop_when=["Connect"])
+        hub.update(cid, {"start_when": ["connect"], "stop_when": ["Connect"]})
     with pytest.raises(ModelError, match="40 tekens"):
-        m.set_card("laadpaal", stop_when=["x" * 41])
+        hub.update(cid, {"stop_when": ["x" * 41]})
 
 
 def test_a_lamp_on_the_network_is_read_and_switched_through_the_engine():
@@ -183,13 +209,13 @@ def test_a_lamp_on_the_network_is_read_and_switched_through_the_engine():
     assert cards.config(m, "p")["cards"][0]["entities"][0] == {"entity": "kk.licht__0", "name": "Plafond", "icon": "mdi:lightbulb"}
 
 
-def test_a_dynamic_row_on_the_screen_asks_the_env_and_a_press_goes_back_to_it():
-    m = charger(tuya="lader")
+def test_a_dynamic_row_on_the_screen_asks_the_env_and_a_press_goes_back_to_it(tmp_path):
+    t = FakeTuya({"101": "connect", "25": 1.0, "124": "CloseCharging"})
+    m, hub = charger(tmp_path, t)
     m.add_panel("P")
     m.set_panel("p", cards=["laadpaal"])
     env, out = FakeEnv(), []
-    t = FakeTuya({"101": "connect", "25": 1.0, "124": "CloseCharging"})
-    live = cards.Live(m, tuya=t)
+    live = cards.Live(m, tuya=t, charge=hub)
     env.dynamic, env.press = live.value, lambda e, k, v: live.press(e, k, v)
     p = Panel(cards.config(m, "p"), env, out.append)
     assert p.dynamic and "kk.laadpaal__run" not in p.entities(), "niet aan HA vragen"

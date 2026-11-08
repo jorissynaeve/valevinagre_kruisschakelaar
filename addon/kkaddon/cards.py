@@ -35,10 +35,9 @@ DEVICE_REF = re.compile(r"^(y:[a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80
 LEVEL_RGB = ([0, 255, 0], [255, 165, 0], [255, 0, 0])  # groen, oranje, rood: dezelfde kleuren als het sjabloon van een HA-sensor
 DYN = "kk"  # het domein van een rij die zijn stand uit de add-on haalt: kk.<kaart>__<deel>
 
-# De laadpaal: drie ingangen (een datapunt elk, v:<dp>@<toestel>) en een uitgang start/stop (een datapunt met een waarde voor starten
-# en stoppen). Een Feyree-lader van vroeger (`tuya`) wordt bij het laden omgezet naar zijn datapunten (model._card).
-CHARGER_INPUTS = {"status": "Status", "time": "Laadtijd", "energy": "Geladen"}
-RUN_ON, RUN_OFF = "OpenCharging", "CloseCharging"
+# De laadpaal: de kaart wijst naar een laadpaal-blok (chargehub.py), hier `k:<id>` of bij een andere installatie `r:<installatie>:k:<id>`.
+# De instellingen en de sessies staan op het blok; de kaart toont en bedient alleen.
+CHARGER_REF = re.compile(r"^(k:[a-z0-9_]{1,40}|r:[a-z0-9_]{1,40}:k:[a-z0-9_]{1,40})$")
 # DeviceState van de lader. Gemeten is alleen `connect`; de rest is een gok op wat zo'n lader meldt. Wat we niet kennen tonen we zoals het komt.
 STATUS = {
     "nl": {"connect": "Aangesloten", "charing": "Aan het laden", "charging": "Aan het laden", "free": "Vrij", "idle": "Vrij", "available": "Vrij",
@@ -65,15 +64,12 @@ def same(value, want: str) -> bool:
     return str(value) == str(want)
 
 
-def value_ref(ref: str) -> tuple[str, str]:
-    """`v:<dp>@<toestel>` -> (toestel, dp)."""
-    dp, _, dev = ref[2:].partition("@")
-    return dev, dp
+
 CHARGE_COLOR = rgb565([0, 200, 80])
 WORDS = {
-    "nl": {"time": "Laadtijd", "energy": "Geladen", "price": "Prijs", "start": "Start", "stop": "Stop", "offline": "Lader offline", "offline_short": "offline", "none": "Start/stop niet aangesloten",
+    "nl": {"time": "Laadtijd", "energy": "Geladen", "price": "Prijs", "start": "Start", "stop": "Stop", "offline": "Laadpaal offline", "offline_short": "offline", "none": "Geen laadpaal gekozen", "busy": "Laadpaal bezet",
            "ssid": "Netwerk", "password": "Wachtwoord", "missing": "Niet gevonden"},
-    "en": {"time": "Charge time", "energy": "Charged", "price": "Price", "start": "Start", "stop": "Stop", "offline": "Charger offline", "offline_short": "offline", "none": "Start/stop not connected",
+    "en": {"time": "Charge time", "energy": "Charged", "price": "Price", "start": "Start", "stop": "Stop", "offline": "Charger offline", "offline_short": "offline", "none": "No charger chosen", "busy": "Charger in use",
            "ssid": "Network", "password": "Password", "missing": "Not found"},
 }
 
@@ -250,8 +246,9 @@ class Live:
     `engine` voor de lampen, `tuya` (TuyaHub) voor de laadpaal, `state(entity)` voor een HA-entiteit (de prijs per kWh), `link`
     (LinkHub) voor een lamp of lader van een andere installatie (`r:<installatie>:<object>`)."""
 
-    def __init__(self, model, engine=None, tuya=None, state: Callable[[str], Any] | None = None, link=None, airco=None) -> None:
+    def __init__(self, model, engine=None, tuya=None, state: Callable[[str], Any] | None = None, link=None, airco=None, charge=None) -> None:
         self.model, self.engine, self.tuya, self.link, self.airco = model, engine, tuya, link, airco  # airco: GreeHub, voor de airco-kaart
+        self.charge = charge  # ChargeHub, voor de laadpaalkaart
         self.state = state or (lambda _e: None)
         self.points = Points(tuya, link)
 
@@ -347,82 +344,43 @@ class Live:
         m = re.fullmatch(r"l(\d+)\.(\d+)", ref)
         return e.light_state(int(m[1]), int(m[2])) if m else None
 
-    def _input(self, c: dict, name: str) -> dict | None:
-        """Het punt op een ingang van de laadpaal, of None (niet aangesloten, toestel weg of offline)."""
-        ref = c["inputs"].get(name)
-        if not ref:
-            return None
-        dev, dp = value_ref(ref)
-        d = self.points.device(dev)
-        return d["points"].get(dp) if d and d["online"] else None
-
-    def _target(self, c: dict) -> tuple[dict | None, bool]:
-        """(punt, bereikbaar) van de uitgang start/stop."""
-        t = c["target"]
-        d = self.points.device(t["device"]) if t["device"] and t["dp"] else None
-        return (d["points"].get(t["dp"]) if d else None), bool(d and d["online"])
-
-    def charging(self, c: dict) -> bool:
-        """Laadt hij? Het datapunt van start/stop staat op de startwaarde, of de status zegt laden."""
-        p, _ = self._target(c)
-        st = self._input(c, "status")
-        return bool((p and c["target"]["on"] and same(p.get("value"), c["target"]["on"])) or (st and str(st.get("value")) in CHARGING))
-
-    def action(self, c: dict) -> str | None:
-        """Wat de knop doet: "start", "stop" of None (niets).
-
-        Met een lijst bij de kaart (start_when / stop_when) en een aangesloten status beslist de status: een waarde uit de
-        stoplijst geeft Stop, een uit de startlijst Start, een andere waarde (of een status die niet te lezen is) niets.
-        Zonder lijsten of zonder status: Stop zolang hij laadt (zie charging), anders Start."""
-        start, stop = c.get("start_when") or [], c.get("stop_when") or []
-        if (start or stop) and c["inputs"].get("status"):
-            st = self._input(c, "status")
-            v = str(st.get("value")).strip().lower() if st and st.get("value") is not None else None
-            if v is not None and v in {s.lower() for s in stop}:
-                return "stop"
-            if v is not None and v in {s.lower() for s in start}:
-                return "start"
-            return None
-        return "stop" if self.charging(c) else "start"
+    def charger(self, c: dict) -> dict | None:
+        """De laadpaal van een kaart zoals deze installatie hem mag zien (chargehub.view), of None (niet gekozen of weg)."""
+        ref = c.get("charger") or ""
+        if ref.startswith("r:"):
+            r = self._remote(ref)
+            o = r[2] if r else None
+            if o is None or o.get("kind") != "charger":
+                return None
+            return o if self.link.is_up(r[0]) else {**o, "online": False, "act": None, "phase": o.get("phase", "free")}
+        return self.charge.view(ref[2:], None) if ref.startswith("k:") and self.charge else None
 
     def _charger(self, c: dict, part: str, w: dict, lang: str) -> dict:
+        v = self.charger(c)
         if part == "run":
-            p, online = self._target(c)
-            if not (c["target"]["device"] and c["target"]["dp"]):
+            if not c.get("charger"):
                 return {"kind": "text", "name": w["none"], "value": "", "color": DEFAULT_COLOR}
-            if p is None or not online:
+            if v is None or not v.get("online"):
                 return {"kind": "text", "name": w["offline"], "value": "", "color": DEFAULT_COLOR}
-            act = self.action(c)
-            st = self._input(c, "status")
-            name = (STATUS[lang].get(str(st.get("value")), str(st.get("value"))) if st else _clean(c["name"]))
-            if act is None:  # de status laat niets toe: geen knop, alleen de status
-                return {"kind": "text", "name": _clean(name), "value": "", "color": CHARGE_COLOR if self.charging(c) else DEFAULT_COLOR}
-            on = act == "stop"
+            if v.get("phase") == "busy":  # een sessie van een andere installatie: niets dan dat, en geen knop
+                return {"kind": "text", "name": w["busy"], "value": "", "color": DEFAULT_COLOR}
+            st = v.get("status")
+            name = STATUS[lang].get(str(st), str(st)) if st is not None else _clean(v.get("name"))
+            if v.get("act") is None:  # de status laat niets toe: geen knop, alleen de status
+                return {"kind": "text", "name": _clean(name), "value": "", "color": CHARGE_COLOR if v.get("charging") else DEFAULT_COLOR}
+            on = v["act"] == "stop"
             return {"kind": "button", "name": _clean(name), "value": w["stop"] if on else w["start"], "color": CHARGE_COLOR if on else DEFAULT_COLOR}
+        mine = v is not None and v.get("online") and v.get("phase") in ("mine", "other")
         if part == "time":
-            p = self._input(c, "time")
-            t = p.get("value") if p else None
+            t = v.get("time") if mine else None
             return {"kind": "text", "value": _clean(t) if t not in (None, "") else "—"}
-        p = self._input(c, "energy")
-        energy = p.get("value") if p and isinstance(p.get("value"), (int, float)) and not isinstance(p.get("value"), bool) else None
         if part == "energy":
-            return {"kind": "text", "value": f"{energy:.2f} {(p or {}).get('unit') or 'kWh'}" if energy is not None else "—"}
+            e = v.get("energy") if mine else None
+            return {"kind": "text", "value": f"{e:.2f} kWh" if e is not None else "—"}
         if part == "price":
-            tariff = self.tariff(c)
-            if not isinstance(energy, (int, float)) or tariff is None:
-                return {"kind": "text", "value": "—"}
-            return {"kind": "text", "value": f"€ {energy * tariff:.2f}"}
+            cost = v.get("cost") if mine else None
+            return {"kind": "text", "value": f"€ {cost:.2f}" if cost is not None else "—"}
         return {"kind": "text", "value": ""}
-
-    def tariff(self, c: dict) -> float | None:
-        """De prijs per kWh: de HA-entiteit als ze een getal geeft, anders het vaste tarief."""
-        if c.get("price_entity"):
-            st = self.state(c["price_entity"])
-            try:
-                return float(st[0]) if st else c["price"]
-            except (TypeError, ValueError):
-                return c["price"]
-        return c["price"]
 
     # ------------------------------------------------------------ bedienen
 
@@ -440,24 +398,21 @@ class Live:
         if c["type"] == "airco" and part == "thermo":
             return self._press_airco(c, kind, value)
         if c["type"] == "charger" and part == "run" and kind == "button":
-            p, online = self._target(c)
-            if p is None or not online:
-                log.info("laadpaal %s: niet bereikbaar, niets gestuurd", c["name"])
-                return False
-            act = self.action(c)
+            v = self.charger(c)
+            act = v.get("act") if v and v.get("online") else None
             if act is None:
-                log.info("laadpaal %s: de status laat geen start of stop toe, niets gestuurd", c["name"])
+                log.info("laadpaal %s: niet bereikbaar, bezet of de status laat het niet toe, niets gestuurd", c["name"])
                 return False
-            want = c["target"]["off"] if act == "stop" else c["target"]["on"]
-            if not want:
-                return False  # geen waarde voor deze richting gekozen
+            ref = c["charger"]
+            if ref.startswith("r:"):  # de eigenaar beslist en noteert wie het doet
+                r = self._remote(ref)
+                return bool(r and self.link.send(r[0], r[1], op=act))
             try:
-                if not self.points.set(c["target"]["device"], c["target"]["dp"], want):
-                    return False
+                (self.charge.start if act == "start" else self.charge.stop)(ref[2:], self.charge.who_self())
             except ValueError as e:  # ModelError
                 log.warning("laadpaal %s: %s", c["name"], e)
                 return False
-            log.info("laadpaal %s: %s vanaf het paneel", c["name"], want)
+            log.info("laadpaal %s: %s vanaf het paneel", c["name"], act)
             return True
         return False
 

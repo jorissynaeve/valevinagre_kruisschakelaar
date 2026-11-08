@@ -21,11 +21,11 @@ from typing import Any
 from nacl.exceptions import CryptoError
 from nacl.secret import SecretBox
 
-VERSION = 3  # 2: catalogus en keuze (want); 3: gangen (e:) voor kringen over installaties. Een andere versie wordt bij de handdruk geweigerd
+VERSION = 4  # 2: catalogus en keuze (want); 3: gangen (e:) voor kringen over installaties; 4: laadpalen met sessies (k:). Een andere versie wordt bij de handdruk geweigerd
 MAX_MESSAGE = 4 * 1024 * 1024
 ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 MIN_KEY = 16  # tekens; de knop in de UI maakt er 64 (32 bytes, hex)
-_OBJ = r"g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80}|e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190}"
+_OBJ = r"g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80}|k:[a-z0-9_]{1,40}|e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190}"
 OBJ_RE = re.compile(rf"^({_OBJ})$")  # wat een installatie aanbiedt: een kring, een licht, een Tuya-toestel, een gang (e:<HA-entiteit>)
 REF_RE = re.compile(rf"^r:([a-z0-9_]{{1,40}}):({_OBJ})$")
 GANG_REF_RE = re.compile(r"^r:[a-z0-9_]{1,40}:e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190}$")  # een gang van een andere installatie, als lid van een kring
