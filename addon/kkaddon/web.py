@@ -22,18 +22,19 @@ STATIC = Path(__file__).parent / "static"
 CTX = web.AppKey("ctx", object)
 INGRESS_PROXY = {"172.30.32.2", "127.0.0.1", "::1"}
 # Events die de pagina moet kennen; de rest (bv. losse commando-statussen) is ruis.
-PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "airco", "solar", "charge", "link", "action"}
+PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "airco", "solar", "espdev", "charge", "link", "action"}
 
 
 class Ctx:
     """Alles wat de handlers nodig hebben."""
 
-    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None, energy=None, charge=None) -> None:
+    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None, energy=None, charge=None, espdev=None) -> None:
         self.settings, self.engine, self.model = settings, engine, engine.model
         self.transport, self.mqtt, self.ha, self.panels, self.tuya, self.links = transport, mqtt, ha, panels, tuya, links
         self.airco = airco
         self.charge = charge  # laadpalen met sessies (chargehub.py)
         self.solar = solar  # omvormers (solarhub.py)
+        self.espdev = espdev  # zelfbouwapparaten met het HUISDEV-protocol (espdevhub.py)
         self.energy = energy  # het energiedashboard van HA (energyhub.py)
         self.clients: set[web.WebSocketResponse] = set()
         engine.subscribe(self._on_event)
@@ -685,6 +686,56 @@ async def solar_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
+def _espdev(request: web.Request):
+    hub = request.app[CTX].espdev
+    if hub is None:
+        raise ModelError("zelfbouwapparaten zijn niet beschikbaar")
+    return hub
+
+
+async def espdev_claim(request: web.Request) -> web.Response:
+    """Een gevonden apparaat koppelen (claimen) en als blok op een pagina zetten."""
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    did = await _espdev(request).claim(str(b.get("hid") or ""))
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"e:{did}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "id": did, "key": f"e:{did}"})
+
+
+async def espdev_put(request: web.Request) -> web.Response:
+    _espdev(request).update(request.match_info["did"], await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def espdev_set(request: web.Request) -> web.Response:
+    """Een punt instellen vanuit de zijbalk. Een gevaarlijk punt vraagt `confirm: true`; de logica kan er niet bij."""
+    b = await _body(request)
+    r = await _espdev(request).set(request.match_info["did"], str(b.get("point") or ""), b.get("value"), b.get("confirm") is True)
+    return web.json_response({"ok": True, "result": r.get("result", "")})
+
+
+async def espdev_do(request: web.Request) -> web.Response:
+    b = await _body(request)
+    r = await _espdev(request).do(request.match_info["did"], str(b.get("action") or ""), b.get("args"), b.get("confirm") is True)
+    return web.json_response({"ok": True, "result": r.get("result", "")})
+
+
+async def espdev_scan(request: web.Request) -> web.Response:
+    b = await _body(request)
+    host = str(b.get("host") or "").strip()
+    if host and not re.fullmatch(r"[A-Za-z0-9.\-]{1,253}", host):
+        raise ModelError("ongeldig adres")
+    if not _espdev(request).ask(host or "255.255.255.255"):
+        raise ModelError("zoeken is niet mogelijk (zie het logboek)")
+    return web.json_response({"ok": True})
+
+
+async def espdev_delete(request: web.Request) -> web.Response:
+    ok = await _espdev(request).remove(request.match_info["did"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
 def _energy(request: web.Request):
     hub = request.app[CTX].energy
     if hub is None:
@@ -959,6 +1010,12 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/solar/scan", solar_scan)
     r.add_put("/api/solar/{did}", solar_put)
     r.add_delete("/api/solar/{did}", solar_delete)
+    r.add_post("/api/espdev/claim", espdev_claim)
+    r.add_post("/api/espdev/scan", espdev_scan)
+    r.add_put("/api/espdev/{did}", espdev_put)
+    r.add_post("/api/espdev/{did}/set", espdev_set)
+    r.add_post("/api/espdev/{did}/do", espdev_do)
+    r.add_delete("/api/espdev/{did}", espdev_delete)
     r.add_post("/api/charge", charge_post)
     r.add_get("/api/charge/sessions", charge_sessions)
     r.add_get("/api/charge/log.csv", charge_csv)

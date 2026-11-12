@@ -1,0 +1,10 @@
+{
+  "files": {
+    "HUISDEV.md": "f72bc2cf284dcb8ab16cd0a8caef6295361343c6c298248decbdc592d59f77bd",
+    "huisdev.h": "5e8b09a0b5e5b2ec74b48a0fa57a399d3ca4c109fa061c15027a03b23cf454b8",
+    "huisdev_sync.py": "7d1d071ae15b4327c83ecae3fd9cbd4f94d66f7ac84f0240fd44d8926eef6a01"
+  },
+  "header": "1.0.1",
+  "proto": "1.0",
+  "sync_version": 1
+}

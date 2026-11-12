@@ -22,6 +22,7 @@ from .linkhub import LinkHub
 from .energyhub import EnergyHub
 from .remotesensors import RemoteSensors
 from .solarhub import SolarHub
+from .espdevhub import EspDevHub
 from .model import Model
 from .mqttbridge import MqttBridge
 from .panelhub import PanelHub
@@ -90,12 +91,16 @@ async def run() -> None:
     mqtt.extras.append(solar)
     solar.changed = mqtt.resync
     solar.start()
+    espdev = EspDevHub(s.data_dir, engine)  # zelfbouwapparaten met het HUISDEV-protocol, een eigen blok (e:<id>)
+    mqtt.extras.append(espdev)
+    espdev.changed = mqtt.resync
+    espdev.start()
     remote = RemoteSensors(s.data_dir, links)  # de kWh-tellers van gekoppelde Tuya-toestellen als sensoren in HA, voor het energiedashboard
     mqtt.extras.append(remote)
     links.changed = mqtt.resync
     energy = EnergyHub(s.data_dir, ha)  # het energiedashboard van HA invullen vanuit de meters
     await links.start()
-    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar, energy, charge)
+    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar, energy, charge, espdev)
     runner = web.AppRunner(make_app(ctx), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", s.web_port).start()
@@ -132,6 +137,7 @@ async def run() -> None:
     tuya.close()
     airco.close()
     solar.close()
+    espdev.close()
     await links.close()
     engine.close()  # zet het leren uit en bewaart de staat
     await asyncio.sleep(0.2)  # laat de Learn(uit)-frames nog weggaan

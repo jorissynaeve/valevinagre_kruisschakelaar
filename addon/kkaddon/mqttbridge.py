@@ -43,6 +43,7 @@ class MqttBridge:
         self.enabled = True
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
         self._published: dict[str, str] = {}  # discovery-topic -> payload dat nu retained staat
+        self._retired_sent: set[str] = set()  # topics die een hub liet wissen (retire()), sinds de laatste volledige sync
         self._state_sent: dict[str, str] = {}
         self._resync = asyncio.Event()
         self.extras: list = []  # andere onderdelen met eigen entiteiten (panelhub.py): discovery(), states(), filters, command()
@@ -94,6 +95,7 @@ class MqttBridge:
         if force:
             self._published.clear()
             self._state_sent.clear()
+            self._retired_sent.clear()
         configs = d.configs(self.engine)
         for x in self.extras:
             configs.update(x.discovery())
@@ -104,6 +106,11 @@ class MqttBridge:
         for t in set(self._published) - set(want):
             self._put(t, "", True)  # lege retained payload verwijdert de entiteit in HA
         self._published = want
+        for x in self.extras:  # een hub kan topics van vorige runs opgeven die weg moeten (bewaard, want `_published` overleeft geen herstart)
+            for t in getattr(x, "retire", lambda: [])():
+                if t not in self._retired_sent and t not in want:
+                    self._retired_sent.add(t)
+                    self._put(t, "", True)
         states = d.states(self.engine)
         for x in self.extras:
             states.update(x.states())

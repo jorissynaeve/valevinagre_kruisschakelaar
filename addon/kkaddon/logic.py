@@ -1,7 +1,7 @@
 """Kleine tijd- en logicamodules, om op het schema aan elkaar te koppelen.
 
 Een module heeft een uitgang met een tijd (minuten sinds middernacht) of een 0/1. Een ingang wijst naar de uitgang van
-een andere module (`m:<id>`), een timer (`t:<id>`), rechtstreeks naar een datapunt van een Tuya-toestel (`v:<datapunt>@<toestel>`) of naar een uitgang van een airco (`w:<id>:on|room|set`) of een omvormer (`o:<id>:pv|load|grid|batt|soc|today`). Er is ook een derde waarde: None = onbekend, bv. een ingang die
+een andere module (`m:<id>`), een timer (`t:<id>`), rechtstreeks naar een datapunt van een Tuya-toestel (`v:<datapunt>@<toestel>`) of naar een uitgang van een airco (`w:<id>:on|room|set`) of een omvormer (`o:<id>:pv|load|grid|batt|soc|today`) of een zelfbouwapparaat (`e:<id>:<punt>`, zie espdevhub.py). Er is ook een derde waarde: None = onbekend, bv. een ingang die
 niet is aangesloten of een zonsondergang zonder locatie. Onbekend blokkeert nooit iets.
 
 De waarden worden niet bewaard maar telkens opnieuw berekend uit de klok, dus er is niets dat uit de pas kan lopen.
@@ -101,7 +101,7 @@ def evaluate(modules: dict[str, dict], timer: Callable[[str], bool | None], now:
         if ref.startswith("v:"):  # rechtstreeks een datapunt: v:<datapunt>@<toestel>
             dp, _, dev = ref[2:].partition("@")
             return point(dev, dp) if point else None
-        if ref.startswith(("w:", "o:")):  # een uitgang van een airco (w:<id>:on|room|set) of een omvormer (o:<id>:pv|...)
+        if ref.startswith(("w:", "o:", "e:")):  # een uitgang van een airco (w:<id>:on|room|set), een omvormer (o:<id>:pv|...) of een HUISDEV-apparaat (e:<id>:<punt>)
             return airco(ref) if airco else None
         return timer(ref[2:]) if ref.startswith("t:") else module(ref[2:])
 

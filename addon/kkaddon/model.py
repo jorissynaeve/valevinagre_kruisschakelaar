@@ -121,7 +121,7 @@ FLOOR_ID_RE = re.compile(r"^[a-z0-9]{1,12}$")
 GROUP_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
 DISABLE_RE = re.compile(r"^(m:)?[a-z0-9_]{1,80}$")
 # een bron: een timer, een module, of rechtstreeks een datapunt van een Tuya-toestel (v:<datapunt>@<toestel>, hier of r:..:y:<id>)
-SOURCE_RE = re.compile(r"^([tm]:[a-z0-9_]{1,80}|v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})|w:[a-z0-9_]{1,40}:(on|room|set)|o:[a-z0-9_]{1,40}:[a-z0-9_]{1,12})$")  # w: een uitgang van een airco (greehub.py), o: van een omvormer (solarhub.py)
+SOURCE_RE = re.compile(r"^([tm]:[a-z0-9_]{1,80}|v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})|w:[a-z0-9_]{1,40}:(on|room|set)|o:[a-z0-9_]{1,40}:[a-z0-9_]{1,12}|e:[a-z0-9_]{1,40}:[a-z][a-z0-9_]{0,23})$")  # w: een uitgang van een airco (greehub.py), o: van een omvormer (solarhub.py), e: van een HUISDEV-apparaat (espdevhub.py)
 VALUE_RE = re.compile(r"^v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})$")  # alleen een datapunt
 
 
@@ -297,7 +297,7 @@ def _check_actions(actions: dict[str, dict], modules: dict[str, dict], timers: d
         got = _source_type(ref, modules, timers)
         if got is None:
             raise ModelError(f"routine {a['name']}: de ingang wijst naar iets dat niet bestaat")
-        if got != BOOL:
+        if not fits(got, BOOL):
             raise ModelError(f"routine {a['name']}: de ingang verwacht een 0 of 1")
 
 
@@ -696,8 +696,18 @@ def _check_sprinklers(sprinklers: dict[str, dict], modules: dict[str, dict], tim
             got = _source_type(ref, modules, timers)
             if got is None:
                 raise ModelError(f"sprinkler {s['name']}: ingang {label} wijst naar iets dat niet bestaat")
-            if got != want:
+            if not fits(got, want):
                 raise ModelError(f"sprinkler {s['name']}: ingang {label} verwacht {_SOORT[want]}")
+
+
+ANY = "any"  # een bron waarvan het type nu niet bekend is (apparaat weg of nog niet gemeld): past overal, en geeft onbekend, nooit een fout
+# Het type van een HUISDEV-punt `e:<id>:<punt>` hangt van de descriptor van het apparaat af en staat dus niet in het model: espdevhub.py hangt hier zijn opzoeking aan.
+esp_type: Callable[[str], str | None] | None = None
+
+
+def fits(got: str | None, want: str) -> bool:
+    """Past wat een bron geeft op wat de ingang wil? ANY (type onbekend) past op alles."""
+    return got in (want, ANY)
 
 
 def source_type(ref: str, modules: dict[str, dict], timers: dict[str, dict]) -> str | None:
@@ -708,6 +718,8 @@ def _source_type(ref: str, modules: dict[str, dict], timers: dict[str, dict]) ->
     """Wat een bron geeft: een tijd, een 0/1, of None als ze niet bestaat."""
     if ref.startswith("o:"):
         return NUMBER  # een omvormer staat niet in het model: is ze weg of offline, dan is de waarde onbekend, geen fout
+    if ref.startswith("e:"):
+        return (esp_type(ref) if esp_type else None) or ANY  # een HUISDEV-apparaat staat niet in het model: is het weg, dan is de waarde onbekend, geen fout
     if ref.startswith("w:"):
         return BOOL if ref.endswith(":on") else NUMBER  # een airco staat niet in het model: is ze weg, dan is de waarde onbekend, geen fout
     if ref.startswith("v:"):
@@ -728,7 +740,7 @@ def _check_modules(modules: dict[str, dict], timers: dict[str, dict]) -> None:
             got = _source_type(ref, modules, timers)
             if got is None:
                 raise ModelError(f"module {m['name']}: ingang {label} wijst naar iets dat niet bestaat")
-            if got != want:
+            if not fits(got, want):
                 raise ModelError(f"module {m['name']}: ingang {label} verwacht {_SOORT[want]}")
     done: set[str] = set()
 
@@ -782,7 +794,7 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]], sprinkle
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|w:[a-z0-9_]{1,40}|o:[a-z0-9_]{1,40}|c:[a-z0-9_]{1,40}|k:[a-z0-9_]{1,40}|a:[a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:(?:g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80}|k:[a-z0-9_]{1,40}|e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190})|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|w:[a-z0-9_]{1,40}|o:[a-z0-9_]{1,40}|e:[a-z0-9_]{1,40}|c:[a-z0-9_]{1,40}|k:[a-z0-9_]{1,40}|a:[a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:(?:g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80}|k:[a-z0-9_]{1,40}|e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190})|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
 
 
 def _switch_gangs(raw) -> list[dict]:

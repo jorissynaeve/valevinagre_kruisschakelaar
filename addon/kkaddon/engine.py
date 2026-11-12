@@ -180,6 +180,9 @@ class Engine:
         self.solar_view: Callable[[], list[dict]] | None = None  # de omvormers (solarhub.py)
         self.charge_view: Callable[[], list[dict]] | None = None  # de laadpalen met hun sessies (chargehub.py)
         self.solar_value: Callable[[str], Any] | None = None  # een uitgang van een omvormer: o:<id>:pv|load|grid|batt|soc|today
+        self.espdev_view: Callable[[], list[dict]] | None = None  # de HUISDEV-apparaten met hun punten (espdevhub.py)
+        self.espdev_found: Callable[[], list[dict]] | None = None  # gevonden maar nog niet geclaimde HUISDEV-apparaten
+        self.espdev_value: Callable[[str], Any] | None = None  # een uitgang van een HUISDEV-apparaat: e:<id>:<punt>
         self.link_view: Callable[[], dict] | None = None  # koppelingen met andere installaties, zonder sleutel (linkhub.py)
         self._at(SPRINKLER_TICK, self._sprinkler_tick)
 
@@ -270,9 +273,11 @@ class Engine:
                         lambda dev, dp: self.points.number(dev, dp) if self.points else None, self._airco)
 
     def _airco(self, ref: str):
-        """De waarde van een uitgang van een apparaat met eigen blok: een airco (w:) of een omvormer (o:)."""
+        """De waarde van een uitgang van een apparaat met eigen blok: een airco (w:), een omvormer (o:) of een HUISDEV-apparaat (e:)."""
         if ref.startswith("o:"):
             return self.solar_value(ref) if self.solar_value else None
+        if ref.startswith("e:"):
+            return self.espdev_value(ref) if self.espdev_value else None
         return self.airco_value(ref) if self.airco_value else None
 
     def source_value(self, source: str) -> bool | None:
@@ -284,7 +289,7 @@ class Engine:
         if ref.startswith("v:"):
             dp, _, dev = ref[2:].partition("@")
             return self.points.number(dev, dp) if self.points else None
-        if ref.startswith(("w:", "o:")):
+        if ref.startswith(("w:", "o:", "e:")):
             return self._airco(ref)
         if ref.startswith("t:"):
             return self.timer_on(ref[2:]) if ref[2:] in self.model.timers else None
@@ -850,6 +855,8 @@ class Engine:
             "tuya": self.tuya_view() if self.tuya_view else [],
             "airco": self.airco_view() if self.airco_view else [],
             "solar": self.solar_view() if self.solar_view else [],
+            "espdev": self.espdev_view() if self.espdev_view else [],
+            "espdev_found": self.espdev_found() if self.espdev_found else [],
             "charge": self.charge_view() if self.charge_view else [],
             "links": self.link_view() if self.link_view else {"me": {"id": "", "name": "", "port": 0, "has_key": False, "listening": False, "error": ""}, "peers": [], "remote": {}},
             "screens": self.screen_view() if self.screen_view else [{"id": k, **s, "online": False, "phase": "idle", "error": "", "missing": [], "uptime": None, "received": 0, "plates": []}

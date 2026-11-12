@@ -1,0 +1,2 @@
+# Protocolbestanden altijd met LF in de repo: clients controleren ze met een sha256 uit manifest.json
+* text=auto eol=lf

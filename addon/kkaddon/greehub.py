@@ -28,7 +28,7 @@ from . import discovery as d
 from .engine import Engine
 from .gree import CRYPTO, MAC_RE, VERSIONS, GreeClient, norm_mac, scan, scan_socket
 from .logic import BOOL, NUMBER
-from .model import ModelError, source_type
+from .model import ModelError, fits, source_type
 
 log = logging.getLogger("kk.gree")
 
@@ -150,7 +150,7 @@ class GreeHub:
             got = source_type(ref, m.modules, m.timers)
             if got is None:
                 raise ModelError(f"ingang {label} wijst naar iets dat niet bestaat")
-            if got != want:
+            if not fits(got, want):
                 raise ModelError(f"ingang {label} verwacht {'een 0 of 1' if want == BOOL else 'een getal'}" + (". Zet er een Groter dan of Kleiner dan tussen." if want == BOOL and got == NUMBER else ""))
             if REF_RE.match(ref) and REF_RE.match(ref).group(1) == did:
                 raise ModelError("een airco stuurt zichzelf niet")

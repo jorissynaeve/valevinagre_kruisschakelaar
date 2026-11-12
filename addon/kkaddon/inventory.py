@@ -1,7 +1,7 @@
 """Eén lijst van alle apparaten van het huis, uit alle bronnen die de add-on kent: naam, soort, protocol, adres, versie.
 
 Bronnen: ESP-NOW-nodes (engine), externe apparaten via HA (virtuele nodes, met het adres en de versie uit het
-HA-apparatenregister), ESPHome-apparaten in HA die nog niet in de add-on staan, Tuya lokaal, Gree-airco's,
+HA-apparatenregister), ESPHome-apparaten in HA die nog niet in de add-on staan, Tuya lokaal, Gree-airco's, zelfbouwapparaten (HUISDEV),
 NSPanels en openHASP-schermen. Alleen lezen: dit verandert niets aan de configuratie."""
 from __future__ import annotations
 
@@ -49,6 +49,9 @@ def build(engine: Engine, ha: dict | None) -> list[dict[str, Any]]:
             t.get("host", ""), t.get("version") if t.get("version") not in ("auto", None) else "", t["online"], "", t.get("error") or "")
     for a in (engine.airco_view() if engine.airco_view else []):
         row(f"a{a['id']}", a["name"], "airco", "Gree (UDP)", a.get("host", ""), a.get("firmware") or "", a["online"], "", a.get("error") or "")
+    for e in (engine.espdev_view() if engine.espdev_view else []):
+        note = {"upgrade": f"upgrade beschikbaar (actueel protocol {e['current']}, zie protocol/huisdev/HUISDEV.md)", "unsupported": "niet ondersteund: werk het apparaat of de add-on bij"}.get(e["proto_state"], "")
+        row(f"e{e['id']}", e["name"], e["type"] or "zelfbouwapparaat", f"HUISDEV {e['proto']}", e.get("host", ""), e.get("fw") or "", e["online"], "", note or e.get("error") or "")
     for p in (engine.panel_view() if engine.panel_view else []):
         row(f"p{p['id']}", p["name"], "NSPanel", "UDP + Tasmota", p.get("host", ""), "", p["online"], "", p.get("error") or "")
     for s in (engine.screen_view() if engine.screen_view else []):

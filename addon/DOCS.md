@@ -296,6 +296,15 @@ merken die de Solarman-app gebruiken. Het is een eigen blok, los van Tuya. De ad
   dan zie je ontbrekende of rare waarden. Meld welk model het is.
 * Het serienummer van de stick staat in `/data/solar.json`.
 
+## Zelfbouwapparaten (ESP's met het HUISDEV-protocol)
+
+Een eigen ESP met `huisdev.h` (zie `protocol/huisdev/HUISDEV.md`) meldt zich vanzelf op het netwerk en beschrijft zijn gegevens en acties.
+*+ Module → Zelfbouw (HUISDEV)* toont de apparaten die zich meldden; een klik op **Koppelen** zet er een blok van op de pagina. Het blok heeft
+een rij per punt (kies in de zijbalk welke), met links een ingang voor wat instelbaar is en rechts een uitgang voor de logica. Komt er op het
+apparaat een punt bij of valt er een weg, dan past het blok zich vanzelf aan. In Home Assistant staan de punten als entiteiten
+(`kk_esp_<apparaat>_<punt>`). Gevaarlijke acties (reset, kalibratie) bedien je alleen met de hand in de zijbalk, met een bevestiging.
+Loskoppelen geeft de claim op het apparaat vrij; lukt dat niet, dan wis je de claim op het apparaat zelf.
+
 ## Energie (alle huisjes op één pagina, met prijzen)
 
 Home Assistant heeft al een energiedashboard (**Energie** in de zijbalk van HA). Het tabblad *Energie* vult het in, zodat je niet in HA
