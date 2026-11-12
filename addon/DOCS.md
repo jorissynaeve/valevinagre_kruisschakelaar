@@ -305,6 +305,19 @@ apparaat een punt bij of valt er een weg, dan past het blok zich vanzelf aan. In
 (`kk_esp_<apparaat>_<punt>`). Gevaarlijke acties (reset, kalibratie) bedien je alleen met de hand in de zijbalk, met een bevestiging.
 Loskoppelen geeft de claim op het apparaat vrij; lukt dat niet, dan wis je de claim op het apparaat zelf.
 
+### ESPHome-toestellen die geen schakelaar of lamp zijn
+
+Een stopcontact met vermogensmeting, een sensor, een ventilator, een toestel met keuzes of getallen: *+ Module → ESPHome-toestel toevoegen* en
+tik het IP-adres in. De YAML van het toestel hoeft niet te veranderen, maar hij moet `web_server:` hebben (bij de meeste staat dat al aan).
+Elke entiteit van het toestel wordt een punt of actie op hetzelfde soort blok als hierboven: metingen zijn uitgangen, schakelaars, lichten,
+ventilatoren, keuzes, getallen en tekst zijn ook ingangen, een knop is een actie. Een knop als *Restart* of *Reset* is gevaarlijk: alleen met de hand,
+met bevestiging. Wat de add-on niet kent (rolluik, klimaat, slot) staat in de zijbalk als "niet ondersteund".
+
+* Geef het toestel een **vast IP** in je router; de add-on zoekt het niet zelf terug.
+* Een nieuwe entiteit na een firmware-update verschijnt zodra het toestel opnieuw verbindt (dus na zijn herstart).
+* In Home Assistant staan de entiteiten **niet** nog eens via de add-on, want het toestel staat daar meestal al via ESPHome. Wil je ze toch, zet dan in de zijbalk het vinkje *ook als entiteiten in Home Assistant* aan (ze staan dan dubbel).
+* Heeft de webserver een wachtwoord (`web_server: auth:`), geef dan gebruiker en wachtwoord bij het toevoegen (API: `POST /api/espdev/esphome` met `user` en `password`).
+
 ## Energie (alle huisjes op één pagina, met prijzen)
 
 Home Assistant heeft al een energiedashboard (**Energie** in de zijbalk van HA). Het tabblad *Energie* vult het in, zodat je niet in HA

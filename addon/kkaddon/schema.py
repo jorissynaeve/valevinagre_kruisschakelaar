@@ -372,7 +372,7 @@ def _espdev_blocks(snap: dict) -> list[dict]:
         every = [out(p) for p in a["points"] if p["kind"] != "text" and not p["diag"]]
         ports = [{"name": p["id"], "type": kind(p), "label": p["label"], "ref": p["input"], "row": i} for i, p in enumerate(rows) if p["writable"] and not p["danger"] and not p["gone"]]
         res.append({**{k: v for k, v in a.items() if k not in ("inputs", "points", "shown")}, "points": a["points"], "shown": a["shown"], "key": f"e:{a['id']}", "kind": "espdev",
-                    "source": "espdev", "tech": f"{a['type'] or 'Apparaat'} · HUISDEV", "alias": "", "room": "", "rows": max(len(rows), 1), "ports": ports,
+                    "source": "espdev", "tech": "ESPHome · webserver" if a.get("driver") == "esphome" else f"{a['type'] or 'Apparaat'} · HUISDEV", "alias": "", "room": "", "rows": max(len(rows), 1), "ports": ports,
                     "outs": [out(p, i) for i, p in enumerate(rows)], "all": every})
     return res
 

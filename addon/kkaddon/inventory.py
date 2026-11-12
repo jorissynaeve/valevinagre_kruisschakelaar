@@ -51,6 +51,9 @@ def build(engine: Engine, ha: dict | None) -> list[dict[str, Any]]:
         row(f"a{a['id']}", a["name"], "airco", "Gree (UDP)", a.get("host", ""), a.get("firmware") or "", a["online"], "", a.get("error") or "")
     for e in (engine.espdev_view() if engine.espdev_view else []):
         note = {"upgrade": f"upgrade beschikbaar (actueel protocol {e['current']}, zie protocol/huisdev/HUISDEV.md)", "unsupported": "niet ondersteund: werk het apparaat of de add-on bij"}.get(e["proto_state"], "")
+        if e.get("driver") == "esphome":
+            row(f"e{e['id']}", e["name"], "ESPHome-apparaat", "ESPHome (webserver)", e.get("host", ""), e.get("fw") or "", e["online"], "", e.get("error") or "")
+            continue
         row(f"e{e['id']}", e["name"], e["type"] or "zelfbouwapparaat", f"HUISDEV {e['proto']}", e.get("host", ""), e.get("fw") or "", e["online"], "", note or e.get("error") or "")
     for p in (engine.panel_view() if engine.panel_view else []):
         row(f"p{p['id']}", p["name"], "NSPanel", "UDP + Tasmota", p.get("host", ""), "", p["online"], "", p.get("error") or "")

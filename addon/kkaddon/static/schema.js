@@ -554,6 +554,11 @@ function scEspState(b) {
 }
 
 function scEspProto(b) {
+  if (b.driver === 'esphome') {
+    const skipped = (b.skipped || []).length ? `<div class="sub">Niet ondersteund en dus overgeslagen: ${esc(b.skipped.join(', '))}.</div>` : '';
+    return `<div class="sub">Adres <code>${esc(b.host)}</code>${b.port !== 80 ? `:${esc(b.port)}` : ''}. Het toestel moet een vast IP hebben (reserveer het in je router).</div>${skipped}
+      <div class="row"><label class="chk" title="Een ESPHome-toestel staat meestal al in Home Assistant via zijn eigen integratie. Zet dit alleen aan als je de entiteiten ook via deze add-on wilt, dan staan ze dubbel."><input type="checkbox" data-esha ${b.ha ? 'checked' : ''}> ook als entiteiten in Home Assistant (dubbel als het toestel daar al via ESPHome staat)</label></div>`;
+  }
   const base = `Protocol ${esc(b.proto)}${b.fw ? ` · firmware ${esc(b.fw)}` : ''} · rev <code>${esc(b.rev)}</code>.`;
   if (b.proto_state === 'unsupported') return `<div class="sub"><b>Dit protocol wordt niet ondersteund.</b> ${base} Werk het apparaat bij (zie protocol/huisdev/HUISDEV.md) of de add-on.</div>`;
   if (b.proto_state === 'upgrade') return `<div class="sub"><b>Upgrade beschikbaar:</b> het apparaat spreekt ${esc(b.proto)}, de add-on kent ${esc(b.current)}. ${base} Volg de upgrade-gids in protocol/huisdev/HUISDEV.md.</div>`;
@@ -618,7 +623,9 @@ function scEspdevPanel(b, props) {
     <button class="btn small ${a.danger ? 'danger' : ''}" type="button" data-sc="esdo" data-id="${esc(b.id)}" data-a="${esc(a.id)}" ${a.disabled || !b.online ? 'disabled' : ''} title="${esc(a.reason || '')}">${esc(a.label)}${a.danger ? '…' : ''}</button>${a.disabled && a.reason ? `<span class="sub">${esc(a.reason)}</span>` : ''}</div>`).join('');
   const users = b.outs.flatMap((o) => scAcUsers(o.ref).map((u) => ({ ...u, label: o.label })));
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scEspState(b))}</span></div>
-    <div class="sub">Een zelfbouwapparaat met het HUISDEV-protocol. Het beschrijft zichzelf: komt er een punt bij of valt er een weg, dan past dit blok zich aan. In Home Assistant staan de punten als entiteiten <code>kk_esp_${esc(b.id)}_…</code>.</div>${scEspProto(b)}${props}
+    <div class="sub">${b.driver === 'esphome'
+    ? `Een ESPHome-toestel, gelezen via zijn eigen webserver. De entiteiten van het toestel zijn hier punten en acties; komt er een entiteit bij of valt er een weg, dan past dit blok zich aan.${b.ha ? ` In Home Assistant staan ze (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
+    : `Een zelfbouwapparaat met het HUISDEV-protocol. Het beschrijft zichzelf: komt er een punt bij of valt er een weg, dan past dit blok zich aan. In Home Assistant staan de punten als entiteiten <code>kk_esp_${esc(b.id)}_…</code>.`}</div>${scEspProto(b)}${props}
     <h2>Waarden en instellingen</h2>${values || '<div class="sub">Nog geen punten.</div>'}
     ${b.online ? '<div class="sub">Een wijziging gaat meteen naar het apparaat; de stand hier komt altijd uit zijn antwoord.</div>' : ''}
     ${actions ? `<h2>Acties</h2>${actions}` : ''}
@@ -1202,7 +1209,7 @@ const SC_MENU = [
 function scEspFound() { // zelfbouwapparaten die zich meldden maar nog niet gekoppeld zijn (HUISDEV)
   const found = S.espdev_found || [];
   const item = (f) => `<button class="scmenuitem" type="button" data-sc="esclaim" data-hid="${esc(f.hid)}" ${f.claimable ? '' : 'disabled'}><b>${esc(f.name)}</b><span class="sub">${esc(f.type || 'apparaat')} · ${esc(f.ip)}${f.claimed ? ' · al geclaimd: wis de claim op het apparaat' : f.proto_state === 'unsupported' ? ` · protocol ${esc(f.proto)} niet ondersteund` : ''}</span></button>`;
-  return `<div class="scmenugroup"><h2>Zelfbouw (HUISDEV)</h2>${found.map(item).join('') || '<div class="sub">Nog niets gevonden.</div>'}<button class="scmenuitem" type="button" data-sc="esscan"><b>Zoeken op het netwerk</b><span class="sub">ESP's met huisdev.h melden zich vanzelf</span></button></div>`;
+  return `<div class="scmenugroup"><h2>Zelfbouw (HUISDEV) en ESPHome</h2>${found.map(item).join('') || '<div class="sub">Nog niets gevonden.</div>'}<button class="scmenuitem" type="button" data-sc="esscan"><b>Zoeken op het netwerk</b><span class="sub">ESP's met huisdev.h melden zich vanzelf</span></button><button class="scmenuitem" type="button" data-sc="esadd"><b>ESPHome-toestel toevoegen</b><span class="sub">met het IP-adres; de YAML hoeft niet te veranderen, wel <code>web_server:</code></span></button></div>`;
 }
 
 function scMenu() {
@@ -1859,13 +1866,27 @@ const SC_ACTIONS = {
     await refresh();
     toast('Gekoppeld. De punten staan in de zijbalk; kies welke als rij op het blok staan.', 5000);
   },
+  esadd: async () => {
+    const menu = $('#scmenu');
+    if (menu) menu.open = false;
+    if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
+    const host = (prompt('IP-adres van het ESPHome-toestel (zijn YAML moet web_server: hebben):') || '').trim();
+    if (!host) return;
+    const r = await api('POST', 'espdev/esphome', { host, page: SC.page, ...scFreeSpot('module') });
+    SC.sel = SC.reveal = r.key;
+    SC.force = true;
+    await refresh();
+    toast('Toegevoegd. De entiteiten staan in de zijbalk; kies welke als rij op het blok staan.', 5000);
+  },
   esscan: async () => {
     await api('POST', 'espdev/scan', {});
     toast('Gevraagd wie er is; een apparaat dat antwoordt, staat binnen enkele seconden in het menu.', 5000);
     setTimeout(() => { SC.force = true; refresh(); }, 2500);
   },
   esdel: async (d) => {
-    if (!confirm('Dit apparaat loskoppelen? De claim op het apparaat wordt gewist en zijn entiteiten verdwijnen uit Home Assistant.')) return;
+    const es = scBlock(`e:${d.id}`);
+    if (!confirm(es && es.driver === 'esphome' ? 'Dit ESPHome-toestel uit de Huisconfig halen? Het toestel zelf verandert niet; entiteiten die de add-on in Home Assistant maakte verdwijnen.'
+      : 'Dit apparaat loskoppelen? De claim op het apparaat wordt gewist en zijn entiteiten verdwijnen uit Home Assistant.')) return;
     await api('DELETE', `espdev/${d.id}`);
     SC.sel = null;
     await refresh();
@@ -2390,9 +2411,10 @@ document.addEventListener('change', (ev) => {
       act(() => scSaveAirco(b, { mac, host }))();
     } else if (ds.awfield && (value || ds.awfield !== 'key')) act(() => scSaveAirco(b, { [ds.awfield]: value }))();
   }
-  if (t.dataset && (t.dataset.esset || t.dataset.esin || t.dataset.esshow !== undefined) && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'espdev') {
+  if (t.dataset && (t.dataset.esset || t.dataset.esin || t.dataset.esshow !== undefined || t.dataset.esha !== undefined) && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'espdev') {
     const b = scBlock(SC.sel), ds = t.dataset;
-    if (ds.esset) {
+    if (ds.esha !== undefined) act(() => scSaveEsp(b, { ha: t.checked }))();
+    else if (ds.esset) {
       const p = b.points.find((x) => x.id === ds.esset);
       t.blur();
       if (p && t.value !== '') act(() => scEspSet(b, p, t, false))();

@@ -20,6 +20,7 @@ want opruimen in het geheugen overleeft een herstart niet.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -32,6 +33,7 @@ from pathlib import Path
 import aiohttp
 
 from . import discovery as d
+from . import esphome as esp
 from . import model as _model
 from .engine import Engine
 from .logic import BOOL, NUMBER
@@ -54,6 +56,10 @@ GONE_KEEP = 30 * 86400  # s: een verdwenen punt blijft zo lang "niet beschikbaar
 RETRY = 30.0  # s: een ingang die niet doorkwam, opnieuw proberen
 TICK = 1.0
 DEFAULT_SHOWN = 8
+ES_FLUSH = 1.0  # s: ESPHome pusht elke wijziging (een vermogensmeting twee keer per s); hoogstens zo vaak verwerken we ze
+ES_SETTLE = 1.0  # s na het verbinden: wacht tot de eerste stroom volledige regels binnen is, anders groeit de descriptor in stukjes
+ES_PROBE = 6.0  # s: zolang wacht "toevoegen" op de eerste regels van een ESPHome-toestel
+ES_READ = 35  # s zonder een byte (ESPHome stuurt elke ~10 s een ping) is de verbinding weg
 
 KINDS = ("bool", "int", "float", "enum", "text")
 ID_RE = re.compile(r"^[a-z0-9-]{1,32}$")
@@ -140,7 +146,7 @@ def _point(raw, arg: bool = False) -> dict | None:
     if not arg:
         stale = raw.get("stale")
         out.update(writable=raw.get("writable") is True, danger=raw.get("danger") is True, diag=raw.get("diag") is True, group=_text(raw.get("group"), 30),
-                   cls=_text(raw.get("class"), 30), state=raw.get("state") if raw.get("state") in ("measurement", "total_increasing") else "",
+                   cls=_text(raw.get("class") or raw.get("cls"), 30), state=raw.get("state") if raw.get("state") in ("measurement", "total_increasing") else "",
                    stale=stale if isinstance(stale, int) and not isinstance(stale, bool) and stale > 0 else 0)
         out["confirm"] = _text(raw.get("confirm"), 200) if out["danger"] else ""
     return out
@@ -265,9 +271,11 @@ class EspDevHub:
         self._failed: dict[tuple[str, str], float] = {}
         self._inflight: set[tuple[str, str]] = set()
         self.last: dict[str, dict] = {}  # did -> {punt: wat er laatst gebeurde}, voor de zijbalk
+        self.es: dict[str, dict] = {}  # did -> wat de eventstroom van een ESPHome-toestel tot nu bracht (esphome.py)
         self._listen = None
         self._ask = None
         self._http: aiohttp.ClientSession | None = None
+        self._stream_http: aiohttp.ClientSession | None = None  # zonder totaaltijd: een eventstroom duurt zolang het toestel leeft
         self.udp_port = port or UDP_PORT
         self._load()
         engine.espdev_view = self.status
@@ -306,10 +314,18 @@ class EspDevHub:
         ins = v.get("inputs") if isinstance(v.get("inputs"), dict) else {}
         shown = v.get("shown")
         port = v.get("port")
+        driver = "esphome" if v.get("driver") == "esphome" else "huisdev"
+        emap, skipped = v.get("emap"), v.get("skipped")
         return {"name": _text(v.get("name"), 60) or "Apparaat", "hid": v["hid"], "host": _text(v.get("host"), 253), "port": port if isinstance(port, int) and 1 <= port <= 65535 else 80,
                 "type": _text(v.get("type"), 40), "fw": _text(v.get("fw"), 40), "proto": v.get("proto") if parse_proto(v.get("proto")) else "1.0", "rev": _text(v.get("rev"), 16),
                 "token": _text(v.get("token"), 128), "points": pts, "actions": acts, "shown": [x for x in shown if isinstance(x, str)] if isinstance(shown, list) else None,
-                "inputs": {k: r for k, r in ins.items() if isinstance(k, str) and isinstance(r, str)}}
+                "inputs": {k: r for k, r in ins.items() if isinstance(k, str) and isinstance(r, str)},
+                "driver": driver,  # huisdev: het protocol van huisdev.h; esphome: de webserver van een ESPHome-toestel (esphome.py)
+                "auth": _text(v.get("auth"), 200) if driver == "esphome" else "",  # gebruiker:wachtwoord van web_server: auth, alleen in dit bestand
+                "emap": {k: x for k, x in emap.items() if isinstance(k, str) and isinstance(x, str)} if isinstance(emap, dict) else {},  # punt-id -> ESPHome-id, voor altijd vast
+                "skipped": [x for x in skipped if isinstance(x, str)][:100] if isinstance(skipped, list) else [],
+                # een ESPHome-toestel staat meestal al via zijn eigen integratie in HA: dubbele entiteiten alleen als de gebruiker dat wil
+                "ha": v["ha"] if isinstance(v.get("ha"), bool) else driver != "esphome"}
 
     def _save(self) -> None:
         tmp = self.path.with_suffix(".tmp")
@@ -393,9 +409,18 @@ class EspDevHub:
             if not HOST_RE.match(host):
                 raise ModelError("ongeldig adres: geef het IP zonder http://")
             new["host"] = host
+        if "ha" in b:
+            if not isinstance(b["ha"], bool):
+                raise ModelError("ha: aan of uit")
+            new["ha"] = b["ha"]
         if new["inputs"] != dev["inputs"]:
             self.seen.pop(did, None)  # een andere bron: haar eerste stand wordt weer alleen onthouden
         self.devices[did] = new
+        if dev["ha"] and not new["ha"]:  # niet meer naar HA: de entiteiten die er al staan moeten weg
+            for p in dev["points"]:
+                self._retire(did, dev, p["id"])
+            for a in dev["actions"]:
+                self._retire(did, dev, action=a["id"])
         self._save()
         if new["host"] != dev["host"]:
             self._kick(did)
@@ -463,6 +488,49 @@ class EspDevHub:
         self._poke()
         return did
 
+    async def add_esphome(self, host: str, port=80, user: str = "", password: str = "", name: str = "") -> str:
+        """Voeg een ESPHome-toestel toe via zijn webserver. De eerste eventstroom levert de entiteiten; er is niets te claimen en het toestel hoeft niet aangepast."""
+        host = _text(host, 253)
+        if not HOST_RE.match(host):
+            raise ModelError("ongeldig adres: geef het IP (of de naam) van het toestel, zonder http://")
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ModelError("ongeldige poort")
+        if len(self.devices) >= MAX_DEVICES:
+            raise ModelError(f"maximaal {MAX_DEVICES} apparaten")
+        if any(x["host"] == host and x["port"] == port for x in self.devices.values()):
+            raise ModelError("dit apparaat staat er al")
+        tmp = {"host": host, "port": port, "auth": f"{user}:{password}" if user else ""}
+        st = self._es_new()
+        rd = asyncio.ensure_future(self._es_read(tmp, st))
+        try:
+            end = time.monotonic() + ES_PROBE
+            while time.monotonic() < end and not rd.done() and not self._es_ready(st):
+                await asyncio.wait({rd}, timeout=0.05)
+            if rd.done():
+                rd.result()
+        except EspError as e:
+            raise ModelError(str(e)) from None
+        finally:
+            rd.cancel()
+            await asyncio.gather(rd, return_exceptions=True)
+        if not st["ent"]:
+            raise ModelError(f"{host} meldt geen entiteiten: is dit een ESPHome-toestel met `web_server:` in de YAML?")
+        title = st["title"] or host
+        hid = ("esphome-" + esp.slug(title, "toestel"))[:32].rstrip("-")
+        did = _slug(hid)
+        if any(x["hid"] == hid for x in self.devices.values()):
+            raise ModelError(f"er staat al een apparaat met de naam {title}")
+        b = esp.build(st["ent"], {}, [])
+        if not b["points"] and not b["actions"]:
+            raise ModelError("dit toestel heeft niets wat we kennen (we ondersteunen sensor, schakelaar, licht, ventilator, keuze, getal, tekst en knop)")
+        dev = self._defaults({"hid": hid, "name": _text(name, 60) or title, "host": host, "port": port, "driver": "esphome", "type": "esphome", "auth": tmp["auth"]})
+        self.devices[did] = dev
+        self._apply_desc(did, self._es_desc(dev, b))
+        self._save()
+        self._start(did)
+        self._poke()
+        return did
+
     async def remove(self, did: str, unclaim: bool = True) -> bool:
         dev = self.devices.get(did)
         if not dev:
@@ -478,7 +546,7 @@ class EspDevHub:
         for a in dev["actions"]:
             self._retire(did, dev, action=a["id"])
         del self.devices[did]
-        for x in (self.values, self.off, self.seen, self.last, self.fails, self.errors):
+        for x in (self.values, self.off, self.seen, self.last, self.fails, self.errors, self.es):
             x.pop(did, None)
         self.online.discard(did)
         self._save()
@@ -607,7 +675,8 @@ class EspDevHub:
         if did in self.tasks:
             return
         self.wake[did] = asyncio.Event()
-        self.tasks[did] = asyncio.get_running_loop().create_task(self._run(did))
+        run = self._run_esphome if self.devices[did]["driver"] == "esphome" else self._run
+        self.tasks[did] = asyncio.get_running_loop().create_task(run(did))
 
     def _stop(self, did: str) -> None:
         t = self.tasks.pop(did, None)
@@ -622,12 +691,14 @@ class EspDevHub:
             if s:
                 s.close()
         self._listen = self._ask = None
-        http, self._http = self._http, None
-        if http and not http.closed:
-            try:
-                asyncio.get_running_loop().create_task(http.close())
-            except RuntimeError:  # geen lus meer: de sessie sluit zichzelf bij het afsluiten
-                pass
+        for attr in ("_http", "_stream_http"):
+            http = getattr(self, attr)
+            setattr(self, attr, None)
+            if http and not http.closed:
+                try:
+                    asyncio.get_running_loop().create_task(http.close())
+                except RuntimeError:  # geen lus meer: de sessie sluit zichzelf bij het afsluiten
+                    pass
         if _model.esp_type == self.point_type:
             _model.esp_type = None
 
@@ -712,8 +783,142 @@ class EspDevHub:
             return int(round(v)) if abs(v - round(v)) < 1e-9 else None
         return float(v)
 
+    # ------------------------------------------------------------ ESPHome: een eventstroom in plaats van een poll
+
+    def _es_new(self) -> dict:
+        return {"ent": {}, "title": "", "pinged": False, "dirty": False, "desc_dirty": True, "desc": None, "t0": time.monotonic()}
+
+    @staticmethod
+    def _es_ready(st: dict) -> bool:
+        """Er is iets nieuws en de eerste stroom volledige regels is binnen (anders groeit de descriptor in stukjes en springt `shown` rond)."""
+        return st["dirty"] and time.monotonic() - st["t0"] >= ES_SETTLE and bool(st["ent"] or st["pinged"])
+
+    def _es_session(self) -> aiohttp.ClientSession:
+        if self._stream_http is None or self._stream_http.closed:
+            self._stream_http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=HTTP_TIMEOUT, sock_read=ES_READ))
+        return self._stream_http
+
+    @staticmethod
+    def _es_headers(dev: dict, **extra) -> dict:
+        """Basic-auth als `web_server: auth` aan staat. Zelf gebouwd: `aiohttp.BasicAuth` en `auth=` zijn in nieuwere versies verouderd."""
+        user, sep, pw = (dev.get("auth") or "").partition(":")
+        if sep and user:
+            extra["Authorization"] = "Basic " + base64.b64encode(f"{user}:{pw}".encode()).decode()
+        return extra
+
+    async def _es_read(self, dev: dict, st: dict) -> None:
+        """Eén verbinding met `GET /events`: de volledige regels (met naam, eenheid, keuzes) en de wijzigingen komen in `st`. Eindigt altijd met een EspError."""
+        url = f"http://{dev['host']}:{dev['port']}/events"
+        sse = esp.Sse()
+        st.update(ent={}, pinged=False, dirty=True, desc_dirty=True, t0=time.monotonic())
+        try:
+            async with self._es_session().get(url, headers=self._es_headers(dev, Accept="text/event-stream")) as r:
+                if r.status == 401:
+                    raise EspError(401, "auth", "het toestel vraagt een gebruikersnaam en wachtwoord (web_server: auth)")
+                if r.status != 200:
+                    raise EspError(r.status, "http", f"{dev['host']} antwoordt op /events met HTTP {r.status}: staat `web_server:` aan in de YAML?")
+                async for chunk in r.content.iter_any():
+                    try:
+                        events = sse.feed(chunk)
+                    except ValueError:
+                        raise EspError(0, "net", f"{dev['host']} geeft geen ESPHome-eventstroom") from None
+                    for ev, data in events:
+                        got = esp.parse_event(ev, data)
+                        if not got:
+                            continue
+                        kind, j = got
+                        if kind == "ping":
+                            st["pinged"] = True
+                            if j:
+                                st["title"] = j
+                            continue
+                        ent = st["ent"].setdefault(j["id"], {})
+                        ent.update(j)
+                        st["dirty"] = True
+                        if "name" in j:
+                            st["desc_dirty"] = True
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+            raise EspError(0, "net", f"geen verbinding met {dev['host']}: {e or 'time-out'}") from None
+        raise EspError(0, "net", "het toestel sloot de verbinding")
+
+    def _es_desc(self, dev: dict, b: dict) -> dict:
+        return {"proto": "1.0", "rev": b["rev"], "id": dev["hid"], "type": "esphome", "name": dev["name"], "fw": dev["fw"], "lib": "", "points": b["points"], "actions": b["actions"],
+                "emap": b["emap"], "skipped": b["skipped"]}
+
+    async def _es_flush(self, did: str) -> None:
+        """De stand van de eventstroom als een HUISDEV-state verwerken. Een andere set entiteiten is een andere `rev`: `_on_state` past dan het blok aan."""
+        st, dev = self.es[did], self.devices[did]
+        if st["desc_dirty"] or st["desc"] is None:
+            st["desc"] = self._es_desc(dev, esp.build(st["ent"], dev["emap"], dev["points"]))
+            st["desc_dirty"] = False
+        desc = st["desc"]
+        pts = {}
+        for p in desc["points"]:
+            v = esp.value_of(p, st["ent"].get(desc["emap"].get(p["id"], "")))
+            pts[p["id"]] = {"v": v, "age": 0} if v is not None else {"v": None}
+        st["dirty"] = False
+        await self._on_state(did, {"proto": "1.0", "rev": desc["rev"], "points": pts, "actions": {}})
+
+    async def _run_esphome(self, did: str) -> None:
+        st = self.es.setdefault(did, self._es_new())
+        while True:
+            dev = self.devices.get(did)
+            if not dev:
+                return
+            rd = asyncio.ensure_future(self._es_read(dev, st))
+            try:
+                while not rd.done():
+                    await asyncio.wait({rd}, timeout=ES_FLUSH)
+                    if not rd.done() and self._es_ready(st):
+                        await self._es_flush(did)
+                rd.result()
+            except EspError as e:
+                self._miss(did, str(e), hard=True)  # een stroom die weg is, laat geen waarde meer vers: meteen offline
+            except asyncio.CancelledError:
+                rd.cancel()
+                raise
+            except Exception:  # noqa: BLE001 - een rare regel mag het volgen van dit toestel niet voorgoed stilleggen
+                log.exception("%s: eventstroom niet te verwerken", dev["name"])
+                self._miss(did, "onbegrijpelijk antwoord", hard=True)
+            finally:
+                rd.cancel()
+            wait = max(self.poll, min(self.poll * 3, 10.0))
+            ev = self.wake.get(did)
+            try:
+                await asyncio.wait_for(ev.wait(), wait) if ev else await asyncio.sleep(wait)
+            except asyncio.TimeoutError:
+                pass
+            if ev:
+                ev.clear()
+
+    async def _es_send(self, did: str, path: str, params: dict) -> dict:
+        dev = self.devices.get(did)
+        if not dev:
+            raise ModelError("onbekend apparaat")
+        if did not in self.online:
+            raise ModelError("niet verstuurd: geen verbinding met het apparaat")
+        url = f"http://{dev['host']}:{dev['port']}{path}"
+        try:
+            async with self._session().post(url, params=params, headers=self._es_headers(dev)) as r:
+                await r.read()
+                status = r.status
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+            raise ModelError(f"geen verbinding met {dev['host']}: {e or 'time-out'}") from None
+        if status == 404:
+            raise ModelError("het toestel kent dit niet (meer)")
+        if status == 401:
+            raise ModelError("het toestel weigert de gebruikersnaam of het wachtwoord")
+        if status != 200:
+            raise ModelError(f"het toestel antwoordt met HTTP {status}")
+        return {"ok": True, "result": "applied"}  # de nieuwe stand komt vanzelf over de eventstroom
+
     async def _refetch(self, did: str) -> None:
         dev = self.devices[did]
+        if dev["driver"] == "esphome":
+            self._apply_desc(did, self.es[did]["desc"])
+            self._save()
+            self._poke()
+            return
         desc = await self._fetch_descriptor(dev)
         if desc["id"] != dev["hid"]:
             raise EspError(0, "descriptor", f"op dit adres zit nu {desc['id']}, niet {dev['hid']}")
@@ -751,6 +956,10 @@ class EspDevHub:
             if a["id"] not in {x["id"] for x in desc["actions"]}:
                 self._retire(did, dev, action=a["id"])
         dev.update(points=points, actions=desc["actions"], rev=desc["rev"], proto=desc["proto"], fw=desc["fw"] or dev["fw"], type=desc["type"] or dev["type"])
+        if "emap" in desc:  # ESPHome: de toewijzing blijft ook voor een verdwenen punt (30 dagen), zodat zijn id niet voor iets anders wordt gebruikt
+            live = {p["id"] for p in points} | {a["id"] for a in desc["actions"]}
+            dev["emap"] = {pid: e for pid, e in {**dev["emap"], **desc["emap"]}.items() if pid in live}
+            dev["skipped"] = desc.get("skipped", [])
         if dev["shown"] is not None:
             dev["shown"] = [i for i in dev["shown"] if any(p["id"] == i for p in points)]
 
@@ -825,6 +1034,15 @@ class EspDevHub:
         if p["danger"] and not confirm:
             raise ModelError(p["confirm"] or "bevestiging nodig")
         v = check_value(p, value)
+        if dev["driver"] == "esphome":
+            eid = dev["emap"].get(pid)
+            if not eid:
+                raise ModelError(f"{p['label']} is niet beschikbaar")
+            try:
+                path, params = esp.point_request(eid, p, self.es.get(did, {}).get("ent", {}).get(eid), v)
+            except ValueError as e:
+                raise ModelError(f"{p['label']}: {e}") from None
+            return await self._es_send(did, path, params)
         return await self._post(did, "/huisdev/set", {"id": pid, "value": v, **({"confirm": True} if p["danger"] else {})})
 
     async def do(self, did: str, aid: str, args: dict | None = None, confirm: bool = False) -> dict:
@@ -844,6 +1062,11 @@ class EspDevHub:
             if arg["id"] not in args:
                 raise ModelError(f"{arg['label']}: geen waarde")
             out[arg["id"]] = check_value(arg, args[arg["id"]])
+        if dev["driver"] == "esphome":
+            eid = dev["emap"].get(aid)
+            if not eid:
+                raise ModelError(f"{a['label']} is niet beschikbaar")
+            return await self._es_send(did, *esp.action_request(eid))
         return await self._post(did, "/huisdev/do", {"id": aid, "args": out, **({"confirm": True} if a["danger"] else {})})
 
     # ------------------------------------------------------------ de ingangen (zoals de airco: alleen bij een wijziging)
@@ -923,7 +1146,7 @@ class EspDevHub:
             pts = [self._point_view(did, dev, p) for p in dev["points"]]
             out.append({"id": did, "hid": dev["hid"], "name": dev["name"], "host": dev["host"], "port": dev["port"], "type": dev["type"], "fw": dev["fw"], "proto": dev["proto"],
                         "proto_state": self.proto_state_of(dev), "current": f"{CURRENT[0]}.{CURRENT[1]}", "rev": dev["rev"], "online": did in self.online, "error": self.errors.get(did, ""),
-                        "configured": True, "shown": self.shown(dev), "points": pts,
+                        "configured": True, "driver": dev["driver"], "ha": dev["ha"], "skipped": list(dev["skipped"]), "shown": self.shown(dev), "points": pts,
                         "actions": [{**a, "disabled": a["id"] in self.off.get(did, {}), "reason": self.off.get(did, {}).get(a["id"], "")} for a in dev["actions"]],
                         "inputs": dict(dev["inputs"]), "last": dict(self.last.get(did, {}))})
         return out
@@ -987,7 +1210,11 @@ class EspDevHub:
     def discovery(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
         for did, dev in self.devices.items():
-            device = {"identifiers": [f"kk_esp_{did}"], "name": dev["name"], "manufacturer": "Zelfbouw", "model": f"{dev['type'] or 'apparaat'} (HUISDEV)", "sw_version": dev["fw"] or None}
+            if not dev["ha"]:
+                continue
+            esphome = dev["driver"] == "esphome"
+            device = {"identifiers": [f"kk_esp_{did}"], "name": dev["name"], "manufacturer": "ESPHome" if esphome else "Zelfbouw",
+                      "model": "ESPHome (webserver)" if esphome else f"{dev['type'] or 'apparaat'} (HUISDEV)", "sw_version": dev["fw"] or None}
             device = {k: v for k, v in device.items() if v}
             for p in dev["points"]:
                 domain, extra = self._entity(did, p)
@@ -1009,6 +1236,8 @@ class EspDevHub:
     def states(self) -> dict[str, tuple[str, bool]]:
         out: dict[str, tuple[str, bool]] = {}
         for did, dev in self.devices.items():
+            if not dev["ha"]:
+                continue
             out[self.t(did, "online")] = ("online" if did in self.online else "offline", True)
             for p in dev["points"]:
                 out[self.t(did, p["id"], "avail")] = ("offline" if p.get("gone") else "online", True)

@@ -703,6 +703,17 @@ async def espdev_claim(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "id": did, "key": f"e:{did}"})
 
 
+async def espdev_esphome(request: web.Request) -> web.Response:
+    """Een ESPHome-toestel toevoegen via zijn webserver (`web_server:`) en als blok op een pagina zetten."""
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    port = b.get("port", 80)
+    did = await _espdev(request).add_esphome(str(b.get("host") or ""), 80 if port in (None, "") else port, str(b.get("user") or ""), str(b.get("password") or ""), str(b.get("name") or ""))
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"e:{did}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "id": did, "key": f"e:{did}"})
+
+
 async def espdev_put(request: web.Request) -> web.Response:
     _espdev(request).update(request.match_info["did"], await _body(request))
     return web.json_response({"ok": True})
@@ -1012,6 +1023,7 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_delete("/api/solar/{did}", solar_delete)
     r.add_post("/api/espdev/claim", espdev_claim)
     r.add_post("/api/espdev/scan", espdev_scan)
+    r.add_post("/api/espdev/esphome", espdev_esphome)
     r.add_put("/api/espdev/{did}", espdev_put)
     r.add_post("/api/espdev/{did}/set", espdev_set)
     r.add_post("/api/espdev/{did}/do", espdev_do)
