@@ -403,7 +403,7 @@ class EspDevHub:
                 "account": v["account"] if driver in ("nuki", "brink", "smappee") and isinstance(v.get("account"), str) and BRIDGE_RE.match(v["account"]) else "",  # nuki: welk account (token)
                 "lid": str(v["lid"]) if driver == "nuki" and LID_RE.match(str(v.get("lid") or "")) else "",  # nuki: het smartlockId
                 "sid": str(v["sid"]) if (driver == "brink" and LID_RE.match(str(v.get("sid") or ""))) or (driver == "smappee" and SERIAL_RE.match(str(v.get("sid") or ""))) else "",  # brink: het systemShareId; smappee: het serienummer van het laadstation
-                "cid": str(v["cid"]) if driver in ("brink", "smappee") and LID_RE.match(str(v.get("cid") or "")) else "",  # brink: het componentId van de unit; smappee: het id van het smart device van het laadpunt
+                "cid": str(v["cid"]) if (driver == "brink" and LID_RE.match(str(v.get("cid") or ""))) or (driver == "smappee" and smappee.ID_RE.match(str(v.get("cid") or ""))) else "",  # brink: het componentId van de unit; smappee: het id van het smart device van het laadpunt
                 "auth": _text(v.get("auth"), 200) if driver == "esphome" else "",  # gebruiker:wachtwoord van web_server: auth, alleen in dit bestand
                 "emap": {k: x for k, x in emap.items() if isinstance(k, str) and isinstance(x, str)} if isinstance(emap, dict) else {},  # punt-id -> ESPHome-id, voor altijd vast
                 "skipped": [x for x in skipped if isinstance(x, str)][:100] if isinstance(skipped, list) else [],

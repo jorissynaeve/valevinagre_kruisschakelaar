@@ -83,7 +83,7 @@ def test_the_station_comes_from_the_location_with_a_charging_station_and_the_led
     assert smappee.stations([{"id": 9, "chargingStations": [{"serial": "AB12"}]}]) == {"AB12": {"name": "Smappee AB12", "loc": "9"}}
     assert smappee.stations(None) == {} and smappee.stations({}) == {}
     det = {"modules": [{"position": c["pos"], "smartDevice": {"id": c["id"], "uuid": c["uuid"], "name": c["name"], "type": {"category": "CARCHARGER"}}} for c in f.conn.values()]
-           + [{"position": 0, "smartDevice": {"id": LED, "type": {"category": "LED"}}}, {"smartDevice": "x"}, "y", {"position": 3, "smartDevice": {"id": "nul", "type": {"category": "CARCHARGER"}}}]}
+           + [{"position": 0, "smartDevice": {"id": LED, "type": {"category": "LED"}}}, {"smartDevice": "x"}, "y", {"position": 3, "smartDevice": {"id": "met spatie/en!", "type": {"category": "CARCHARGER"}}}, {"position": 4, "smartDevice": {"id": 0, "type": {"category": "CARCHARGER"}}}]}
     assert [(c["id"], c["pos"], c["name"]) for c in smappee.connectors(det)] == [(str(DEVICE), 1, "Laadpunt 1"), (str(DEVICE2), 2, "Laadpunt 2")]
     assert smappee.connectors(None) == [] and smappee.connectors({"modules": "x"}) == []
     m = smappee.device_map([f.device(c) for c in f.conn.values()] + [{"id": LED, "type": {"category": "LED"}}, 5, None])
@@ -748,3 +748,38 @@ def test_the_fallback_picks_chargers_only_and_the_shape_message_has_no_values():
     shape = smappee.module_shape({"modules": [{"position": 0, "label": "geheim"}, {"smartDevice": {"id": 5, "name": "geheim", "type": {"category": "LED"}}}]})
     assert shape == "2 modules (velden: label, position, smartDevice; 1 met smartDevice, categorieën: LED)" and "geheim" not in shape
     assert smappee.module_shape(None) == "geen lijst modules"
+
+
+def test_a_device_id_as_text_works_too_and_an_unsafe_one_does_not():
+    assert smappee.ident(8101) == "8101" and smappee.ident("8101") == "8101" and smappee.ident(" 3f2a-8101-b7 ") == "3f2a-8101-b7" and smappee.ident("ab_cd-1") == "ab_cd-1"
+    for bad in (0, -5, None, True, "", "met spatie", "../x", "a/b", "a?b", 1.5, "x" * 65, {}):
+        assert smappee.ident(bad) is None, bad
+    det = {"modules": [{"position": 1, "smartDevice": {"id": "3f2a-8101-b7", "uuid": "u-1", "name": "Laadpunt", "type": {"category": "CARCHARGER"}}}]}
+    assert smappee.connectors(det) == [{"id": "3f2a-8101-b7", "uuid": "u-1", "name": "Laadpunt", "pos": 1}]
+    assert "id van een laadpunt: str(12 tekens)" in smappee.module_shape(det), "de melding zegt wat voor id het is, zonder het id zelf"
+    assert "3f2a" not in smappee.module_shape(det)
+    u = {**unit_of(), "id": "3f2a-8101-b7"}
+    assert smappee.write_request({**u, "dev": unit_of(state="CHARGING")["dev"]}, "paused", True)[1].endswith("/devices/3f2a-8101-b7/actions/pauseCharging")
+    assert smappee.hid_of(SERIAL, "3f2a-8101-b7") == "smappee-5001000042-3f2a-8101-b7" and eh.ID_RE.match(smappee.hid_of(SERIAL, "3f2a-8101-b7"))
+    assert eh.ID_RE.match(smappee.hid_of(SERIAL, "x" * 60)), "een lang id wordt een hash"
+
+
+def test_with_text_ids_the_whole_chain_works(tmp_path, monkeypatch):
+    async def go():
+        fake = FakeSmappee()
+        fake.use_string_ids()
+        fake.bare_modules = False
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, fake)
+        (did,) = dids
+        assert hub.devices[did]["cid"] == f"3f2a-{DEVICE}-b7" and hub.devices[did]["sid"] == SERIAL
+        await eventually(lambda: did in hub.online)
+        assert r.engine.ref_value(f"e:{did}:current") == 19
+        fake.charging()
+        await eventually(lambda: r.engine.ref_value(f"e:{did}:charging") is True)
+        await hub.set(did, "paused", True)
+        assert fake.actions == [("pauseCharging", DEVICE, [])]
+        hub.close()
+        hub2 = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)
+        assert hub2.devices[did]["cid"] == f"3f2a-{DEVICE}-b7", "het id als tekst blijft bewaard na een herstart"
+        await fake.stop()
+    asyncio.run(go())

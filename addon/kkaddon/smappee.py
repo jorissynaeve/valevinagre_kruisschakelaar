@@ -37,7 +37,7 @@ TIMEOUT = 20
 MAX_BODY = 4 << 20
 SESSION_DAYS = 7  # zover terug vragen we sessies (zoals de HA-integratie)
 SERIAL_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
-ID_RE = re.compile(r"^[0-9]{1,20}$")
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")  # het id van een smart device: een getal, of (zoals bij een echt account bleek) een tekst; het gaat in de URL, dus alleen veilige tekens
 DEFAULT_MIN, DEFAULT_MAX = 6, 32  # A, als de lader zijn bereik niet meldt (zoals de HA-integratie)
 
 STATES = {0: "Vrij", 1: "Aangesloten", 2: "Laadt", 3: "Gepauzeerd"}
@@ -73,6 +73,14 @@ def _int(v: Any) -> int | None:
     if isinstance(v, str) and v.strip().lstrip("-").isdigit():
         return int(v.strip())
     return None
+
+
+def ident(v: Any) -> str | None:
+    """Het id van een smart device als tekst: een positief geheel getal, of een tekst met alleen letters, cijfers, streepjes en underscores. Anders None (nooit een gok)."""
+    n = _int(v)
+    if n is not None:
+        return str(n) if n > 0 else None
+    return v.strip() if isinstance(v, str) and ID_RE.match(v.strip()) else None
 
 
 def _num(v: Any) -> float | None:
@@ -163,11 +171,11 @@ def connectors(details: Any) -> list[dict]:
             continue
         t = sd.get("type")
         cat = t.get("category") if isinstance(t, dict) else t
-        did = _int(sd.get("id"))
-        if str(cat or "").upper() != CAT_CHARGER or did is None or did <= 0:
+        did = ident(sd.get("id"))
+        if str(cat or "").upper() != CAT_CHARGER or did is None:
             continue
         pos = _int(m.get("position"))
-        out.append({"id": str(did), "uuid": _text(sd.get("uuid"), 80), "name": _text(sd.get("name")), "pos": pos if pos is not None else len(out) + 1})
+        out.append({"id": did, "uuid": _text(sd.get("uuid"), 80), "name": _text(sd.get("name")), "pos": pos if pos is not None else len(out) + 1})
     return out
 
 
@@ -180,9 +188,9 @@ def connectors_from_devices(devices: Any) -> list[dict]:
             continue
         t = d.get("type")
         cat = t.get("category") if isinstance(t, dict) else t
-        did = _int(d.get("id"))
-        if str(cat or "").upper() == CAT_CHARGER and did is not None and did > 0:
-            out.append({"id": str(did), "uuid": _text(d.get("uuid"), 80), "name": _text(d.get("name")), "pos": len(out) + 1})
+        did = ident(d.get("id"))
+        if str(cat or "").upper() == CAT_CHARGER and did is not None:
+            out.append({"id": did, "uuid": _text(d.get("uuid"), 80), "name": _text(d.get("name")), "pos": len(out) + 1})
     return out
 
 
@@ -194,7 +202,8 @@ def module_shape(details: Any) -> str:
     keys = sorted({k for m in mods if isinstance(m, dict) for k in m})[:12]
     sd = [m.get("smartDevice") for m in mods if isinstance(m, dict) and isinstance(m.get("smartDevice"), dict)]
     cats = sorted({str((x.get("type") or {}).get("category") if isinstance(x.get("type"), dict) else x.get("type") or "zonder categorie")[:30] for x in sd})[:8]
-    return f"{len(mods)} modules (velden: {', '.join(keys) or 'geen'}; {len(sd)} met smartDevice, categorieën: {', '.join(cats) or 'geen'})"
+    ids = [f"{type(x.get('id')).__name__}" + (f"({len(x['id'])} tekens)" if isinstance(x.get("id"), str) else "") for x in sd if (x.get("type") or {}).get("category") == CAT_CHARGER] if all(isinstance(x.get("type"), dict) for x in sd) else []
+    return f"{len(mods)} modules (velden: {', '.join(keys) or 'geen'}; {len(sd)} met smartDevice, categorieën: {', '.join(cats) or 'geen'}{'; id van een laadpunt: ' + ', '.join(ids) if ids else ''})"
 
 
 def device_map(devices: Any) -> dict[str, dict]:

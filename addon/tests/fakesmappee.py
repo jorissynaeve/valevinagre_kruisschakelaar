@@ -61,6 +61,11 @@ class FakeSmappee:
         d.update(c["extra"])
         return d
 
+    def use_string_ids(self):
+        """De smart devices hebben een id als tekst in plaats van een getal (zoals een echt account bleek te geven). De sleutels van `conn` blijven wat ze waren."""
+        for k, c in self.conn.items():
+            c["id"] = f"3f2a-{k}-b7"
+
     def set_state(self, did: int = DEVICE, **kw):
         """De lader meldt iets anders (iemand badgede, trok de stekker eruit, zette hem in de app op Slim)."""
         self.conn[did].update(kw)
@@ -158,7 +163,10 @@ class FakeSmappee:
     async def _action(self, r: web.Request) -> web.Response:
         if (g := self._gate(r)) is not None:
             return g
-        did, name = int(r.match_info["did"]), r.match_info["name"]
+        key = next((k for k, c in self.conn.items() if str(c["id"]) == r.match_info["did"]), None)
+        if key is None:
+            return web.Response(status=404)
+        did, name = key, r.match_info["name"]
         body = await r.json()
         self.actions.append((name, did, body))
         if self.action_status != 200:
