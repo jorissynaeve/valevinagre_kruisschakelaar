@@ -36,6 +36,7 @@ from . import discovery as d
 from . import esphome as esp
 from . import hue
 from . import model as _model
+from . import nuki
 from .engine import Engine
 from .logic import BOOL, NUMBER
 from .model import ModelError, fits, source_type
@@ -67,6 +68,11 @@ HUE_PING = 30.0  # s: de eventstroom van een bridge zwijgt als er niets verander
 HUE_RESYNC = 600.0  # s: de hele lijst opnieuw ophalen, voor wat een gemiste gebeurtenis scheef zette
 HUE_GAP = 0.1  # s tussen twee opdrachten aan een bridge: Hue verdraagt ongeveer 10 per seconde voor lampen
 BRIDGE_RE = re.compile(r"^[a-z0-9_]{1,24}$")
+MAX_ACCOUNTS = 3
+NUKI_POLL = 30.0  # s: Nuki laat 100 verzoeken per minuut en 1000 per uur toe per token, en de token is misschien ook van iets anders; 120 per uur is zuinig genoeg
+NUKI_BURST = (2.0, 6.0, 15.0)  # s: na een opdracht (die Nuki asynchroon uitvoert) snel nog een paar keer kijken
+NUKI_BACKOFF = 90.0  # s wachten na "te veel verzoeken"
+LID_RE = re.compile(r"^[0-9]{1,20}$")
 
 KINDS = ("bool", "int", "float", "enum", "text")
 ID_RE = re.compile(r"^[a-z0-9-]{1,32}$")
@@ -282,6 +288,9 @@ class EspDevHub:
         self.bridges: dict[str, dict] = {}  # Hue-bridges: id -> {name, host, port, key, fp, bridge_id}; de sleutel staat alleen in dit bestand (hue.py)
         self.hue: dict[str, dict] = {}  # bridge -> wat de bridge tot nu meldde: {store: {id: resource}, open, online, error, ...}
         self.hue_desc: dict[str, dict] = {}  # did -> de descriptor van een Hue-apparaat volgens de laatste lijst van de bridge
+        self.accounts: dict[str, dict] = {}  # Nuki-accounts: id -> {name, token}; de token staat alleen in dit bestand (nuki.py)
+        self.nk: dict[str, dict] = {}  # account -> wat Nuki tot nu meldde: {locks: {id: slot}, online, error, burst}
+        self.nuki_desc: dict[str, dict] = {}  # did -> de descriptor van een slot volgens de laatste lijst van Nuki
         self._hue_locks: dict[str, asyncio.Lock] = {}
         self._hue_sent: dict[str, float] = {}
         self._listen = None
@@ -294,6 +303,7 @@ class EspDevHub:
         engine.espdev_found = self.found_view
         engine.espdev_value = self.output
         engine.hue_view = self.hue_view
+        engine.nuki_view = self.nuki_view
         _model.esp_type = self.point_type
 
     # ------------------------------------------------------------ opslag
@@ -312,6 +322,9 @@ class EspDevHub:
             br = self._bridge_defaults(v) if isinstance(v, dict) and BRIDGE_RE.match(k) else None
             if br:
                 self.bridges[k] = br
+        for k, v in (raw.get("nuki") or {}).items() if isinstance(raw.get("nuki"), dict) else []:
+            if isinstance(v, dict) and BRIDGE_RE.match(k) and isinstance(v.get("token"), str) and v["token"].strip():
+                self.accounts[k] = {"name": _text(v.get("name"), 60) or "Nuki", "token": v["token"].strip()[:200]}
         for k, v in (raw.get("devices") or {}).items():
             if isinstance(v, dict) and re.fullmatch(r"[a-z0-9_]{1,40}", k) and isinstance(v.get("hid"), str) and ID_RE.match(v["hid"]):
                 self.devices[k] = self._defaults(v)
@@ -340,7 +353,7 @@ class EspDevHub:
         ins = v.get("inputs") if isinstance(v.get("inputs"), dict) else {}
         shown = v.get("shown")
         port = v.get("port")
-        driver = v["driver"] if v.get("driver") in ("esphome", "hue") else "huisdev"
+        driver = v["driver"] if v.get("driver") in ("esphome", "hue", "nuki") else "huisdev"
         emap, skipped = v.get("emap"), v.get("skipped")
         rid = v.get("rid")
         return {"name": _text(v.get("name"), 60) or "Apparaat", "hid": v["hid"], "host": _text(v.get("host"), 253), "port": port if isinstance(port, int) and 1 <= port <= 65535 else 80,
@@ -350,6 +363,8 @@ class EspDevHub:
                 "driver": driver,  # huisdev: het protocol van huisdev.h; esphome: de webserver van een ESPHome-toestel (esphome.py); hue: een apparaat van een Hue-bridge (hue.py)
                 "bridge": v["bridge"] if driver == "hue" and isinstance(v.get("bridge"), str) and BRIDGE_RE.match(v["bridge"]) else "",  # hue: welke bridge
                 "rid": rid if driver == "hue" and isinstance(rid, str) and hue.UUID_RE.match(rid) else "",  # hue: de UUID van het apparaat bij de bridge
+                "account": v["account"] if driver == "nuki" and isinstance(v.get("account"), str) and BRIDGE_RE.match(v["account"]) else "",  # nuki: welk account (token)
+                "lid": str(v["lid"]) if driver == "nuki" and LID_RE.match(str(v.get("lid") or "")) else "",  # nuki: het smartlockId
                 "auth": _text(v.get("auth"), 200) if driver == "esphome" else "",  # gebruiker:wachtwoord van web_server: auth, alleen in dit bestand
                 "emap": {k: x for k, x in emap.items() if isinstance(k, str) and isinstance(x, str)} if isinstance(emap, dict) else {},  # punt-id -> ESPHome-id, voor altijd vast
                 "skipped": [x for x in skipped if isinstance(x, str)][:100] if isinstance(skipped, list) else [],
@@ -360,7 +375,7 @@ class EspDevHub:
         tmp = self.path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"devices": self.devices, "retired": self.retired, "bridges": self.bridges}, f, ensure_ascii=False, indent=1)
+            json.dump({"devices": self.devices, "retired": self.retired, "bridges": self.bridges, "nuki": self.accounts}, f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.path)
 
     # ------------------------------------------------------------ de punten van een apparaat
@@ -435,6 +450,8 @@ class EspDevHub:
             new["inputs"] = self._inputs(did, dev, b["inputs"])
         if "host" in b and dev["driver"] == "hue":
             raise ModelError("het adres van een Hue-apparaat staat bij de bridge")
+        if "host" in b and dev["driver"] == "nuki":
+            raise ModelError("een Nuki-slot heeft geen adres: het loopt via de cloud van Nuki")
         if "host" in b:
             host = _text(b["host"], 253)
             if not HOST_RE.match(host):
@@ -577,7 +594,7 @@ class EspDevHub:
         for a in dev["actions"]:
             self._retire(did, dev, action=a["id"])
         del self.devices[did]
-        for x in (self.values, self.off, self.seen, self.last, self.fails, self.errors, self.es, self.hue_desc):
+        for x in (self.values, self.off, self.seen, self.last, self.fails, self.errors, self.es, self.hue_desc, self.nuki_desc):
             x.pop(did, None)
         self.online.discard(did)
         self._save()
@@ -640,6 +657,8 @@ class EspDevHub:
             self._start(did)
         for bid in self.bridges:
             self._start_bridge(bid)
+        for aid in self.accounts:
+            self._start_nuki(aid)
         self.tasks["_tick"] = loop.create_task(self._ticker())
         self.tasks["_scan"] = loop.create_task(self._scanner())
 
@@ -705,7 +724,7 @@ class EspDevHub:
             ev.set()
 
     def _start(self, did: str) -> None:
-        if did in self.tasks or self.devices[did]["driver"] == "hue":  # een Hue-apparaat heeft geen eigen taak: zijn bridge volgt ze allemaal
+        if did in self.tasks or self.devices[did]["driver"] in ("hue", "nuki"):  # een Hue-apparaat of Nuki-slot heeft geen eigen taak: zijn bridge of account volgt ze allemaal
             return
         self.wake[did] = asyncio.Event()
         run = self._run_esphome if self.devices[did]["driver"] == "esphome" else self._run
@@ -1233,10 +1252,194 @@ class EspDevHub:
                         "devices": [{**o, "id": have.get(o["rid"]), "claimed": o["rid"] in have} for o in hue.devices(st["store"])], "skipped": hue.skipped(st["store"])})
         return out
 
+    # ------------------------------------------------------------ Nuki: een account (token) dat gepold wordt, en een blok per slot
+
+    async def add_nuki(self, token: str, name: str = "") -> str:
+        """Een Nuki-account koppelen met een API-token (web.nuki.io, Integraties). De token wordt meteen gecontroleerd door de sloten op te halen. Geeft het id van het account."""
+        token = _text(token, 200)
+        if not re.fullmatch(r"\S{8,200}", token):
+            raise ModelError("geef de API-token van Nuki (web.nuki.io, Integraties)")
+        aid = nuki.account_id(token)
+        if aid in self.accounts:
+            raise ModelError("deze token staat er al")
+        if len(self.accounts) >= MAX_ACCOUNTS:
+            raise ModelError(f"maximaal {MAX_ACCOUNTS} Nuki-accounts")
+        try:
+            status, data = await nuki.request(self._session(), token, "GET", "/smartlock")
+        except nuki.NukiError as e:
+            log.warning("Nuki koppelen mislukt: %s", e)
+            raise ModelError(e.reason) from None
+        if status != 200:
+            raise ModelError(f"Nuki antwoordt met HTTP {status}: {nuki.problem(data) or 'onbekende fout'}")
+        found = nuki.locks(data)
+        if not found:
+            raise ModelError("deze token geeft toegang tot geen enkel slot")
+        self.accounts[aid] = {"name": _text(name, 60) or "Nuki", "token": token}
+        st = self.nk[aid] = self._nuki_new()
+        st.update(locks=found, online=True)  # de eerste lijst hebben we al: het menu hoeft niet op de eerste poll te wachten
+        self._save()
+        self._start_nuki(aid)
+        self._poke()
+        return aid
+
+    async def remove_nuki(self, aid: str) -> bool:
+        """Het account en al zijn blokken weghalen. De token blijft geldig bij Nuki: trek hem zelf in op web.nuki.io als je hem niet meer wilt."""
+        if aid not in self.accounts:
+            return False
+        for did in [k for k, v in self.devices.items() if v["driver"] == "nuki" and v["account"] == aid]:
+            await self.remove(did)
+        t = self.tasks.pop(f"nuki:{aid}", None)
+        if t:
+            t.cancel()
+        self.wake.pop(f"nuki:{aid}", None)
+        del self.accounts[aid]
+        self.nk.pop(aid, None)
+        self._save()
+        self._poke()
+        return True
+
+    async def claim_nuki(self, aid: str, lids: list[str] | None = None) -> list[str]:
+        """Sloten van een account als blok toevoegen (`lids` leeg: alles wat er nog niet staat). Geeft de ids van de nieuwe apparaten."""
+        st = self.nk.get(aid)
+        if aid not in self.accounts or not st or not st["locks"]:
+            raise ModelError("Nuki is niet bereikbaar: er is nog geen lijst van sloten")
+        have = {v["lid"] for v in self.devices.values() if v["driver"] == "nuki" and v["account"] == aid}
+        if lids:
+            if any(x not in st["locks"] for x in lids):
+                raise ModelError("Nuki kent dit slot niet (meer)")
+            take = [x for x in lids if x not in have]
+        else:
+            take = [x for x in st["locks"] if x not in have]
+        if not take:
+            raise ModelError("alles wat Nuki aanbiedt staat er al")
+        if len(self.devices) + len(take) > MAX_DEVICES:
+            raise ModelError(f"maximaal {MAX_DEVICES} apparaten")
+        new = []
+        for lid in take:
+            desc = nuki.describe(st["locks"][lid])
+            did = _slug(nuki.hid_of(lid))
+            if did in self.devices:
+                continue
+            self.devices[did] = self._defaults({"hid": nuki.hid_of(lid), "name": desc["name"], "driver": "nuki", "account": aid, "lid": lid, "type": desc["type"]})
+            self.nuki_desc[did] = desc
+            self._apply_desc(did, desc)
+            new.append(did)
+        self._save()
+        if st["online"]:
+            await self._nuki_flush(aid)
+        self._poke()
+        return new
+
+    def _start_nuki(self, aid: str) -> None:
+        if f"nuki:{aid}" not in self.tasks:
+            self.nk.setdefault(aid, self._nuki_new())
+            self.wake[f"nuki:{aid}"] = asyncio.Event()
+            self.tasks[f"nuki:{aid}"] = asyncio.get_running_loop().create_task(self._run_nuki(aid))
+
+    @staticmethod
+    def _nuki_new() -> dict:
+        return {"locks": {}, "online": False, "error": "", "key": False, "burst": []}
+
+    def _nuki_kick(self, aid: str) -> None:
+        """Na een opdracht: Nuki voert hem asynchroon uit, dus over 2, 6 en 15 s kijken we of het slot er is."""
+        st = self.nk.get(aid)
+        if st is not None:
+            st["burst"] = list(NUKI_BURST)
+        self._kick(f"nuki:{aid}")
+
+    def _nuki_children(self, aid: str) -> list[str]:
+        return [did for did, dev in self.devices.items() if dev["driver"] == "nuki" and dev["account"] == aid]
+
+    async def _nuki_flush(self, aid: str) -> None:
+        """De lijst van Nuki als HUISDEV-state naar elk slot. Een deursensor die erbij komt is een andere `rev`: `_on_state` past het blok dan aan."""
+        st = self.nk[aid]
+        st.update(online=True, error="", key=False)
+        for did in self._nuki_children(aid):
+            dev = self.devices[did]
+            lock = st["locks"].get(dev["lid"])
+            if lock is None:
+                self._miss(did, "dit slot staat niet meer in je Nuki-account", hard=True)
+                continue
+            desc = nuki.describe(lock, dev["name"])
+            self.nuki_desc[did] = desc
+            vals = nuki.values(lock)
+            pts = {p["id"]: ({"v": vals[p["id"]], "age": 0} if vals.get(p["id"]) is not None else {"v": None}) for p in desc["points"]}
+            await self._on_state(did, {"proto": "1.0", "rev": desc["rev"], "points": pts, "actions": {}})
+        self._poke()
+
+    def _nuki_down(self, aid: str, st: dict, e: nuki.NukiError) -> None:
+        st.update(online=False, error=str(e), key=e.code == "key")
+        for did in self._nuki_children(aid):
+            self._miss(did, str(e), hard=True)  # wat we niet meer horen, laat geen waarde meer vers: meteen offline
+        self._poke()
+
+    async def _run_nuki(self, aid: str) -> None:
+        while True:
+            acc = self.accounts.get(aid)
+            if not acc:
+                return
+            st = self.nk.setdefault(aid, self._nuki_new())
+            backoff = False
+            try:
+                status, data = await nuki.request(self._session(), acc["token"], "GET", "/smartlock")
+                if status != 200:
+                    raise nuki.NukiError("net", f"Nuki antwoordt met HTTP {status}", status)
+                st["locks"] = nuki.locks(data)
+                await self._nuki_flush(aid)
+            except nuki.NukiError as e:
+                self._nuki_down(aid, st, e)
+                backoff = e.code == "rate"
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - een rare lijst mag het volgen van dit account niet voorgoed stilleggen
+                log.exception("Nuki %s: lijst niet te verwerken", aid)
+                self._nuki_down(aid, st, nuki.NukiError("net", "onbegrijpelijk antwoord"))
+            delay = NUKI_BACKOFF if backoff else st["burst"].pop(0) if st["burst"] else NUKI_POLL
+            ev = self.wake.get(f"nuki:{aid}")
+            woke = False
+            try:
+                await asyncio.wait_for(ev.wait(), delay) if ev else await asyncio.sleep(delay)
+                woke = ev is not None
+            except asyncio.TimeoutError:
+                pass
+            if ev:
+                ev.clear()
+            if woke and st["burst"] and not backoff:  # een opdracht net verstuurd: eerst de tijd geven die het slot nodig heeft
+                await asyncio.sleep(st["burst"].pop(0))
+
+    async def _nuki_send(self, did: str, dev: dict, action: str) -> dict:
+        acc = self.accounts.get(dev["account"])
+        if not acc or did not in self.online:
+            raise ModelError("niet verstuurd: geen verbinding met Nuki")
+        try:
+            path, body = nuki.action_request(dev["lid"], action)
+        except ValueError as e:
+            raise ModelError(str(e)) from None
+        try:
+            status, data = await nuki.request(self._session(), acc["token"], "POST", path, body)
+        except nuki.NukiError as e:
+            raise ModelError(e.reason) from None
+        if status not in (200, 204):
+            why = nuki.problem(data)
+            hint = " (dit slot of deze regio ondersteunt unlatch niet: gebruik ontgrendelen)" if status == 400 and action.startswith("unlatch") else ""
+            raise ModelError(f"Nuki weigert dit: {why or f'HTTP {status}'}{hint}")
+        self._nuki_kick(dev["account"])
+        return {"ok": True, "result": "queued"}  # Nuki nam de opdracht aan; of het slot hem uitvoerde, zie je aan de stand bij de volgende poll
+
+    def nuki_view(self) -> list[dict]:
+        """De Nuki-accounts voor de pagina, met wat ze aanbieden. Nooit de token."""
+        out = []
+        for aid, acc in self.accounts.items():
+            st = self.nk.get(aid) or self._nuki_new()
+            have = {v["lid"]: k for k, v in self.devices.items() if v["driver"] == "nuki" and v["account"] == aid}
+            out.append({"id": aid, "name": acc["name"], "online": st["online"], "error": st["error"], "key": st["key"],
+                        "locks": [{**o, "id": have.get(o["lid"]), "claimed": o["lid"] in have} for o in nuki.listing(st["locks"])]})
+        return out
+
     async def _refetch(self, did: str) -> None:
         dev = self.devices[did]
-        if dev["driver"] in ("esphome", "hue"):  # de beschrijving komt uit de eventstroom en is al in `_es_flush` of `_hue_flush` gemaakt
-            self._apply_desc(did, self.es[did]["desc"] if dev["driver"] == "esphome" else self.hue_desc[did])
+        if dev["driver"] in ("esphome", "hue", "nuki"):  # de beschrijving komt uit de eventstroom of de poll en is al in `_es_flush`, `_hue_flush` of `_nuki_flush` gemaakt
+            self._apply_desc(did, {"esphome": lambda: self.es[did]["desc"], "hue": lambda: self.hue_desc[did], "nuki": lambda: self.nuki_desc[did]}[dev["driver"]]())
             self._save()
             self._poke()
             return
@@ -1385,6 +1588,8 @@ class EspDevHub:
             if arg["id"] not in args:
                 raise ModelError(f"{arg['label']}: geen waarde")
             out[arg["id"]] = check_value(arg, args[arg["id"]])
+        if dev["driver"] == "nuki":
+            return await self._nuki_send(did, dev, aid)
         if dev["driver"] == "esphome":
             eid = dev["emap"].get(aid)
             if not eid:
@@ -1467,8 +1672,8 @@ class EspDevHub:
         out = []
         for did, dev in self.devices.items():
             pts = [self._point_view(did, dev, p) for p in dev["points"]]
-            out.append({"id": did, "hid": dev["hid"], "name": dev["name"], "host": self.bridges[dev["bridge"]]["host"] if dev["driver"] == "hue" and dev["bridge"] in self.bridges else dev["host"],
-                        "bridge": dev["bridge"], "port": dev["port"], "type": dev["type"], "fw": dev["fw"], "proto": dev["proto"],
+            out.append({"id": did, "hid": dev["hid"], "name": dev["name"], "host": self.bridges[dev["bridge"]]["host"] if dev["driver"] == "hue" and dev["bridge"] in self.bridges
+                        else "api.nuki.io" if dev["driver"] == "nuki" else dev["host"], "bridge": dev["bridge"], "account": dev["account"], "port": dev["port"], "type": dev["type"], "fw": dev["fw"], "proto": dev["proto"],
                         "proto_state": self.proto_state_of(dev), "current": f"{CURRENT[0]}.{CURRENT[1]}", "rev": dev["rev"], "online": did in self.online, "error": self.errors.get(did, ""),
                         "configured": True, "driver": dev["driver"], "ha": dev["ha"], "skipped": list(dev["skipped"]), "shown": self.shown(dev), "points": pts,
                         "actions": [{**a, "disabled": a["id"] in self.off.get(did, {}), "reason": self.off.get(did, {}).get(a["id"], "")} for a in dev["actions"]],
@@ -1537,8 +1742,8 @@ class EspDevHub:
             if not dev["ha"]:
                 continue
             drv = dev["driver"]
-            device = {"identifiers": [f"kk_esp_{did}"], "name": dev["name"], "manufacturer": {"esphome": "ESPHome", "hue": "Signify"}.get(drv, "Zelfbouw"),
-                      "model": {"esphome": "ESPHome (webserver)", "hue": dev["type"] or "Hue"}.get(drv) or f"{dev['type'] or 'apparaat'} (HUISDEV)", "sw_version": dev["fw"] or None}
+            device = {"identifiers": [f"kk_esp_{did}"], "name": dev["name"], "manufacturer": {"esphome": "ESPHome", "hue": "Signify", "nuki": "Nuki"}.get(drv, "Zelfbouw"),
+                      "model": {"esphome": "ESPHome (webserver)", "hue": dev["type"] or "Hue", "nuki": "Smart Lock"}.get(drv) or f"{dev['type'] or 'apparaat'} (HUISDEV)", "sw_version": dev["fw"] or None}
             device = {k: v for k, v in device.items() if v}
             for p in dev["points"]:
                 domain, extra = self._entity(did, p)

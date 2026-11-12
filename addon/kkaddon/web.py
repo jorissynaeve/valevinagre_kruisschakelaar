@@ -751,6 +751,32 @@ async def hue_claim(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "ids": dids, "keys": keys})
 
 
+async def nuki_add(request: web.Request) -> web.Response:
+    """Een Nuki-account koppelen met een API-token. De token staat alleen in de body, nooit in een URL, en komt nergens terug."""
+    b = await _body(request)
+    aid = await _espdev(request).add_nuki(str(b.get("token") or ""), str(b.get("name") or ""))
+    return web.json_response({"ok": True, "id": aid})
+
+
+async def nuki_claim(request: web.Request) -> web.Response:
+    """Sloten van een Nuki-account als blok toevoegen (`lids` leeg: alles wat er nog niet staat) en in een raster op een pagina zetten."""
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    lids = b.get("lids")
+    if lids is not None and (not isinstance(lids, list) or any(not isinstance(x, str) for x in lids)):
+        raise ModelError("lids: een lijst met sloten")
+    dids = await _espdev(request).claim_nuki(str(b.get("account") or ""), lids or None)
+    keys = [f"e:{d}" for d in dids]
+    if b.get("page") and keys:
+        schema.place_grid(ctx.model, ctx.engine.snapshot(), keys, b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "ids": dids, "keys": keys})
+
+
+async def nuki_delete(request: web.Request) -> web.Response:
+    ok = await _espdev(request).remove_nuki(request.match_info["aid"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
 async def espdev_put(request: web.Request) -> web.Response:
     _espdev(request).update(request.match_info["did"], await _body(request))
     return web.json_response({"ok": True})
@@ -1065,6 +1091,9 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/espdev/hue/bridge/{bid}", hue_bridge_put)
     r.add_delete("/api/espdev/hue/bridge/{bid}", hue_bridge_delete)
     r.add_post("/api/espdev/hue/claim", hue_claim)
+    r.add_post("/api/espdev/nuki/account", nuki_add)
+    r.add_post("/api/espdev/nuki/claim", nuki_claim)
+    r.add_delete("/api/espdev/nuki/account/{aid}", nuki_delete)
     r.add_put("/api/espdev/{did}", espdev_put)
     r.add_post("/api/espdev/{did}/set", espdev_set)
     r.add_post("/api/espdev/{did}/do", espdev_do)

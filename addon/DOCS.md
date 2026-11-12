@@ -339,6 +339,35 @@ Daarna staan de apparaten van de bridge in hetzelfde menu: één voor één, of 
 * Een bestaande applicatiesleutel gebruiken in plaats van koppelen: `POST /api/espdev/hue/bridge` met `host` en `key`. Die sleutel trekt de add-on bij *Bridge loskoppelen* **niet** in (hij kan ergens anders in gebruik zijn); een sleutel die de add-on zelf maakte wel.
 * Een ingang handelt op een **wijziging** en stuurt absolute opdrachten, zoals bij de overige apparaten. De add-on laat tussen twee opdrachten aan een bridge 0,1 s: Hue verdraagt ongeveer 10 opdrachten per seconde.
 
+### Nuki-sloten
+
+*+ Module → Nuki → Nuki-account koppelen*: plak een **API-token** van Nuki (web.nuki.io → *Integraties* → *API*, met het recht om sloten te lezen en te bedienen,
+`smartlock` en `smartlock.action`). Daarna staan je sloten in hetzelfde menu en maak je er een blok van. De add-on gebruikt de Nuki-cloud (`api.nuki.io`): het slot
+moet dus via wifi (of een Nuki Bridge) bij Nuki bereikbaar zijn. Een lokale koppeling met een Nuki Bridge (zonder cloud) is er nog niet.
+
+| Punt | Betekenis |
+|---|---|
+| *Stand* | de stand van Nuki: vergrendeld, ontgrendeld, vrijgegeven, bezig met vergrendelen of ontgrendelen, motor geblokkeerd, niet gekalibreerd |
+| *Vergrendeld* | 1 bij vergrendeld, 0 bij ontgrendeld of vrijgegeven; **onbekend** zolang het slot beweegt of een stand heeft die we niet kennen |
+| *Deur open* | alleen met een deursensor |
+| *Batterij* en *Batterij kritiek* | het percentage (als het slot het meldt) en of Nuki de batterij kritiek vindt |
+
+**Bedienen** doe je in de zijbalk van het blok:
+
+* **Vergrendelen** is een gewone knop (en komt als knop in Home Assistant als je het vinkje *ook als entiteiten in Home Assistant* aanzet).
+* **Ontgrendelen**, **Deur vrijgeven (unlatch)**, **Lock 'n' go** en **Unlatch met lock 'n' go** openen de deur en zijn daarom *gevaarlijk*: alleen met de hand, hier, na een bevestiging.
+  Ze staan niet in Home Assistant, een MQTT-opdracht ervoor wordt geweigerd en geen timer, module of routine kan ze starten: een slot heeft in het schema geen ingangen.
+  *Unlatch* kent niet elk slot of elke regio (in de VS geeft Nuki daar een fout op): gebruik dan *Ontgrendelen*.
+
+Goed om te weten:
+
+* Nuki voert een opdracht **asynchroon** uit. De add-on meldt dat Nuki hem aannam; of het slot hem uitvoerde zie je aan de *Stand*, die na een opdracht na 2, 6 en 15 seconden wordt opgehaald.
+  Het slot kan tijdens het uitvoeren even *Ontgrendelen* of *Vergrendelen* melden.
+* De stand wordt elke **30 seconden** opgehaald (Nuki laat 100 verzoeken per minuut en 1000 per uur per token toe; één verzoek dient alle sloten van een account). Een wijziging aan het slot zie je dus met enkele tientallen seconden vertraging.
+  Nuki geeft de stand door zoals de cloud hem kent: **een slot dat offline is, merkt de add-on niet altijd direct**. Gebruik de stand daarom niet als enige beveiliging.
+* Heeft ook iets anders (bijvoorbeeld JavaLox) dezelfde token, dan delen jullie de limiet.
+* De token staat alleen in `/data/espdev.json` (0600), nooit in het model, de export of de pagina. *Account loskoppelen* haalt de blokken weg maar trekt de token niet in bij Nuki: doe dat zelf op web.nuki.io.
+
 ## Energie (alle huisjes op één pagina, met prijzen)
 
 Home Assistant heeft al een energiedashboard (**Energie** in de zijbalk van HA). Het tabblad *Energie* vult het in, zodat je niet in HA

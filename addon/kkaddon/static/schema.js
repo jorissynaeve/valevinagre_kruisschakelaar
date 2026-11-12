@@ -559,6 +559,11 @@ function scEspState(b) {
 }
 
 function scEspProto(b) {
+  if (b.driver === 'nuki') {
+    const ac = (S.nuki || []).find((x) => x.id === b.account);
+    return `<div class="sub">Account <b>${esc(ac ? ac.name : b.account)}</b> bij Nuki (cloud, <code>api.nuki.io</code>).${ac && ac.error ? ` ${esc(ac.error)}.` : ''} De stand wordt elke 30 seconden opgehaald en na een opdracht snel nog een paar keer: Nuki geeft de stand van het slot door zoals de cloud hem kent, dus een slot dat offline is merk je hier niet altijd direct.</div>
+      <div class="row"><label class="chk" title="In Home Assistant komt dan de stand en een knop Vergrendelen. Ontgrendelen en deur vrijgeven staan er nooit."><input type="checkbox" data-esha ${b.ha ? 'checked' : ''}> ook als entiteiten in Home Assistant (alleen de stand en Vergrendelen, nooit ontgrendelen)</label></div>`;
+  }
   if (b.driver === 'hue') {
     const br = (S.hue || []).find((x) => x.id === b.bridge);
     return `<div class="sub">Bridge <b>${esc(br ? br.name : b.bridge)}</b> (<code>${esc(b.host)}</code>)${b.fw ? ` · firmware ${esc(b.fw)}` : ''}.${br && br.error ? ` ${esc(br.error)}.` : ''} Geef de bridge een vast IP in je router.</div>
@@ -637,7 +642,9 @@ function scEspdevPanel(b, props) {
     <button class="btn small ${a.danger ? 'danger' : ''}" type="button" data-sc="esdo" data-id="${esc(b.id)}" data-a="${esc(a.id)}" ${a.disabled || !b.online ? 'disabled' : ''} title="${esc(a.reason || '')}">${esc(a.label)}${a.danger ? '…' : ''}</button>${a.disabled && a.reason ? `<span class="sub">${esc(a.reason)}</span>` : ''}</div>`).join('');
   const users = b.outs.flatMap((o) => scAcUsers(o.ref).map((u) => ({ ...u, label: o.label })));
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scEspState(b))}</span></div>
-    <div class="sub">${b.driver === 'hue'
+    <div class="sub">${b.driver === 'nuki'
+    ? `Een Nuki-slot, gelezen en bediend via de Nuki-cloud. <b>Vergrendelen</b> kan hier en vanuit Home Assistant; wat de deur opent (<b>ontgrendelen</b>, <b>deur vrijgeven</b>, <b>lock 'n' go</b>) alleen met de hand, hier, na een bevestiging. Geen timer of module kan een slot openen: er is geen ingang.${b.ha ? ` In Home Assistant staat de stand (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
+    : b.driver === 'hue'
     ? `Een Philips Hue-apparaat, gelezen en bediend via de bridge. De stand hier komt altijd uit wat de bridge meldt; een lamp die uit de netspanning is, heeft geen bekende stand.${b.ha ? ` In Home Assistant staat het (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
     : b.driver === 'esphome'
     ? `Een ESPHome-toestel, gelezen via zijn eigen webserver. De entiteiten van het toestel zijn hier punten en acties; komt er een entiteit bij of valt er een weg, dan past dit blok zich aan.${b.ha ? ` In Home Assistant staan ze (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
@@ -649,7 +656,7 @@ function scEspdevPanel(b, props) {
     <div class="sub">Een ingang doet pas iets als ze <b>verandert</b>: na een herstart of als de bron weer bekend wordt, onthoudt ze alleen de stand. Gevaarlijke punten (reset, kalibratie) kun je alleen hier met de hand bedienen.</div>
     <h2>Uitgangen gaan naar</h2>${users.map((u) => `<div class="sub">${esc(u.label)} → <a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.text)}</a></div>`).join('') || '<div class="sub">Nog nergens. Sleep een uitgang (rechts) naar Groter dan, Kleiner dan, En, Of of een routine.</div>'}
     ${diag.length ? `<h2>Diagnose</h2>${diag.map((p) => `<div class="sub">${esc(p.label)}: ${esc(scEspText(p))}</div>`).join('')}` : ''}
-    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="esdel" data-id="${esc(b.id)}">${b.driver === 'hue' ? 'Van de pagina halen' : 'Loskoppelen'}</button></div>`;
+    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="esdel" data-id="${esc(b.id)}">${b.driver === 'hue' || b.driver === 'nuki' ? 'Van de pagina halen' : 'Loskoppelen'}</button></div>`;
 }
 
 // ---------------------------------------------------------------- tijd- en logicamodules
@@ -1243,8 +1250,21 @@ function scHueMenu() { // Hue-bridges: wat ze aanbieden en nog niet op een pagin
   return `<div class="scmenugroup scmenuwide"><h2>Philips Hue</h2>${(S.hue || []).map(bridge).join('')}<button class="scmenuitem" type="button" data-sc="hueadd"><b>Hue-bridge koppelen</b><span class="sub">met het IP-adres; daarna druk je op de ronde knop op de bridge</span></button></div>`;
 }
 
+function scNukiMenu() { // Nuki-accounts: de sloten die ze aanbieden en nog niet op een pagina staan
+  const account = (a) => {
+    const left = a.locks.filter((l) => !l.claimed);
+    const state = a.online ? `verbonden · ${a.locks.length} ${a.locks.length === 1 ? 'slot' : 'sloten'}` : (a.error || 'verbinden…');
+    return `<div class="scmenuwide"><div class="sub"><b>${esc(a.name)}</b> · ${esc(state)}</div>
+      <div class="scmenulist">${left.length > 1 ? `<button class="scmenuitem" type="button" data-sc="nukiall" data-account="${esc(a.id)}" data-n="${left.length}"><b>Alles toevoegen (${left.length})</b><span class="sub">op deze pagina</span></button>` : ''}
+      ${left.map((l) => `<button class="scmenuitem" type="button" data-sc="nukiclaim" data-account="${esc(a.id)}" data-lid="${esc(l.lid)}"><b>${esc(l.name)}</b><span class="sub">Nuki-slot</span></button>`).join('')}
+      <button class="scmenuitem" type="button" data-sc="nukidel" data-account="${esc(a.id)}"><b>Account loskoppelen</b><span class="sub">haalt zijn blokken weg</span></button></div>
+      ${a.online && !left.length ? '<div class="sub">Alle sloten staan al op een pagina.</div>' : ''}</div>`;
+  };
+  return `<div class="scmenugroup scmenuwide"><h2>Nuki</h2>${(S.nuki || []).map(account).join('')}<button class="scmenuitem" type="button" data-sc="nukiadd"><b>Nuki-account koppelen</b><span class="sub">met een API-token van web.nuki.io (Integraties); het slot moet via de cloud bereikbaar zijn</span></button></div>`;
+}
+
 function scMenu() {
-  return `<details class="scmenu" id="scmenu"><summary class="btn small primary">+ Module</summary><div class="scmenupop">${SC_MENU.map(([title, items]) => `<div class="scmenugroup"><h2>${title}</h2>${items.map(([type, name, sub]) => `<button class="scmenuitem" type="button" data-sc="add" data-type="${type}"><b>${name}</b><span class="sub">${sub}</span></button>`).join('')}</div>`).join('')}${scEspFound()}${scHueMenu()}</div></details>`;
+  return `<details class="scmenu" id="scmenu"><summary class="btn small primary">+ Module</summary><div class="scmenupop">${SC_MENU.map(([title, items]) => `<div class="scmenugroup"><h2>${title}</h2>${items.map(([type, name, sub]) => `<button class="scmenuitem" type="button" data-sc="add" data-type="${type}"><b>${name}</b><span class="sub">${sub}</span></button>`).join('')}</div>`).join('')}${scEspFound()}${scHueMenu()}${scNukiMenu()}</div></details>`;
 }
 
 const SC_DAYS = [['mon', 'Maandag'], ['tue', 'Dinsdag'], ['wed', 'Woensdag'], ['thu', 'Donderdag'], ['fri', 'Vrijdag'], ['sat', 'Zaterdag'], ['sun', 'Zondag']];
@@ -1909,6 +1929,43 @@ const SC_ACTIONS = {
     await refresh();
     toast('Toegevoegd. De entiteiten staan in de zijbalk; kies welke als rij op het blok staan.', 5000);
   },
+  nukiadd: async () => {
+    const menu = $('#scmenu');
+    if (menu) menu.open = false;
+    const token = (prompt('API-token van Nuki (web.nuki.io, Integraties: een token met het recht om sloten te lezen en te bedienen):') || '').trim();
+    if (!token) return;
+    await api('POST', 'espdev/nuki/account', { token });
+    SC.force = true;
+    await refresh();
+    toast('Gekoppeld. Kies in het menu (+ Module → Nuki) welke sloten je wilt toevoegen.', 6000);
+  },
+  nukiclaim: async (d) => {
+    const menu = $('#scmenu');
+    if (menu) menu.open = false;
+    if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
+    const r = await api('POST', 'espdev/nuki/claim', { account: d.account, lids: [d.lid], page: SC.page, ...scFreeSpot('module') });
+    SC.sel = SC.reveal = r.keys[0];
+    SC.force = true;
+    await refresh();
+    toast('Toegevoegd. Vergrendelen, ontgrendelen en de rest staan in de zijbalk.', 5000);
+  },
+  nukiall: async (d) => {
+    const menu = $('#scmenu');
+    if (menu) menu.open = false;
+    if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
+    const r = await api('POST', 'espdev/nuki/claim', { account: d.account, page: SC.page, ...scFreeSpot('module') });
+    SC.sel = SC.reveal = r.keys[0];
+    SC.force = true;
+    await refresh();
+    toast(`${r.keys.length} sloten toegevoegd.`, 5000);
+  },
+  nukidel: async (d) => {
+    if (!confirm("Dit Nuki-account loskoppelen? Zijn blokken verdwijnen van de pagina's. De sloten zelf en de token bij Nuki veranderen niet: trek de token zelf in op web.nuki.io als je hem niet meer wilt.")) return;
+    await api('DELETE', `espdev/nuki/account/${d.account}`);
+    SC.sel = null;
+    SC.force = true;
+    await refresh();
+  },
   hueadd: async () => {
     const menu = $('#scmenu');
     if (menu) menu.open = false;
@@ -1963,7 +2020,8 @@ const SC_ACTIONS = {
   },
   esdel: async (d) => {
     const es = scBlock(`e:${d.id}`);
-    if (!confirm(es && es.driver === 'hue' ? 'Dit Hue-apparaat van de pagina halen? Op de bridge verandert niets; je vindt het weer terug in het menu (+ Module → Philips Hue).'
+    if (!confirm(es && es.driver === 'nuki' ? 'Dit slot van de pagina halen? Het slot zelf verandert niet; je vindt het weer terug in het menu (+ Module → Nuki).'
+      : es && es.driver === 'hue' ? 'Dit Hue-apparaat van de pagina halen? Op de bridge verandert niets; je vindt het weer terug in het menu (+ Module → Philips Hue).'
       : es && es.driver === 'esphome' ? 'Dit ESPHome-toestel uit de Huisconfig halen? Het toestel zelf verandert niet; entiteiten die de add-on in Home Assistant maakte verdwijnen.'
       : 'Dit apparaat loskoppelen? De claim op het apparaat wordt gewist en zijn entiteiten verdwijnen uit Home Assistant.')) return;
     await api('DELETE', `espdev/${d.id}`);
