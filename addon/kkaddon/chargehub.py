@@ -15,9 +15,18 @@ HA en add-on) bedienen hem niet meer via de ruwe datapunten maar via dit blok, z
 
 De instellingen (welk toestel, welke datapunten, wanneer starten of stoppen, de prijs per kWh) staan op het blok, niet meer op
 de kaart. Een kaart wijst alleen nog naar een laadpaal (`k:<id>` hier, of `r:<installatie>:k:<id>` bij een andere).
+
+**Een Smappee-laadpaal** (`espdev` is het HUISDEV-blok van het laadpunt, zie smappee.py) werkt anders, want met een badge (RFID) start de eigenaar van de tag aan de laadpaal en de
+huisconfig kan niet starten of stoppen:
+
+  * **Geen start en stop**, wel **pauzeren, hervatten en de stroom** (ampère). Een ander huis mag dat alleen tijdens zijn eigen sessie; de eigenaar altijd.
+  * **De sessies komen uit de cloud van Smappee**, met de badge erbij. Een tag hoort bij een huis (`tags`: tag -> {by, name}): dat huis krijgt de kWh en de kosten, en de factuur splitst
+    daarop. Een badge zonder huis staat in het log als onbekend en kan later een naam krijgen; het log van die badge wordt dan opnieuw toegewezen. Een sessie zonder badge is "Zonder badge".
+  * Een sessie telt vanaf `since` (standaard het moment van koppelen): wat Smappee over de week ervoor meldt, boekt niet vanzelf. De sessies van het laadpunt worden niet dubbel geboekt (`imported`).
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
@@ -31,6 +40,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import discovery as d
+from . import smappee
 from .cards import CHARGING, same
 from .engine import Engine
 from .link import split_ref
@@ -42,11 +52,19 @@ log = logging.getLogger("kk.charge")
 
 MAX_CHARGERS = 8
 MAX_LOG = 500
+MAX_IMPORTED = 300
 START_GRACE = 180.0  # s: na een start wachten tot de laadpaal echt laadt; anders is het niet gelukt
 END_AFTER = 20.0  # s: zolang de laadpaal niet meer laadt voor de sessie eindigt (een korte hapering is geen einde)
 ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 LOCAL = "-"  # starter van een sessie die aan de laadpaal zelf begon
 INPUTS = ("status", "time", "energy")
+TAG_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+HOUSE_RE = re.compile(r"^[a-z0-9_]{1,40}$")
+MAX_TAGS = 40
+UNKNOWN = "?"  # begin van het huis-id van een badge die nog bij geen huis hoort
+NO_TAG = "Zonder badge"
+SM_STATUS = {smappee.S_FREE: "free", smappee.S_CONNECTED: "connect", smappee.S_CHARGING: "charging", smappee.S_PAUSED: "paused"}  # de woorden die de kaart kent (cards.STATUS)
+SM_OPS = {"pause": ("paused", True), "resume": ("paused", False), "current": ("current", None)}
 FEYREE = {"inputs": {"status": "101", "time": "120", "energy": "25"}, "target": {"dp": "124", "on": "OpenCharging", "off": "CloseCharging"}}
 
 
@@ -56,13 +74,32 @@ def charger_id(device: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", device.lower()).strip("_")[:40] or "laadpaal"
 
 
+def _slug_house(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:40]
+
+
+def _tags(raw) -> dict[str, dict]:
+    """{badge: {by, name}}: bij welk huis een badge hoort. `by` is "" (deze installatie), het id van een andere installatie, of een eigen id; zonder `by` komt het uit de naam."""
+    out: dict[str, dict] = {}
+    for tag, v in (raw.items() if isinstance(raw, dict) else []):
+        if not isinstance(tag, str) or not TAG_RE.match(tag) or not isinstance(v, dict):
+            continue
+        name = str(v.get("name") or "").strip()[:60]
+        by = v.get("by")
+        by = _slug_house(name) if by is None else str(by)
+        if name and (by == "" or HOUSE_RE.match(by)) and len(out) < MAX_TAGS:
+            out[tag] = {"by": by, "name": name}
+    return out
+
+
 def _defaults(b: dict, device: str = "") -> dict:
     ins, tgt = b.get("inputs") if isinstance(b.get("inputs"), dict) else {}, b.get("target") if isinstance(b.get("target"), dict) else {}
     return {"name": str(b.get("name") or "Laadpaal")[:60], "device": str(b.get("device") or device or ""),
             "inputs": {k: str(ins[k]) for k in INPUTS if ins.get(k)},
             "target": {"dp": str(tgt.get("dp") or ""), "on": str(tgt.get("on") or ""), "off": str(tgt.get("off") or "")},
             "start_when": list(b.get("start_when") or []), "stop_when": list(b.get("stop_when") or []),
-            "price": float(b.get("price", 0.30)), "price_entity": b.get("price_entity") or ""}
+            "price": float(b.get("price", 0.30)), "price_entity": b.get("price_entity") or "",
+            "espdev": str(b.get("espdev") or ""), "tags": _tags(b.get("tags")), "since": float(b["since"]) if isinstance(b.get("since"), (int, float)) and not isinstance(b.get("since"), bool) else 0.0}
 
 
 class ChargeHub:
@@ -78,6 +115,10 @@ class ChargeHub:
         self.chargers: dict[str, dict] = {}
         self.active: dict[str, dict] = {}
         self.log: list[dict] = []
+        self.espdev = None  # EspDevHub, voor een Smappee-laadpaal: zijn sessies, standen en opdrachten
+        self.imported: dict[str, list[str]] = {}  # laadpaal -> de sessies van Smappee die al in het log staan
+        self._cloud_sig: dict[str, object] = {}
+        self._tasks: set = set()  # opdrachten die nog onderweg zijn (control_nowait)
         self.seq = 0
         self.migrated = False
         self._load()
@@ -98,12 +139,14 @@ class ChargeHub:
             self.active = {k: v for k, v in (raw.get("active") or {}).items() if k in self.chargers and isinstance(v, dict)}
             self.log = [e for e in raw.get("log") or [] if isinstance(e, dict)][-MAX_LOG:]
             self.seq, self.migrated = int(raw.get("seq") or 0), bool(raw.get("migrated"))
+            self.imported = {k: [str(x) for x in v][-MAX_IMPORTED:] for k, v in (raw.get("imported") or {}).items() if k in self.chargers and isinstance(v, list)}
         except (TypeError, ValueError, AttributeError) as e:
             log.error("%s onleesbaar: %s", self.path, e)
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"chargers": self.chargers, "active": self.active, "log": self.log[-MAX_LOG:], "seq": self.seq, "migrated": self.migrated}
+        data = {"chargers": self.chargers, "active": self.active, "log": self.log[-MAX_LOG:], "seq": self.seq, "migrated": self.migrated,
+                "imported": {k: v[-MAX_IMPORTED:] for k, v in self.imported.items() if k in self.chargers}}
         fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".charge-", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -127,6 +170,13 @@ class ChargeHub:
     def _check(self, c: dict) -> None:
         if not c["name"].strip():
             raise ModelError("geef de laadpaal een naam")
+        if c["espdev"]:
+            if c["device"] or c["inputs"] or c["target"]["dp"] or c["start_when"] or c["stop_when"]:
+                raise ModelError("een Smappee-laadpaal heeft geen Tuya-toestel, datapunten of start- en stopregels")
+            if self.espdev is not None and not self._is_smappee(c["espdev"]):
+                raise ModelError("kies het blok van een Smappee-laadpunt")
+            if c["since"] < 0:
+                raise ModelError("ongeldig begin")
         if c["device"] and not TUYA_ID_RE.fullmatch(c["device"]):
             raise ModelError("ongeldig Tuya-toestel")
         for k, dp in c["inputs"].items():
@@ -143,8 +193,28 @@ class ChargeHub:
         _num(c["price"], 0, 100, "prijs per kWh")
         _opt_entity(c["price_entity"] or None, "prijs")
 
+    def _is_smappee(self, did: str) -> bool:
+        dev = self.espdev.devices.get(did) if self.espdev is not None else None
+        return bool(dev and dev["driver"] == "smappee")
+
     def _fields(self, old: dict, b: dict) -> dict:
-        new = {**old, "inputs": dict(old["inputs"]), "target": dict(old["target"])}
+        new = {**old, "inputs": dict(old["inputs"]), "target": dict(old["target"]), "tags": dict(old["tags"])}
+        if "espdev" in b:
+            new["espdev"] = str(b["espdev"] or "")
+        if "since" in b:
+            v = b["since"]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+                raise ModelError("laadpaal: begin als een tijdstip (seconden)")
+            new["since"] = float(v)
+        if "tags" in b:
+            if not isinstance(b["tags"], dict) or any(not isinstance(k, str) or not TAG_RE.match(k) for k in b["tags"]):
+                raise ModelError("laadpaal: badges als {badge: {naam, huis}}")
+            if len(b["tags"]) > MAX_TAGS:
+                raise ModelError(f"laadpaal: maximaal {MAX_TAGS} badges")
+            clean = _tags(b["tags"])
+            if set(clean) != set(b["tags"]):
+                raise ModelError("laadpaal: elke badge heeft een naam (en een huis zonder vreemde tekens)")
+            new["tags"] = clean
         if "name" in b:
             new["name"] = str(b["name"] or "").strip()[:60]
         if "device" in b:
@@ -178,11 +248,13 @@ class ChargeHub:
     def add(self, b: dict) -> str:
         if len(self.chargers) >= MAX_CHARGERS:
             raise ModelError(f"maximaal {MAX_CHARGERS} laadpalen")
-        base = cid = charger_id(str(b.get("device") or b.get("name") or "laadpaal"))
+        base = cid = charger_id(str(b.get("device") or b.get("espdev") or b.get("name") or "laadpaal"))
         n = 2
         while cid in self.chargers:
             cid, n = f"{base[:36]}_{n}", n + 1
         c = self._fields(_defaults({"name": b.get("name") or "Laadpaal"}), b)
+        if c["espdev"] and "since" not in b:
+            c["since"] = self._clock()  # wat Smappee over de tijd daarvoor meldt, boekt niet vanzelf
         self._check(c)
         self._create(cid, c)
         return cid
@@ -195,11 +267,17 @@ class ChargeHub:
     def update(self, cid: str, b: dict) -> None:
         if cid not in self.chargers:
             raise ModelError("onbekende laadpaal")
-        c = self._fields(self.chargers[cid], b)
+        old = self.chargers[cid]
+        c = self._fields(old, b)
         self._check(c)
-        if cid in self.active and c["device"] != self.chargers[cid]["device"]:
+        if cid in self.active and (c["device"] != old["device"] or c["espdev"] != old["espdev"]):
             raise ModelError("er loopt een laadsessie: wacht tot ze klaar is voor je een ander toestel kiest")
+        if c["espdev"] != old["espdev"] and old["espdev"]:
+            raise ModelError("een Smappee-laadpaal houdt zijn laadpunt: voeg een nieuwe laadpaal toe voor een ander")
         self.chargers[cid] = c
+        if c["tags"] != old["tags"]:
+            self._reattribute(cid, c)
+        self._cloud_sig.pop(cid, None)  # de lopende sessie opnieuw toewijzen
         self._save()
         self._poke()
 
@@ -209,6 +287,8 @@ class ChargeHub:
         if cid in self.active:
             raise ModelError("er loopt een laadsessie: stop ze eerst")
         del self.chargers[cid]
+        self.imported.pop(cid, None)
+        self._cloud_sig.pop(cid, None)
         self._save()
         m = self.engine.model
         m.set_schema({**m.schema, "blocks": {k: v for k, v in m.schema["blocks"].items() if k != f"k:{cid}"}})
@@ -269,6 +349,8 @@ class ChargeHub:
         return dev["points"].get(str(dp)) if dev and dev["online"] and dp else None
 
     def online(self, c: dict) -> bool:
+        if c["espdev"]:
+            return bool(self.espdev is not None and self.espdev.is_online(c["espdev"]))
         dev = self._device(c)
         return bool(dev and dev["online"])
 
@@ -285,6 +367,9 @@ class ChargeHub:
         return bool(p and c["target"]["on"] and same(p.get("value"), c["target"]["on"]))
 
     def can_start(self, c: dict) -> bool:
+        if c["espdev"]:
+            return False  # met een badge start je aan de laadpaal
+
         """Mag je nu starten? Met een lijst bij de laadpaal (start_when / stop_when) en een status beslist de status: een waarde uit
         de startlijst geeft ja, elke andere niets. Zonder lijsten of status: ja zolang hij niet laadt."""
         start, stop = c["start_when"], c["stop_when"]
@@ -321,6 +406,8 @@ class ChargeHub:
         c = self.chargers.get(cid)
         if c is None:
             return None
+        if c["espdev"]:
+            return self._view_smappee(cid, c, viewer)
         s = self.active.get(cid)
         online = self.online(c)
         base = {"kind": "charger", "name": c["name"], "online": online}
@@ -363,6 +450,8 @@ class ChargeHub:
         c = self.chargers.get(cid)
         if c is None:
             raise ModelError("onbekende laadpaal")
+        if c["espdev"]:
+            raise ModelError("starten gaat met de badge aan de laadpaal, niet via de huisconfig")
         if cid in self.active:
             raise ModelError("de laadpaal is bezet")
         if not self.online(c):
@@ -383,6 +472,8 @@ class ChargeHub:
         s = self.active.get(cid)
         if c is None:
             raise ModelError("onbekende laadpaal")
+        if c["espdev"]:
+            raise ModelError("stoppen gaat met de badge aan de laadpaal; hier kun je pauzeren")
         if s is None:
             raise ModelError("er loopt geen laadsessie")
         if who["id"] != "" and who["id"] != s["by"]:
@@ -395,6 +486,169 @@ class ChargeHub:
         self._sample(c, s)
         reason = "gestopt" if who["id"] == "" and s["by"] == "" else "gestopt door de eigenaar" if who["id"] == "" else "gestopt door de starter"
         self._end(cid, reason, who["name"])
+
+    # ------------------------------------------------------------ een Smappee-laadpaal: pauzeren en de stroom
+
+    def _sm_point(self, c: dict, pid: str):
+        return self.espdev.point_value(c["espdev"], pid) if self.espdev is not None else None
+
+    def _sm_range(self, c: dict) -> tuple[int | None, int | None]:
+        dev = self.espdev.devices.get(c["espdev"]) if self.espdev is not None else None
+        p = next((x for x in dev["points"] if x["id"] == "current"), None) if dev else None
+        return (p["min"], p["max"]) if p else (None, None)
+
+    @staticmethod
+    def _hm(seconds: float) -> str:
+        m = int(max(0, seconds) // 60)
+        return f"{m // 60}:{m % 60:02d}"
+
+    def _view_smappee(self, cid: str, c: dict, viewer: str | None) -> dict:
+        """De Smappee-laadpaal zoals `viewer` hem mag zien. Zoals bij een Tuya-laadpaal: tijdens de sessie van een ander alleen "bezet". `act` is `pause` of `resume` (nooit start of stop),
+        alleen voor de eigenaar of voor het huis dat nu laadt."""
+        s = self.active.get(cid)
+        online = self.online(c)
+        base = {"kind": "charger", "name": c["name"], "online": online, "ctl": True}
+        if s is None:
+            phase = "free"
+        elif viewer is None:
+            phase = "mine" if s["by"] == "" else "other"
+        else:
+            phase = "mine" if s["by"] == viewer else "busy"
+        if phase == "busy":
+            return {**base, "phase": "busy", "act": None}
+        if not online:
+            return {**base, "phase": phase, "act": None}
+        st = self._sm_point(c, "state")
+        paused, charging, amps = st == smappee.S_PAUSED, st == smappee.S_CHARGING, self._sm_point(c, "current")
+        lo, hi = self._sm_range(c)
+        may = viewer is None or phase == "mine"
+        out = {**base, "phase": phase, "status": SM_STATUS.get(st), "charging": charging, "act": ("resume" if paused else "pause" if charging else None) if may else None,
+               "time": None, "energy": None, "cost": None, "amps": amps if may else None, "amp_min": lo, "amp_max": hi}
+        if s is not None:
+            kwh = s.get("last_e")
+            out.update(energy=kwh, time=self._hm(self._clock() - s["start"]), cost=None if kwh is None else round(kwh * self.tariff(c), 2), since=int(s["start"]))
+            if phase == "other":
+                out["by"] = s["name"]
+        return out
+
+    def _sm_check(self, cid: str, who: dict) -> dict:
+        c = self.chargers.get(cid)
+        if c is None:
+            raise ModelError("onbekende laadpaal")
+        if not c["espdev"]:
+            raise ModelError("dit is geen Smappee-laadpaal: gebruik start en stop")
+        if who["id"] != "":
+            s = self.active.get(cid)
+            if s is None or s["by"] != who["id"]:
+                raise ModelError("alleen het huis dat laadt kan dit bedienen")
+        if not self.online(c):
+            raise ModelError("de laadpaal is niet bereikbaar")
+        return c
+
+    @staticmethod
+    def _sm_value(op: str, value):
+        if op not in SM_OPS:
+            raise ModelError("onbekende opdracht")
+        pid, v = SM_OPS[op]
+        if op == "current":
+            try:
+                v = float(value)
+            except (TypeError, ValueError):
+                raise ModelError("de stroom is een getal in ampère") from None
+        return pid, v
+
+    async def control(self, cid: str, who: dict, op: str, value=None) -> None:
+        """`pause`, `resume` of `current` (ampère) voor een Smappee-laadpaal, en wacht op het antwoord van Smappee (een weigering is een ModelError)."""
+        c = self._sm_check(cid, who)
+        pid, v = self._sm_value(op, value)
+        await self.espdev.set(c["espdev"], pid, v)
+        log.info("laadpaal %s: %s%s door %s", c["name"], op, f" {v:g} A" if op == "current" else "", who["name"])
+
+    def control_nowait(self, cid: str, who: dict, op: str, value=None) -> None:
+        """Hetzelfde voor wie niet kan wachten (het paneel, een ander huis): de regels worden meteen gecontroleerd, het versturen gebeurt daarna; een mislukking staat in het log."""
+        c = self._sm_check(cid, who)
+        pid, v = self._sm_value(op, value)
+        name = c["name"]
+
+        async def go():
+            try:
+                await self.espdev.set(c["espdev"], pid, v)
+                log.info("laadpaal %s: %s%s door %s", name, op, f" {v:g} A" if op == "current" else "", who["name"])
+            except ModelError as e:
+                log.warning("laadpaal %s: %s niet gelukt: %s", name, op, e)
+
+        task = asyncio.get_running_loop().create_task(go())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    # ------------------------------------------------------------ een Smappee-laadpaal: de sessies uit de cloud en de badge
+
+    def _who_tag(self, c: dict, tag: str) -> dict:
+        if not tag:
+            return {"by": LOCAL, "name": NO_TAG}
+        t = c["tags"].get(tag)
+        if t:
+            return {"by": t["by"], "name": t["name"]}
+        key = re.sub(r"[^a-z0-9]", "", tag.lower())[-12:]
+        return {"by": f"{UNKNOWN}{key}", "name": f"Onbekende badge …{tag[-4:]}"}
+
+    def _reattribute(self, cid: str, c: dict) -> None:
+        """Een badge kreeg een naam of een ander huis: het log van die badge wordt opnieuw toegewezen (zodat de factuur klopt)."""
+        n = 0
+        for e in self.log:
+            if e["charger"] == cid and e.get("tag"):
+                who = self._who_tag(c, e["tag"])
+                if (e["by"], e["name"]) != (who["by"], who["name"]):
+                    e["by"], e["name"], n = who["by"], who["name"], n + 1
+        if n:
+            log.info("laadpaal %s: %d sessies opnieuw toegewezen na een wijziging van de badges", c["name"], n)
+
+    def _import(self, cid: str, c: dict, x: dict) -> None:
+        who = self._who_tag(c, x["tag"])
+        self.seq += 1
+        entry = {"n": self.seq, "charger": cid, "by": who["by"], "name": who["name"], "start": int(x["start"]), "end": int(x["end"]), "seconds": int(x["end"] - x["start"]),
+                 "kwh": None if x["kwh"] is None else round(x["kwh"], 3), "tariff": self.tariff(c), "reason": "sessie uit Smappee", "stopped_by": "", "tag": x["tag"]}
+        entry["cost"] = None if entry["kwh"] is None else round(entry["kwh"] * entry["tariff"], 2)
+        self.log.append(entry)
+        del self.log[:-MAX_LOG]
+        log.info("laadpaal %s: sessie van %s uit Smappee geboekt (%s kWh)", c["name"], who["name"], entry["kwh"])
+
+    def _cloud(self, cid: str, c: dict) -> None:
+        """De sessies van Smappee naar het log: afgeronde sessies worden geboekt (een keer), een sessie die loopt is de actieve sessie. Zonder verbinding met Smappee gebeurt er niets."""
+        sess = self.espdev.smappee_sessions(c["espdev"]) if self.espdev is not None else None
+        if sess is None:
+            return
+        sig = (tuple((x["key"], x["end"], x["kwh"], x["tag"]) for x in sess[:60]), json.dumps(c["tags"], sort_keys=True))
+        if sig == self._cloud_sig.get(cid):
+            return
+        self._cloud_sig[cid] = sig
+        done = self.imported.setdefault(cid, [])
+        known, changed, running = set(done), False, None
+        for x in reversed(sess):  # de oudste eerst: het log blijft in volgorde
+            if x["start"] < c["since"]:
+                continue
+            if x["end"] is None:
+                running = x
+                continue
+            if x["key"] in known:
+                continue
+            self._import(cid, c, x)
+            done.append(x["key"])
+            known.add(x["key"])
+            changed = True
+        del done[:-MAX_IMPORTED]
+        cur = self.active.get(cid)
+        if running is not None:
+            who = self._who_tag(c, running["tag"])
+            s = {"by": who["by"], "name": who["name"], "start": running["start"], "seen": True, "last_chg": self._clock(), "base": 0.0, "last_e": running["kwh"], "cloud": running["key"], "tag": running["tag"]}
+            if cur is None or {k: v for k, v in cur.items() if k != "last_chg"} != {k: v for k, v in s.items() if k != "last_chg"}:
+                self.active[cid], changed = s, True
+        elif cur is not None and cur.get("cloud"):
+            del self.active[cid]  # de sessie is voorbij (of verdwenen uit de lijst)
+            changed = True
+        if changed:
+            self._save()
+        self._poke()
 
     # ------------------------------------------------------------ de sessies
 
@@ -426,6 +680,9 @@ class ChargeHub:
         """Elke seconde: een sessie die aan de laadpaal zelf begint opmerken, de meter volgen, en een sessie laten eindigen als de laadpaal klaar is."""
         now = self._clock()
         for cid, c in list(self.chargers.items()):
+            if c["espdev"]:
+                self._cloud(cid, c)
+                continue
             if not self.online(c):
                 continue  # niets weten is niet hetzelfde als gestopt: de sessie loopt door
             chg, s = self.charging(c), self.active.get(cid)
@@ -454,11 +711,25 @@ class ChargeHub:
         out = []
         for cid, c in self.chargers.items():
             s = self.active.get(cid)
-            out.append({"id": cid, "name": c["name"], "device": c["device"], "inputs": dict(c["inputs"]), "target": dict(c["target"]), "start_when": list(c["start_when"]),
+            out.append({"id": cid, "name": c["name"], "device": c["device"], "espdev": c["espdev"], "tags": {k: dict(v) for k, v in c["tags"].items()}, "since": c["since"],
+                        "unknown_tags": self._unknown_tags(cid, c), "inputs": dict(c["inputs"]), "target": dict(c["target"]), "start_when": list(c["start_when"]),
                         "stop_when": list(c["stop_when"]), "price": c["price"], "price_entity": c["price_entity"], "online": self.online(c),
                         "view": self.view(cid, None), "session": ({"by": s["by"], "name": s["name"], "start": int(s["start"]), "seen": s["seen"]} if s else None),
                         "log": [e for e in reversed(self.log) if e["charger"] == cid][:100]})
         return out
+
+    def _unknown_tags(self, cid: str, c: dict) -> list[dict]:
+        """De badges die in het log of in de lopende sessie voorkwamen en bij geen huis horen: wat de pagina laat toewijzen."""
+        seen: dict[str, dict] = {}
+        for e in self.log:
+            t = e.get("tag")
+            if e["charger"] == cid and t and t not in c["tags"]:
+                x = seen.setdefault(t, {"tag": t, "sessions": 0, "kwh": 0.0, "last": 0})
+                x["sessions"], x["kwh"], x["last"] = x["sessions"] + 1, round(x["kwh"] + (e["kwh"] or 0), 3), max(x["last"], e["end"])
+        s = self.active.get(cid)
+        if s and s.get("tag") and s["tag"] not in c["tags"]:
+            seen.setdefault(s["tag"], {"tag": s["tag"], "sessions": 0, "kwh": 0.0, "last": int(s["start"])})
+        return sorted(seen.values(), key=lambda x: -x["last"])
 
     def sessions(self) -> dict:
         """Alle sessies van alle laadpalen, voor de pagina Laden (filter, CSV en factuur gebeuren daar). `by` is het id van het huis."""

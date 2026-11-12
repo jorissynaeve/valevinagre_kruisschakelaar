@@ -473,6 +473,15 @@ async def charge_run(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def charge_control(request: web.Request) -> web.Response:
+    """Pauzeren, hervatten of de stroom (`amps`, ampère) van een Smappee-laadpaal vanaf de pagina van de eigenaar. Wacht op het antwoord van Smappee."""
+    hub, cid = _charge(request), request.match_info["cid"]
+    op = request.match_info["op"]
+    b = await _body(request) if op == "current" else {}
+    await hub.control(cid, hub.who_self(), op, b.get("amps"))
+    return web.json_response({"ok": True})
+
+
 async def charge_sessions(request: web.Request) -> web.Response:
     return web.json_response(_charge(request).sessions())
 
@@ -810,6 +819,39 @@ async def brink_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
+async def smappee_add(request: web.Request) -> web.Response:
+    """Een Smappee-account koppelen met de gebruikersnaam en het wachtwoord van het dashboard. Het wachtwoord staat alleen in de body en komt nergens terug."""
+    b = await _body(request)
+    aid = await _espdev(request).add_smappee(str(b.get("username") or ""), str(b.get("password") or ""), str(b.get("name") or ""))
+    return web.json_response({"ok": True, "id": aid})
+
+
+async def smappee_put(request: web.Request) -> web.Response:
+    """Een nieuw wachtwoord of een andere naam voor een Smappee-account."""
+    b = await _body(request)
+    _espdev(request).update_smappee(request.match_info["aid"], str(b.get("password") or ""), str(b["name"]) if "name" in b else None)
+    return web.json_response({"ok": True})
+
+
+async def smappee_claim(request: web.Request) -> web.Response:
+    """Laadpunten van een Smappee-account als blok toevoegen (`keys` leeg: alles wat er nog niet staat) en op een pagina zetten."""
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    keys = b.get("keys")
+    if keys is not None and (not isinstance(keys, list) or any(not isinstance(x, str) for x in keys)):
+        raise ModelError("keys: een lijst met laadpunten")
+    dids = await _espdev(request).claim_smappee(str(b.get("account") or ""), keys or None)
+    blocks = [f"e:{d}" for d in dids]
+    if b.get("page") and blocks:
+        schema.place_grid(ctx.model, ctx.engine.snapshot(), blocks, b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "ids": dids, "keys": blocks})
+
+
+async def smappee_delete(request: web.Request) -> web.Response:
+    ok = await _espdev(request).remove_smappee(request.match_info["aid"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
 async def espdev_put(request: web.Request) -> web.Response:
     _espdev(request).update(request.match_info["did"], await _body(request))
     return web.json_response({"ok": True})
@@ -1130,6 +1172,10 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/espdev/brink/account/{aid}", brink_put)
     r.add_post("/api/espdev/brink/claim", brink_claim)
     r.add_delete("/api/espdev/brink/account/{aid}", brink_delete)
+    r.add_post("/api/espdev/smappee/account", smappee_add)
+    r.add_put("/api/espdev/smappee/account/{aid}", smappee_put)
+    r.add_post("/api/espdev/smappee/claim", smappee_claim)
+    r.add_delete("/api/espdev/smappee/account/{aid}", smappee_delete)
     r.add_delete("/api/espdev/nuki/account/{aid}", nuki_delete)
     r.add_put("/api/espdev/{did}", espdev_put)
     r.add_post("/api/espdev/{did}/set", espdev_set)
@@ -1142,6 +1188,7 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/charge/{cid}", charge_put)
     r.add_delete("/api/charge/{cid}", charge_delete)
     r.add_post("/api/charge/{cid}/{op:start|stop}", charge_run)
+    r.add_post("/api/charge/{cid}/{op:pause|resume|current}", charge_control)
     r.add_post("/api/airco", airco_post)
     r.add_post("/api/airco/scan", airco_scan)
     r.add_put("/api/airco/{did}", airco_put)

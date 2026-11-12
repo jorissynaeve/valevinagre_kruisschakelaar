@@ -41,9 +41,11 @@ CHARGER_REF = re.compile(r"^(k:[a-z0-9_]{1,40}|r:[a-z0-9_]{1,40}:k:[a-z0-9_]{1,4
 # DeviceState van de lader. Gemeten is alleen `connect`; de rest is een gok op wat zo'n lader meldt. Wat we niet kennen tonen we zoals het komt.
 STATUS = {
     "nl": {"connect": "Aangesloten", "charing": "Aan het laden", "charging": "Aan het laden", "free": "Vrij", "idle": "Vrij", "available": "Vrij",
-           "wait": "Wacht", "waiting": "Wacht", "no_connect": "Niet aangesloten", "qr_wait": "Wacht op QR", "finish": "Klaar", "charge_end": "Klaar", "end": "Klaar", "fault": "Storing", "error": "Storing"},
+           "wait": "Wacht", "waiting": "Wacht", "no_connect": "Niet aangesloten", "qr_wait": "Wacht op QR", "finish": "Klaar", "charge_end": "Klaar", "end": "Klaar", "fault": "Storing", "error": "Storing",
+           "paused": "Gepauzeerd"},
     "en": {"connect": "Connected", "charing": "Charging", "charging": "Charging", "free": "Free", "idle": "Free", "available": "Free",
-           "wait": "Waiting", "waiting": "Waiting", "no_connect": "Not connected", "qr_wait": "Waiting for QR", "finish": "Done", "charge_end": "Done", "end": "Done", "fault": "Fault", "error": "Fault"},
+           "wait": "Waiting", "waiting": "Waiting", "no_connect": "Not connected", "qr_wait": "Waiting for QR", "finish": "Done", "charge_end": "Done", "end": "Done", "fault": "Fault", "error": "Fault",
+           "paused": "Paused"},
 }
 CHARGING = {"charing", "charging"}
 
@@ -67,9 +69,9 @@ def same(value, want: str) -> bool:
 
 CHARGE_COLOR = rgb565([0, 200, 80])
 WORDS = {
-    "nl": {"time": "Laadtijd", "energy": "Geladen", "price": "Prijs", "start": "Start", "stop": "Stop", "offline": "Laadpaal offline", "offline_short": "offline", "none": "Geen laadpaal gekozen", "busy": "Laadpaal bezet",
+    "nl": {"time": "Laadtijd", "energy": "Geladen", "price": "Prijs", "start": "Start", "stop": "Stop", "pause": "Pauze", "resume": "Hervat", "amps": "Stroom", "offline": "Laadpaal offline", "offline_short": "offline", "none": "Geen laadpaal gekozen", "busy": "Laadpaal bezet",
            "ssid": "Netwerk", "password": "Wachtwoord", "missing": "Niet gevonden"},
-    "en": {"time": "Charge time", "energy": "Charged", "price": "Price", "start": "Start", "stop": "Stop", "offline": "Charger offline", "offline_short": "offline", "none": "No charger chosen", "busy": "Charger in use",
+    "en": {"time": "Charge time", "energy": "Charged", "price": "Price", "start": "Start", "stop": "Stop", "pause": "Pause", "resume": "Resume", "amps": "Current", "offline": "Charger offline", "offline_short": "offline", "none": "No charger chosen", "busy": "Charger in use",
            "ssid": "Network", "password": "Password", "missing": "Not found"},
 }
 
@@ -170,11 +172,14 @@ def _card(model, cid: str, lang: str) -> dict:
         return {**base, "type": LAYOUTS[c["layout"]], "entities": [_grid_item(model, cid, i, it) for i, it in enumerate(c["items"])]}
     if t == "charger":
         w = WORDS[lang]
-        return {**base, "type": "cardEntities", "entities": [
+        rows = [
             {"entity": f"{DYN}.{cid}__run", "icon": "mdi:ev-station"},
             {"entity": f"{DYN}.{cid}__time", "name": w["time"], "icon": "mdi:timer-outline"},
             {"entity": f"{DYN}.{cid}__energy", "name": w["energy"], "icon": "mdi:lightning-bolt"},
-            {"entity": f"{DYN}.{cid}__price", "name": w["price"], "icon": "mdi:currency-eur"}]}
+            {"entity": f"{DYN}.{cid}__price", "name": w["price"], "icon": "mdi:currency-eur"}]
+        if c.get("amps"):  # een Smappee-laadpaal: de stroom (ampère) instellen, met een regelaar op het paneel
+            rows.insert(1, {"entity": f"{DYN}.{cid}__amps", "name": w["amps"], "icon": "mdi:current-ac"})
+        return {**base, "type": "cardEntities", "entities": rows}
     if t == "power":
         return {**base, "type": "cardPower", "entities": [_power_item(it, cid, i) for i, it in enumerate(c["items"])] or [{"entity": "delete"}]}
     if t == "qr":
@@ -368,8 +373,15 @@ class Live:
             name = STATUS[lang].get(str(st), str(st)) if st is not None else _clean(v.get("name"))
             if v.get("act") is None:  # de status laat niets toe: geen knop, alleen de status
                 return {"kind": "text", "name": _clean(name), "value": "", "color": CHARGE_COLOR if v.get("charging") else DEFAULT_COLOR}
+            if v["act"] in ("pause", "resume"):  # een Smappee-laadpaal: pauzeren of hervatten, nooit start of stop (dat doet de badge)
+                return {"kind": "button", "name": _clean(name), "value": w[v["act"]], "color": CHARGE_COLOR if v.get("charging") else DEFAULT_COLOR}
             on = v["act"] == "stop"
             return {"kind": "button", "name": _clean(name), "value": w["stop"] if on else w["start"], "color": CHARGE_COLOR if on else DEFAULT_COLOR}
+        if part == "amps":  # de stroom: een regelaar (`getal|min|max`) op het paneel; een scherm met openHASP toont `text`
+            ok = v is not None and v.get("online") and v.get("amps") is not None and v.get("amp_min") is not None and v.get("amp_max") is not None and v.get("phase") != "busy"
+            if not ok:
+                return {"kind": "text", "value": "—"}
+            return {"kind": "number", "value": f"{int(v['amps'])}|{int(v['amp_min'])}|{int(v['amp_max'])}", "text": f"{int(v['amps'])} A"}
         mine = v is not None and v.get("online") and v.get("phase") in ("mine", "other")
         if part == "time":
             t = v.get("time") if mine else None
@@ -403,18 +415,31 @@ class Live:
             if act is None:
                 log.info("laadpaal %s: niet bereikbaar, bezet of de status laat het niet toe, niets gestuurd", c["name"])
                 return False
-            ref = c["charger"]
-            if ref.startswith("r:"):  # de eigenaar beslist en noteert wie het doet
-                r = self._remote(ref)
-                return bool(r and self.link.send(r[0], r[1], op=act))
-            try:
-                (self.charge.start if act == "start" else self.charge.stop)(ref[2:], self.charge.who_self())
-            except ValueError as e:  # ModelError
-                log.warning("laadpaal %s: %s", c["name"], e)
+            return self._press_charger(c, act, None)
+        if c["type"] == "charger" and part == "amps" and kind == "number-set":
+            v = self.charger(c)
+            if not v or not v.get("online") or v.get("amps") is None or v.get("phase") == "busy":
+                log.info("laadpaal %s: de stroom is nu niet in te stellen, niets gestuurd", c["name"])
                 return False
-            log.info("laadpaal %s: %s vanaf het paneel", c["name"], act)
-            return True
+            return self._press_charger(c, "current", value)
         return False
+
+    def _press_charger(self, c: dict, act: str, value) -> bool:
+        """Een druk op de laadpaalkaart: start of stop (een Tuya-laadpaal), pauzeren, hervatten of de stroom (een Smappee-laadpaal). De eigenaar beslist en noteert wie het doet."""
+        ref = c["charger"]
+        if ref.startswith("r:"):
+            r = self._remote(ref)
+            return bool(r and self.link.send(r[0], r[1], op=act, **({"value": str(value)} if act == "current" else {})))
+        try:
+            if act in ("pause", "resume", "current"):
+                self.charge.control_nowait(ref[2:], self.charge.who_self(), act, value)
+            else:
+                (self.charge.start if act == "start" else self.charge.stop)(ref[2:], self.charge.who_self())
+        except ValueError as e:  # ModelError
+            log.warning("laadpaal %s: %s", c["name"], e)
+            return False
+        log.info("laadpaal %s: %s vanaf het paneel", c["name"], act)
+        return True
 
     def _press_airco(self, c: dict, kind: str, value: str | None) -> bool:
         """`tempUpd` (de temperatuur ×10) en `hvac_action` (de stand) van de thermostaatpagina."""

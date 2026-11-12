@@ -181,7 +181,7 @@ class Screen:
                 return f"{ICON_LIGHT} {label}", color
             c = d.get("color")
             color = hex565(c) if isinstance(c, int) and c != PANEL_DEFAULT else C_OFF
-            value = str(d.get("value") if d.get("value") is not None else "")
+            value = str(d.get("text") if d.get("text") is not None else d.get("value") if d.get("value") is not None else "")  # `text`: voor een regelaar (kind number) die hier alleen een tekst is
             return f"{label}\n{value}".strip(), color
         st = self.env.state(ent)
         label = name or (st[1].get("friendly_name") if st and isinstance(st[1], dict) else None) or ent.split(".")[-1]

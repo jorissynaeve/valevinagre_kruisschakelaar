@@ -397,6 +397,35 @@ en maak je er een blok van. De add-on gebruikt de cloud van Brink; er is geen ex
 * Het wachtwoord staat alleen in `/data/espdev.json` (0600), nooit in het model, de export of de pagina. Een **onjuist wachtwoord** probeert de add-on niet steeds opnieuw (een account kan geblokkeerd raken); kies dan *Wachtwoord wijzigen* in het menu.
 * **Let op:** Brink documenteert deze API niet en wijzigt hem zonder waarschuwing (dat gebeurde al eens). Stopt de koppeling, kijk dan eerst of Brink Home zelf nog werkt. Wil je geen afhankelijkheid van de cloud, dan kan het lokaal via Modbus (zie DESIGN.md §38).
 
+### Smappee-laadpaal (EV Wall) via de cloud van Smappee
+
+*+ Module → Smappee (laadpaal) → Smappee-account koppelen*: de gebruikersnaam en het wachtwoord van **dashboard.smappee.net** (hetzelfde als in de Smappee-app). Daarna staat je laadpunt in het menu en maak je er een blok van.
+Smappee heeft geen officiële of lokale API voor de EV Wall: de add-on doet wat het dashboard zelf doet, via de cloud.
+
+**Starten en stoppen doe je met de badge (RFID) aan de laadpaal, niet met de huisconfig.** Hier kun je alleen **pauzeren**, **hervatten** en de **stroom** instellen.
+
+| Punt | Betekenis |
+|---|---|
+| *Status* | vrij, aangesloten, laadt of gepauzeerd; onbekend als de lader iets meldt wat we niet kennen |
+| *Laadt* | waar als hij nu laadt |
+| *Gepauzeerd* | **instelbaar**: aan pauzeert, uit hervat |
+| *Stroom* | ampère, **instelbaar** binnen het bereik van het laadpunt (bv. 6 tot 32 A) |
+| *Laatste sessie* | de kWh van de laatste sessie |
+| *Beschikbaar* | diagnose |
+
+* *Gepauzeerd* en *Stroom* zijn ook **ingangen** op het blok (bv. een module *Getal* voor de stroom). Een ingang doet pas iets als ze **verandert**.
+* **Hervatten zet de lader op Standaard** (de knop Standaard van de Smappee-app). Daarom stuurt de add-on niets als de lader al niet gepauzeerd is, en weigert hij hervatten als de status onbekend is.
+* **De stroom werkt alleen op Standaard.** Staat de lader op Slim of Zon, dan beslist hij zelf en is de stroom *onbekend*; instellen wordt dan geweigerd (zet hem in de app op Standaard). Smappee bewaart de stroom als een percentage van het bereik; een heel getal ampère wordt het dichtstbijzijnde percentage en je leest het weer als hetzelfde getal.
+* Een opdracht gaat naar Smappee en de stand volgt na enkele seconden (de add-on kijkt daarna nog drie keer snel). Dezelfde opdracht komt hoogstens eens per **5 seconden** door.
+* De stand wordt elke **minuut** opgehaald, de sessies elke minuut zolang er geladen of gepauzeerd wordt en anders elke 10 minuten. De stand is die van de cloud: Smappee geeft de live waarden via MQTT, die de add-on niet gebruikt.
+* Het wachtwoord staat alleen in `/data/espdev.json` (0600), nooit in het model, de export of de pagina. Een **onjuist wachtwoord** probeert de add-on niet steeds opnieuw; kies dan *Wachtwoord wijzigen* in het menu.
+* **Let op:** Smappee documenteert deze API niet en kan hem zonder waarschuwing wijzigen. De add-on is getest tegen een nagebootste cloud, niet tegen een echte EV Wall (zie DESIGN.md §39).
+
+**Sessies per badge en huis**: kies in de zijbalk van het laadpunt *Laadsessies en badges bijhouden*. Dat maakt een **laadpaal-blok** met een log. Elke badge (de tag van je laadpas) hoort bij een **huis**: dat huis krijgt de kWh en de kosten, en de factuur (tabblad *Laden*) splitst daarop.
+Een badge die nog bij geen huis hoort, staat onder *Nog te koppelen*: geef hem een naam en het log van die badge wordt opnieuw toegewezen. Een sessie zonder badge staat in het log als *Zonder badge*. Sessies tellen vanaf het koppelen (of de datum die je bij *Sessies boeken vanaf* zet, tot een week terug) en worden nooit dubbel geboekt.
+Een gekoppeld huis (andere installatie) mag **pauzeren, hervatten en de stroom instellen tijdens zijn eigen sessie**; tijdens de sessie van een ander ziet het niets dan *bezet*. Jij (de eigenaar) kunt altijd ingrijpen.
+Op de **kaart Laadpaal** zet je *stroomregeling tonen* aan voor een regelaar voor de stroom; de knop op de kaart pauzeert en hervat in plaats van start en stop.
+
 ## Energie (alle huisjes op één pagina, met prijzen)
 
 Home Assistant heeft al een energiedashboard (**Energie** in de zijbalk van HA). Het tabblad *Energie* vult het in, zodat je niet in HA

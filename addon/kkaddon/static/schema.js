@@ -560,6 +560,13 @@ function scEspState(b) {
 }
 
 function scEspProto(b) {
+  if (b.driver === 'smappee') {
+    const ac = (S.smappee || []).find((x) => x.id === b.account);
+    return `<div class="sub">Account <b>${esc(ac ? ac.name : b.account)}</b> bij Smappee (cloud, <code>dashboard.smappee.net</code>).${ac && ac.error ? ` ${esc(ac.error)}.` : ''} De stand wordt elke minuut opgehaald en na een opdracht snel nog een paar keer; Smappee heeft geen officiële API en kan dit zonder waarschuwing veranderen.</div>
+      ${ac && ac.auth ? `<div class="row"><button class="btn small danger" type="button" data-sc="smappeepw" data-account="${esc(b.account)}">Nieuw wachtwoord invoeren</button><span class="sub">de add-on probeert een onjuist wachtwoord niet steeds opnieuw</span></div>` : ''}
+      <div class="row"><button class="btn small" type="button" data-sc="smappeecharge" data-id="${esc(b.id)}" ${scBlocks().some((x) => x.kind === 'charge' && x.espdev === b.id) ? 'disabled' : ''}>Laadsessies en badges bijhouden</button><span class="sub">maakt er een laadpaal-blok van met een log per badge en huis</span></div>
+      <div class="row"><label class="chk" title="Zet dit alleen aan als je de waarden ook via deze add-on in Home Assistant wilt."><input type="checkbox" data-esha ${b.ha ? 'checked' : ''}> ook als entiteiten in Home Assistant</label></div>`;
+  }
   if (b.driver === 'brink') {
     const ac = (S.brink || []).find((x) => x.id === b.account);
     return `<div class="sub">Account <b>${esc(ac ? ac.name : b.account)}</b> bij Brink Home (cloud, <code>brink-home.com</code>).${ac && ac.error ? ` ${esc(ac.error)}.` : ''} De waarden worden elke 30 seconden opgehaald en na een opdracht snel nog een paar keer. Een wijziging die je hier doet duurt enkele seconden voor de unit hem toont. Brink wijzigt zijn cloud soms zonder waarschuwing: houd er rekening mee dat deze koppeling dan stopt.</div>
@@ -651,7 +658,9 @@ function scEspdevPanel(b, props) {
     <button class="btn small ${a.danger ? 'danger' : ''}" type="button" data-sc="esdo" data-id="${esc(b.id)}" data-a="${esc(a.id)}" ${a.disabled || !b.online ? 'disabled' : ''} title="${esc(a.reason || '')}">${esc(a.label)}${a.danger ? '…' : ''}</button>${a.disabled && a.reason ? `<span class="sub">${esc(a.reason)}</span>` : ''}</div>`).join('');
   const users = b.outs.flatMap((o) => scAcUsers(o.ref).map((u) => ({ ...u, label: o.label })));
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scEspState(b))}</span></div>
-    <div class="sub">${b.driver === 'brink'
+    <div class="sub">${b.driver === 'smappee'
+    ? `Een Smappee-laadpunt, gelezen en bediend via Smappee. <b>Pauzeren</b> en de <b>stroom</b> (ampère) kun je instellen, hier of via een ingang op het blok; starten en stoppen doe je met de badge aan de laadpaal. De stroom is bij Smappee een percentage van het bereik van het laadpunt en geldt alleen als de lader op Standaard staat.${b.ha ? ` In Home Assistant staan ze (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
+    : b.driver === 'brink'
     ? `Een Brink-ventilatie-unit, gelezen en bediend via Brink Home. De <b>ventilatiestand</b> (0 tot 3), de <b>bedrijfsmodus</b> en de <b>bypass</b> kun je instellen, hier of via een ingang op het blok; de rest zijn metingen. Is de unit niet bereikbaar voor Brink Home, dan staan de waarden op onbekend en niet op de laatste stand.${b.ha ? ` In Home Assistant staan ze (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
     : b.driver === 'nuki'
     ? `Een Nuki-slot, gelezen en bediend via de Nuki-cloud. <b>Vergrendelen</b> kan hier en vanuit Home Assistant; wat de deur opent (<b>ontgrendelen</b>, <b>deur vrijgeven</b>, <b>lock 'n' go</b>) met de hand, hier, na een bevestiging, of via een <b>ingang</b> op het blok (▶): sluit er een timer of module op aan, dan opent het slot als die van 0 naar 1 gaat. In Home Assistant staan alleen de stand en Vergrendelen.${b.ha ? ` In Home Assistant staat de stand (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
@@ -667,7 +676,7 @@ function scEspdevPanel(b, props) {
     <div class="sub">Een ingang doet pas iets als ze <b>verandert</b>: na een herstart of als de bron weer bekend wordt, onthoudt ze alleen de stand. Gevaarlijke punten (reset, kalibratie) kun je alleen hier met de hand bedienen.${b.driver === 'nuki' ? ' Een <b>actie</b> (▶) start alleen als de bron van <b>0 naar 1</b> gaat, wacht nooit (is er geen verbinding, dan vervalt hij), wordt niet opnieuw geprobeerd en komt hoogstens eens per 5 seconden. Wat een actie startte staat in het logboek van de add-on.' : ''}</div>
     <h2>Uitgangen gaan naar</h2>${users.map((u) => `<div class="sub">${esc(u.label)} → <a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.text)}</a></div>`).join('') || '<div class="sub">Nog nergens. Sleep een uitgang (rechts) naar Groter dan, Kleiner dan, En, Of of een routine.</div>'}
     ${diag.length ? `<h2>Diagnose</h2>${diag.map((p) => `<div class="sub">${esc(p.label)}: ${esc(scEspText(p))}</div>`).join('')}` : ''}
-    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="esdel" data-id="${esc(b.id)}">${b.driver === 'hue' || b.driver === 'nuki' || b.driver === 'brink' ? 'Van de pagina halen' : 'Loskoppelen'}</button></div>`;
+    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="esdel" data-id="${esc(b.id)}">${b.driver === 'hue' || b.driver === 'nuki' || b.driver === 'brink' || b.driver === 'smappee' ? 'Van de pagina halen' : 'Loskoppelen'}</button></div>`;
 }
 
 // ---------------------------------------------------------------- tijd- en logicamodules
@@ -735,9 +744,11 @@ function scChargeWhen(b) { // welke statuswaarden Start geven (start_when) en we
 
 // ---------------------------------------------------------------- laadpaal: een Tuya-toestel met sessies en een log (k:<id>)
 
+const SC_SM_WORDS = { charging: 'laadt', paused: 'gepauzeerd', connect: 'aangesloten', free: 'vrij' };
+
 function scChargeLines(b) { // wat het blok toont: de stand, en de kWh van de sessie of het tarief
-  const v = b.view || {}, busy = v.phase && v.phase !== 'free';
-  const l1 = !b.device ? 'Nog geen toestel gekozen' : !v.online ? 'offline' : !busy ? `vrij${v.status ? ` · ${v.status}` : ''}` : `bezig · ${v.phase === 'other' ? v.by : b.session ? b.session.name : ''}`;
+  const v = b.view || {}, busy = v.phase && v.phase !== 'free', word = b.espdev ? (SC_SM_WORDS[v.status] || v.status) : v.status;
+  const l1 = !b.device && !b.espdev ? 'Nog geen toestel gekozen' : !v.online ? 'offline' : !busy ? `vrij${word ? ` · ${word}` : ''}` : `bezig · ${v.phase === 'other' ? v.by : b.session ? b.session.name : ''}${b.espdev && word ? ` · ${word}` : ''}`;
   const l2 = busy ? `${v.energy != null ? v.energy.toFixed(2) : '—'} kWh${v.cost != null ? ` · € ${v.cost.toFixed(2)}` : ''}` : `€ ${b.price} per kWh${b.price_entity ? ' of uit HA' : ''}`;
   return [l1, l2];
 }
@@ -749,14 +760,57 @@ function scCharge(b) {
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 22))}</text>
     <text class="bkbadge ${busy ? 'ok' : ''}" x="${b.x + SW_W - 12}" y="${b.y + 18}" text-anchor="end">${busy ? 'bezig' : 'vrij'}</text>
-    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Laadpaal${dev ? ` · ${esc(scCut(dev.name, 18))}` : ''}</text>
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Laadpaal${dev ? ` · ${esc(scCut(dev.name, 18))}` : b.espdev ? ' · Smappee' : ''}</text>
     ${lines.map((t, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}">${esc(scCut(t, 28))}<title>${esc(t)}</title></text>`).join('')}</g>`;
 }
 
 const scStamp = (t) => new Date(t * 1000).toLocaleString('nl-BE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 const scDur = (s) => `${Math.floor(s / 3600)}u${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}`;
 
+function scSmHouses(cur) { // de huizen waar een badge bij kan horen: dit huis, een gekoppeld huis, of een eigen groep op naam
+  const peers = Object.entries((S.links && S.links.remote) || {}).map(([id, r]) => [id, `${r.name || id} (gekoppeld)`]);
+  return [['~', 'eigen groep (op naam)'], ['', 'dit huis'], ...peers].map(([v, t]) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(t)}</option>`).join('');
+}
+
+function scSmTagRow(tag, name, by) {
+  const peers = Object.keys((S.links && S.links.remote) || {}), cur = by === '' ? '' : peers.includes(by) ? by : '~';
+  return `<div class="row sp" data-tagrow><code title="${esc(tag)}">${esc(scCut(tag, 14))}</code>
+    <input type="text" maxlength="60" spellcheck="false" placeholder="naam, bv. Joris" data-chtag="name" data-tag="${esc(tag)}" value="${esc(name)}">
+    <select data-chtag="by" data-tag="${esc(tag)}">${scSmHouses(cur)}</select></div>`;
+}
+
+function scSmappeeChargePanel(b, props) {
+  const v = b.view || {}, busy = v.phase && v.phase !== 'free', opt = (val, cur, t) => `<option value="${esc(val)}" ${val === cur ? 'selected' : ''}>${esc(t)}</option>`;
+  const dev = scBlock(`e:${b.espdev}`), points = scBlocks().filter((x) => x.kind === 'espdev' && x.driver === 'smappee');
+  const rows = b.log.map((e) => `<tr><td>${scStamp(e.start)}</td><td title="${esc(e.tag ? `badge ${e.tag}` : '')}">${esc(e.name)}</td><td>${scDur(e.seconds)}</td><td>${e.kwh == null ? '—' : e.kwh.toFixed(2)}</td><td>${e.cost == null ? '—' : `€ ${e.cost.toFixed(2)}`}</td></tr>`).join('');
+  const state = b.session ? `Bezig: <b>${esc(b.session.name)}</b> sinds ${scStamp(b.session.start)}` : 'Geen sessie';
+  const may = v.online && v.act;
+  const ctl = `<div class="row"><button class="btn small" type="button" data-sc="chrun" data-id="${esc(b.id)}" data-op="${v.act === 'resume' ? 'resume' : 'pause'}" ${may ? '' : 'disabled'}>${v.act === 'resume' ? 'Hervatten' : 'Pauzeren'}</button>
+    <label class="chk">stroom <input type="number" style="width:5em" min="${esc(v.amp_min ?? 6)}" max="${esc(v.amp_max ?? 32)}" step="1" data-champs value="${v.amps != null ? esc(v.amps) : ''}" ${v.online && v.amps != null ? '' : 'disabled'}> A</label></div>
+    <div class="sub">${v.online && v.amps == null ? 'De lader staat op Slim of Zon (of meldt geen limiet): die negeert een stroomlimiet. Zet hem in de Smappee-app op Standaard om hem hier in te stellen.' : 'Smappee voert een opdracht na enkele seconden uit; de stand hier volgt na de volgende poll. Hervatten zet de lader op Standaard.'}</div>`;
+  const tags = Object.entries(b.tags || {}).map(([t, x]) => scSmTagRow(t, x.name, x.by)).join('');
+  const unknown = (b.unknown_tags || []).map((u) => `<div class="sub">${u.sessions ? `${u.sessions} ${u.sessions === 1 ? 'sessie' : 'sessies'} · ${u.kwh.toFixed(2)} kWh · laatst ${scStamp(u.last)}` : 'laadt nu'}</div>${scSmTagRow(u.tag, '', '~')}`).join('');
+  const since = b.since ? new Date(b.since * 1000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '';
+  return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${busy ? 'ok' : ''}">${esc(scChargeLines(b)[0])}</span></div>
+    <div class="sub">Een Smappee-laadpaal met badge (RFID). <b>Starten en stoppen doe je met de badge aan de laadpaal</b>, niet hier; hier kun je <b>pauzeren</b>, <b>hervatten</b> en de <b>stroom</b> instellen. De sessies komen uit de cloud van Smappee, met de badge erbij: elke badge hoort bij een <b>huis</b>, en dat huis krijgt de kWh en de kosten.</div>${props}
+    <h2>Nu</h2><div class="sub">${state}</div>${ctl}
+    <h2>Badges</h2>${tags || '<div class="sub">Nog geen badges gekoppeld aan een huis.</div>'}
+    ${unknown ? `<h2>Nog te koppelen</h2><div class="sub">Badges die geladen hebben maar bij geen huis horen. Geef er een naam aan: het log van die badge wordt dan opnieuw toegewezen.</div>${unknown}` : ''}
+    <div class="sub">Een gekoppeld huis (andere installatie) mag pauzeren en de stroom instellen tijdens zijn eigen sessie; tijdens de sessie van een ander ziet het niets dan <i>bezet</i>.</div>
+    <h2>Log</h2>${rows ? `<table class="sclog"><tr><th>Start</th><th>Wie</th><th>Duur</th><th>kWh</th><th>Kosten</th></tr>${rows}</table>` : '<div class="sub">Nog geen sessies.</div>'}
+    <div class="row" style="margin-top:6px"><a class="btn small" href="api/charge/${esc(b.id)}/log.csv" download>CSV downloaden</a></div>
+    <h2>Instellingen</h2>
+    <label>Smappee-laadpunt</label>${b.espdev ? `<div class="sub">${esc(dev ? dev.name : b.espdev)}${dev && !dev.online ? ' (offline)' : ''}</div>` : `<select data-chf="espdev"><option value="">kies een laadpunt…</option>${points.map((x) => opt(x.id, b.espdev, x.name)).join('')}</select>`}
+    <label>Sessies boeken vanaf</label><input type="datetime-local" data-chsince value="${esc(since)}">
+    <div class="sub">Wat Smappee over de tijd daarvoor meldt, boekt niet vanzelf. Zet je dit eerder, dan komen die sessies er (tot een week terug) alsnog in.</div>
+    <h2>Prijs</h2><label>Prijs per kWh (€)</label><input type="number" min="0" max="100" step="0.01" data-chf="price" value="${esc(b.price)}">
+    <label>Of de prijs uit een entiteit van HA (wint als ze een getal geeft)</label><input type="text" spellcheck="false" data-chf="price_entity" placeholder="bv. sensor.stroomprijs" value="${esc(b.price_entity || '')}">
+    <div class="sub">Kosten = kWh van de sessie (zoals Smappee die meldt) × de prijs op het moment dat de sessie wordt geboekt.</div>
+    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="delcharge" data-id="${esc(b.id)}">Laadpaal verwijderen</button></div>`;
+}
+
 function scChargePanel(b, props) {
+  if (b.espdev) return scSmappeeChargePanel(b, props);
   const v = b.view || {}, busy = v.phase && v.phase !== 'free', opt = (val, cur, t) => `<option value="${esc(val)}" ${val === cur ? 'selected' : ''}>${esc(t)}</option>`;
   const dps = (name, keep) => scPointSelect(`data-chdp="${name}"`, b.device, b.dps[name] || '', SC_HERE, keep);
   const pt = b.device && b.target.dp ? scPointOf(b.device, b.target.dp, SC_HERE) : null;
@@ -991,7 +1045,8 @@ function scCardPanel(b, props) {
     body = `<label>Laadpaal</label><select data-cdfield="charger"><option value="">${here.length || far.length ? 'kies een laadpaal…' : 'nog geen laadpaal'}</option>
       ${b.charger && !b.device ? `<option value="${esc(b.charger)}" selected>${esc(b.charger)} (weg of niet gekozen)</option>` : ''}
       ${here.map((x) => o(x, x.name)).join('')}${far.length ? `<optgroup label="Van andere installaties">${far.map((x) => o(x, `${x.name} (${x.peerName})`)).join('')}</optgroup>` : ''}</select>
-      <div class="sub">De kaart toont de status en de sessie, en start of stopt. De instellingen en de log staan op het blok van de laadpaal. Een laadpaal van een andere installatie kies je eerst bij <b>Instellingen → Koppelingen</b>.</div>`;
+      <label class="chk" title="Een regelaar voor de stroom (ampère) op de kaart. Alleen voor een Smappee-laadpaal."><input type="checkbox" data-cdfield="amps" ${b.amps ? 'checked' : ''}> stroomregeling tonen (Smappee)</label>
+      <div class="sub">De kaart toont de status en de sessie, en start of stopt (een Smappee-laadpaal pauzeert en hervat: starten doet de badge). De instellingen en de log staan op het blok van de laadpaal. Een laadpaal van een andere installatie kies je eerst bij <b>Instellingen → Koppelingen</b>.</div>`;
   } else if (b.type === 'airco') {
     const aircos = scBlocks().filter((x) => x.kind === 'airco');
     body = `<label>Airco</label><select data-cdfield="airco">${opt('', b.airco, aircos.length ? 'kies een airco' : 'nog geen airco: zet er een op het schema')}${aircos.map((x) => opt(x.id, b.airco, x.name)).join('')}</select>
@@ -1288,8 +1343,21 @@ function scBrinkMenu() { // Brink Home-accounts: de ventilatie-units die ze aanb
   return `<div class="scmenugroup scmenuwide"><h2>Brink Home (ventilatie)</h2>${(S.brink || []).map(account).join('')}<button class="scmenuitem" type="button" data-sc="brinkadd"><b>Brink Home-account koppelen</b><span class="sub">met je e-mailadres en wachtwoord van brink-home.com; via de cloud van Brink</span></button></div>`;
 }
 
+function scSmappeeMenu() { // Smappee-accounts: de laadpunten die ze aanbieden en nog niet op een pagina staan
+  const account = (a) => {
+    const left = a.units.filter((u) => !u.claimed);
+    const state = a.online ? `verbonden · ${a.units.length} ${a.units.length === 1 ? 'laadpunt' : 'laadpunten'}` : (a.error || 'verbinden…');
+    return `<div class="scmenuwide"><div class="sub"><b>${esc(a.name)}</b> · ${esc(state)}</div>
+      <div class="scmenulist">${left.map((u) => `<button class="scmenuitem" type="button" data-sc="smappeeclaim" data-account="${esc(a.id)}" data-key="${esc(u.key)}"><b>${esc(u.name)}</b><span class="sub">Smappee-laadpunt ${esc(u.serial)}</span></button>`).join('')}
+      <button class="scmenuitem" type="button" data-sc="smappeepw" data-account="${esc(a.id)}"><b>Wachtwoord wijzigen</b><span class="sub">als je het bij Smappee veranderde</span></button>
+      <button class="scmenuitem" type="button" data-sc="smappeedel" data-account="${esc(a.id)}"><b>Account loskoppelen</b><span class="sub">haalt zijn blokken weg</span></button></div>
+      ${a.online && !left.length ? '<div class="sub">Alle laadpunten staan al op een pagina.</div>' : ''}</div>`;
+  };
+  return `<div class="scmenugroup scmenuwide"><h2>Smappee (laadpaal)</h2>${(S.smappee || []).map(account).join('')}<button class="scmenuitem" type="button" data-sc="smappeeadd"><b>Smappee-account koppelen</b><span class="sub">met de gebruikersnaam en het wachtwoord van dashboard.smappee.net; via de cloud van Smappee, zonder officiële API</span></button></div>`;
+}
+
 function scMenu() {
-  return `<details class="scmenu" id="scmenu"><summary class="btn small primary">+ Module</summary><div class="scmenupop">${SC_MENU.map(([title, items]) => `<div class="scmenugroup"><h2>${title}</h2>${items.map(([type, name, sub]) => `<button class="scmenuitem" type="button" data-sc="add" data-type="${type}"><b>${name}</b><span class="sub">${sub}</span></button>`).join('')}</div>`).join('')}${scEspFound()}${scHueMenu()}${scNukiMenu()}${scBrinkMenu()}</div></details>`;
+  return `<details class="scmenu" id="scmenu"><summary class="btn small primary">+ Module</summary><div class="scmenupop">${SC_MENU.map(([title, items]) => `<div class="scmenugroup"><h2>${title}</h2>${items.map(([type, name, sub]) => `<button class="scmenuitem" type="button" data-sc="add" data-type="${type}"><b>${name}</b><span class="sub">${sub}</span></button>`).join('')}</div>`).join('')}${scEspFound()}${scHueMenu()}${scNukiMenu()}${scBrinkMenu()}${scSmappeeMenu()}</div></details>`;
 }
 
 const SC_DAYS = [['mon', 'Maandag'], ['tue', 'Dinsdag'], ['wed', 'Woensdag'], ['thu', 'Donderdag'], ['fri', 'Vrijdag'], ['sat', 'Zaterdag'], ['sun', 'Zondag']];
@@ -2001,6 +2069,52 @@ const SC_ACTIONS = {
     SC.force = true;
     await refresh();
   },
+  smappeeadd: async () => {
+    const menu = $('#scmenu');
+    if (menu) menu.open = false;
+    const username = (prompt('Gebruikersnaam van je Smappee-dashboard (dashboard.smappee.net):') || '').trim();
+    if (!username) return;
+    const password = prompt('Wachtwoord van dit account (het wordt alleen in de add-on bewaard en alleen naar Smappee gestuurd):') || '';
+    if (!password) return;
+    await api('POST', 'espdev/smappee/account', { username, password });
+    SC.force = true;
+    await refresh();
+    toast('Gekoppeld. Kies in het menu (+ Module → Smappee) welk laadpunt je wilt toevoegen.', 6000);
+  },
+  smappeeclaim: async (d) => {
+    const menu = $('#scmenu');
+    if (menu) menu.open = false;
+    if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
+    const r = await api('POST', 'espdev/smappee/claim', { account: d.account, keys: [d.key], page: SC.page, ...scFreeSpot('module') });
+    SC.sel = SC.reveal = r.keys[0];
+    SC.force = true;
+    await refresh();
+    toast('Toegevoegd. Pauzeren en de stroom kun je in de zijbalk instellen; voor sessies per badge kies je daar Laadsessies bijhouden.', 6000);
+  },
+  smappeecharge: async (d) => {
+    if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
+    const dev = scBlock(`e:${d.id}`);
+    const r = await api('POST', 'charge', { page: SC.page, name: dev ? dev.name : 'Laadpaal', espdev: d.id, ...scFreeSpot('module') });
+    SC.sel = SC.reveal = r.key;
+    SC.force = true;
+    await refresh();
+    toast('Laadpaal-blok gemaakt. Koppel de badges aan een huis; sessies vanaf nu worden per huis geboekt.', 6000);
+  },
+  smappeepw: async (d) => {
+    const password = prompt('Nieuw wachtwoord van dit Smappee-account:') || '';
+    if (!password) return;
+    await api('PUT', `espdev/smappee/account/${d.account}`, { password });
+    SC.force = true;
+    await refresh();
+    toast('Wachtwoord bijgewerkt; de add-on probeert meteen opnieuw in te loggen.', 5000);
+  },
+  smappeedel: async (d) => {
+    if (!confirm("Dit Smappee-account loskoppelen? Zijn blokken verdwijnen van de pagina's. Je account en de laadpaal bij Smappee veranderen niet.")) return;
+    await api('DELETE', `espdev/smappee/account/${d.account}`);
+    SC.sel = null;
+    SC.force = true;
+    await refresh();
+  },
   nukiadd: async () => {
     const menu = $('#scmenu');
     if (menu) menu.open = false;
@@ -2092,7 +2206,8 @@ const SC_ACTIONS = {
   },
   esdel: async (d) => {
     const es = scBlock(`e:${d.id}`);
-    if (!confirm(es && es.driver === 'brink' ? 'Deze ventilatie-unit van de pagina halen? Bij Brink verandert niets; je vindt hem weer terug in het menu (+ Module → Brink Home).'
+    if (!confirm(es && es.driver === 'smappee' ? 'Dit Smappee-laadpunt van de pagina halen? Bij Smappee verandert niets; je vindt het weer terug in het menu (+ Module → Smappee).'
+      : es && es.driver === 'brink' ? 'Deze ventilatie-unit van de pagina halen? Bij Brink verandert niets; je vindt hem weer terug in het menu (+ Module → Brink Home).'
       : es && es.driver === 'nuki' ? 'Dit slot van de pagina halen? Het slot zelf verandert niet; je vindt het weer terug in het menu (+ Module → Nuki).'
       : es && es.driver === 'hue' ? 'Dit Hue-apparaat van de pagina halen? Op de bridge verandert niets; je vindt het weer terug in het menu (+ Module → Philips Hue).'
       : es && es.driver === 'esphome' ? 'Dit ESPHome-toestel uit de Huisconfig halen? Het toestel zelf verandert niet; entiteiten die de add-on in Home Assistant maakte verdwijnen.'
@@ -2525,7 +2640,7 @@ document.addEventListener('change', (ev) => {
   const card = SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'card' ? scBlock(SC.sel) : null;
   if (t.dataset && t.dataset.cdfield && card) {
     const f = t.dataset.cdfield, raw = t.value.trim();
-    const value = f === 'price' ? (raw === '' ? 0 : +raw) : ['weather', 'forecast', 'temperature', 'status1', 'status2', 'price_entity'].includes(f) ? (raw || null) : f === 'password' ? t.value : raw;
+    const value = f === 'amps' ? t.checked : f === 'price' ? (raw === '' ? 0 : +raw) : ['weather', 'forecast', 'temperature', 'status1', 'status2', 'price_entity'].includes(f) ? (raw || null) : f === 'password' ? t.value : raw;
     t.blur();
     act(() => scSaveCard(card, { [f]: value }))();
   }
@@ -2533,6 +2648,16 @@ document.addEventListener('change', (ev) => {
   if (chg && t.dataset) {
     const save = (patch) => { t.blur(); act(async () => { try { await api('PUT', `charge/${chg.id}`, patch); } finally { SC.force = true; await refresh(); } })(); };
     if (t.dataset.chf) save({ [t.dataset.chf]: t.dataset.chf === 'price' ? (t.value.trim() === '' ? 0 : +t.value) : t.value.trim() });
+    else if (t.dataset.champs != null) { // de stroom van een Smappee-laadpaal: een opdracht, geen instelling
+      const amps = +t.value;
+      t.blur();
+      act(async () => { try { await api('POST', `charge/${chg.id}/current`, { amps }); } finally { SC.force = true; await refresh(); } })();
+    } else if (t.dataset.chtag != null) { // de naam of het huis van een badge; een lege naam haalt de badge weg
+      const row = t.closest('[data-tagrow]'), tag = t.dataset.tag, name = row.querySelector('[data-chtag="name"]').value.trim(), by = row.querySelector('[data-chtag="by"]').value;
+      const tags = { ...(chg.tags || {}) };
+      if (!name) delete tags[tag]; else tags[tag] = by === '~' ? { name } : { name, by };
+      save({ tags });
+    } else if (t.dataset.chsince != null) save({ since: t.value ? new Date(t.value).getTime() / 1000 : 0 });
     else if (t.dataset.chdp) save({ inputs: { [t.dataset.chdp]: t.value } });
     else if (t.dataset.chtarget) save({ target: t.dataset.chtarget === 'dp' ? { dp: t.value, on: '', off: '' } : { [t.dataset.chtarget]: t.value.trim() } });
     else if (t.dataset.chwhen) save({ [t.dataset.chwhen]: t.value.split(',').map((x) => x.trim()).filter(Boolean) });

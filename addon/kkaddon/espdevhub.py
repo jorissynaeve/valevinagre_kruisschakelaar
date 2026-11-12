@@ -38,6 +38,7 @@ from . import hue
 from . import brink
 from . import model as _model
 from . import nuki
+from . import smappee
 from .engine import Engine
 from .logic import BOOL, NUMBER
 from .model import ModelError, fits, source_type
@@ -80,6 +81,17 @@ BRINK_BURST = (2.0, 6.0, 15.0)  # s: na een opdracht (die Brink asynchroon uitvo
 BRINK_BACKOFF = 90.0  # s na "te veel verzoeken"
 BRINK_AUTH_WAIT = 900.0  # s: een onjuist wachtwoord proberen we niet steeds opnieuw (een account kan geblokkeerd raken); wijzig het wachtwoord om meteen opnieuw te proberen
 BRINK_REAUTH = 60  # s: een toegangstoken dat nog zo lang geldig is, vernieuwen we al
+MAX_SMAPPEE = 2
+SMAPPEE_POLL = 60.0  # s: de laadstand uit de cloud van Smappee. Smappee publiceert geen limiet en de HA-integratie vraagt maar elke 5 tot 30 minuten; een minuut is zuinig genoeg voor een pauze
+SMAPPEE_BURST = (3.0, 10.0, 30.0)  # s: na een opdracht (Smappee voert hem asynchroon uit) snel nog een paar keer kijken
+SMAPPEE_BACKOFF = 120.0  # s na "te veel verzoeken", als Smappee zelf geen Retry-After geeft
+SMAPPEE_AUTH_WAIT = 900.0  # s: een onjuist wachtwoord proberen we niet steeds opnieuw; wijzig het wachtwoord om meteen opnieuw te proberen
+SMAPPEE_REAUTH = 60  # s: een toegangstoken dat nog zo lang geldig is, vernieuwen we al
+SMAPPEE_STRUCT = 1800.0  # s: de lijst van laadstations en laadpunten verandert zelden
+SMAPPEE_SESS_ACTIVE = 60.0  # s: de sessies opnieuw vragen zolang er geladen of gepauzeerd wordt
+SMAPPEE_SESS_IDLE = 600.0  # s: en anders
+SMAPPEE_WRITE_GAP = 5.0  # s: dezelfde opdracht (pauze, of de stroom) die sneller volgt, wordt geweigerd (een bron die flappert belast de cloud niet; een ingang probeert het later opnieuw). Per punt: pauzeren en daarna de stroom kan meteen
+SERIAL_RE = smappee.SERIAL_RE
 ACT_PREFIX = "do_"  # in `dev["inputs"]`: een ingang die een actie start (do_unlock), naast de ingangen die een punt instellen
 ACTION_GAP = 5.0  # s: een actie die een ingang start, hoogstens zo vaak (een bron die flappert opent geen deur drie keer)
 
@@ -304,6 +316,10 @@ class EspDevHub:
         self.brink_accounts: dict[str, dict] = {}  # Brink Home-accounts: id -> {name, email, password}; alleen in dit bestand (brink.py)
         self.bk: dict[str, dict] = {}  # account -> wat Brink tot nu meldde: {units, systems, token, online, error, auth, burst}
         self.brink_desc: dict[str, dict] = {}  # did -> de descriptor van een ventilatie-unit volgens de laatste lijst van Brink
+        self.smappee_accounts: dict[str, dict] = {}  # Smappee-accounts: id -> {name, username, password}; alleen in dit bestand (smappee.py)
+        self.sm: dict[str, dict] = {}  # account -> wat Smappee tot nu meldde: {units, stations, sessions, token, online, error, auth, burst}
+        self.smappee_desc: dict[str, dict] = {}  # did -> de descriptor van een laadpunt volgens de laatste lijst van Smappee
+        self._smappee_sent: dict[tuple[str, str], float] = {}
         self._hue_locks: dict[str, asyncio.Lock] = {}
         self._hue_sent: dict[str, float] = {}
         self._listen = None
@@ -318,6 +334,7 @@ class EspDevHub:
         engine.hue_view = self.hue_view
         engine.nuki_view = self.nuki_view
         engine.brink_view = self.brink_view
+        engine.smappee_view = self.smappee_view
         _model.esp_type = self.point_type
 
     # ------------------------------------------------------------ opslag
@@ -342,6 +359,9 @@ class EspDevHub:
         for k, v in (raw.get("brink") or {}).items() if isinstance(raw.get("brink"), dict) else []:
             if isinstance(v, dict) and BRIDGE_RE.match(k) and isinstance(v.get("email"), str) and v["email"].strip() and isinstance(v.get("password"), str) and v["password"]:
                 self.brink_accounts[k] = {"name": _text(v.get("name"), 60) or "Brink Home", "email": v["email"].strip()[:200], "password": v["password"][:200]}
+        for k, v in (raw.get("smappee") or {}).items() if isinstance(raw.get("smappee"), dict) else []:
+            if isinstance(v, dict) and BRIDGE_RE.match(k) and isinstance(v.get("username"), str) and v["username"].strip() and isinstance(v.get("password"), str) and v["password"]:
+                self.smappee_accounts[k] = {"name": _text(v.get("name"), 60) or "Smappee", "username": v["username"].strip()[:200], "password": v["password"][:200]}
         for k, v in (raw.get("devices") or {}).items():
             if isinstance(v, dict) and re.fullmatch(r"[a-z0-9_]{1,40}", k) and isinstance(v.get("hid"), str) and ID_RE.match(v["hid"]):
                 self.devices[k] = self._defaults(v)
@@ -370,7 +390,7 @@ class EspDevHub:
         ins = v.get("inputs") if isinstance(v.get("inputs"), dict) else {}
         shown = v.get("shown")
         port = v.get("port")
-        driver = v["driver"] if v.get("driver") in ("esphome", "hue", "nuki", "brink") else "huisdev"
+        driver = v["driver"] if v.get("driver") in ("esphome", "hue", "nuki", "brink", "smappee") else "huisdev"
         emap, skipped = v.get("emap"), v.get("skipped")
         rid = v.get("rid")
         return {"name": _text(v.get("name"), 60) or "Apparaat", "hid": v["hid"], "host": _text(v.get("host"), 253), "port": port if isinstance(port, int) and 1 <= port <= 65535 else 80,
@@ -380,10 +400,10 @@ class EspDevHub:
                 "driver": driver,  # huisdev: het protocol van huisdev.h; esphome: de webserver van een ESPHome-toestel (esphome.py); hue: een apparaat van een Hue-bridge (hue.py)
                 "bridge": v["bridge"] if driver == "hue" and isinstance(v.get("bridge"), str) and BRIDGE_RE.match(v["bridge"]) else "",  # hue: welke bridge
                 "rid": rid if driver == "hue" and isinstance(rid, str) and hue.UUID_RE.match(rid) else "",  # hue: de UUID van het apparaat bij de bridge
-                "account": v["account"] if driver in ("nuki", "brink") and isinstance(v.get("account"), str) and BRIDGE_RE.match(v["account"]) else "",  # nuki: welk account (token)
+                "account": v["account"] if driver in ("nuki", "brink", "smappee") and isinstance(v.get("account"), str) and BRIDGE_RE.match(v["account"]) else "",  # nuki: welk account (token)
                 "lid": str(v["lid"]) if driver == "nuki" and LID_RE.match(str(v.get("lid") or "")) else "",  # nuki: het smartlockId
-                "sid": str(v["sid"]) if driver == "brink" and LID_RE.match(str(v.get("sid") or "")) else "",  # brink: het systemShareId
-                "cid": str(v["cid"]) if driver == "brink" and LID_RE.match(str(v.get("cid") or "")) else "",  # brink: het componentId van de unit
+                "sid": str(v["sid"]) if (driver == "brink" and LID_RE.match(str(v.get("sid") or ""))) or (driver == "smappee" and SERIAL_RE.match(str(v.get("sid") or ""))) else "",  # brink: het systemShareId; smappee: het serienummer van het laadstation
+                "cid": str(v["cid"]) if driver in ("brink", "smappee") and LID_RE.match(str(v.get("cid") or "")) else "",  # brink: het componentId van de unit; smappee: het id van het smart device van het laadpunt
                 "auth": _text(v.get("auth"), 200) if driver == "esphome" else "",  # gebruiker:wachtwoord van web_server: auth, alleen in dit bestand
                 "emap": {k: x for k, x in emap.items() if isinstance(k, str) and isinstance(x, str)} if isinstance(emap, dict) else {},  # punt-id -> ESPHome-id, voor altijd vast
                 "skipped": [x for x in skipped if isinstance(x, str)][:100] if isinstance(skipped, list) else [],
@@ -394,7 +414,7 @@ class EspDevHub:
         tmp = self.path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"devices": self.devices, "retired": self.retired, "bridges": self.bridges, "nuki": self.accounts, "brink": self.brink_accounts}, f, ensure_ascii=False, indent=1)
+            json.dump({"devices": self.devices, "retired": self.retired, "bridges": self.bridges, "nuki": self.accounts, "brink": self.brink_accounts, "smappee": self.smappee_accounts}, f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.path)
 
     # ------------------------------------------------------------ de punten van een apparaat
@@ -469,6 +489,8 @@ class EspDevHub:
             new["inputs"] = self._inputs(did, dev, b["inputs"])
         if "host" in b and dev["driver"] == "hue":
             raise ModelError("het adres van een Hue-apparaat staat bij de bridge")
+        if "host" in b and dev["driver"] == "smappee":
+            raise ModelError("een Smappee-laadpunt heeft geen adres: het loopt via de cloud van Smappee")
         if "host" in b and dev["driver"] == "brink":
             raise ModelError("een Brink-unit heeft geen adres: het loopt via de cloud van Brink Home")
         if "host" in b and dev["driver"] == "nuki":
@@ -616,7 +638,7 @@ class EspDevHub:
         for a in dev["actions"]:
             self._retire(did, dev, action=a["id"])
         del self.devices[did]
-        for x in (self.values, self.off, self.seen, self.last, self.fails, self.errors, self.es, self.hue_desc, self.nuki_desc, self.brink_desc):
+        for x in (self.values, self.off, self.seen, self.last, self.fails, self.errors, self.es, self.hue_desc, self.nuki_desc, self.brink_desc, self.smappee_desc):
             x.pop(did, None)
         self.online.discard(did)
         self._save()
@@ -683,6 +705,8 @@ class EspDevHub:
             self._start_nuki(aid)
         for aid in self.brink_accounts:
             self._start_brink(aid)
+        for aid in self.smappee_accounts:
+            self._start_smappee(aid)
         self.tasks["_tick"] = loop.create_task(self._ticker())
         self.tasks["_scan"] = loop.create_task(self._scanner())
 
@@ -748,7 +772,7 @@ class EspDevHub:
             ev.set()
 
     def _start(self, did: str) -> None:
-        if did in self.tasks or self.devices[did]["driver"] in ("hue", "nuki", "brink"):  # een Hue-apparaat, Nuki-slot of Brink-unit heeft geen eigen taak: zijn bridge of account volgt ze allemaal
+        if did in self.tasks or self.devices[did]["driver"] in ("hue", "nuki", "brink", "smappee"):  # een Hue-apparaat, Nuki-slot, Brink-unit of Smappee-laadpunt heeft geen eigen taak: zijn bridge of account volgt ze allemaal
             return
         self.wake[did] = asyncio.Event()
         run = self._run_esphome if self.devices[did]["driver"] == "esphome" else self._run
@@ -1703,10 +1727,309 @@ class EspDevHub:
             out.append({"id": aid, "name": acc["name"], "online": st["online"], "error": st["error"], "auth": st["auth"], "units": sorted(units, key=lambda x: (x["name"].lower(), x["key"]))})
         return out
 
+    # ------------------------------------------------------------ Smappee: een account (gebruikersnaam en wachtwoord van het dashboard) dat gepold wordt, en een blok per laadpunt
+
+    async def add_smappee(self, username: str, password: str, name: str = "") -> str:
+        """Een Smappee-account koppelen. Het wachtwoord wordt meteen gecontroleerd door in te loggen. Geeft het id van het account."""
+        username, password = _text(username, 200), (password or "")[:200]
+        if not username or not password:
+            raise ModelError("geef de gebruikersnaam en het wachtwoord van je Smappee-dashboard")
+        aid = smappee.account_id(username)
+        if aid in self.smappee_accounts:
+            raise ModelError("dit account staat er al")
+        if len(self.smappee_accounts) >= MAX_SMAPPEE:
+            raise ModelError(f"maximaal {MAX_SMAPPEE} Smappee-accounts")
+        st, acc = self._smappee_new(), {"username": username, "password": password}
+        try:
+            await self._smappee_login(st, acc)
+            await self._smappee_cycle(aid, st, acc, flush=False)
+        except smappee.SmappeeError as e:
+            log.warning("Smappee koppelen mislukt: %s", e)
+            raise ModelError(e.reason) from None
+        if not st["units"]:
+            raise ModelError("dit account heeft geen laadpunten bij Smappee (of geen recht om ze te zien)")
+        self.smappee_accounts[aid] = {"name": _text(name, 60) or "Smappee", "username": username, "password": password}
+        self.sm[aid] = st
+        st.update(online=True, error="", auth=False)
+        self._save()
+        self._start_smappee(aid)
+        self._poke()
+        return aid
+
+    def update_smappee(self, aid: str, password: str, name: str | None = None) -> None:
+        """Een nieuw wachtwoord (na een wijziging bij Smappee): de volgende ronde logt meteen opnieuw in, ook als het account net was stilgezet na een onjuist wachtwoord."""
+        acc = self.smappee_accounts.get(aid)
+        if not acc:
+            raise ModelError("onbekend account")
+        if not password and name is None:
+            raise ModelError("geef een nieuw wachtwoord of een naam")
+        if password:
+            acc["password"] = password[:200]
+        if name is not None:
+            acc["name"] = _text(name, 60) or acc["name"]
+        st = self.sm.get(aid)
+        if st is not None:
+            st.update(auth=False, token=None)
+        self._save()
+        self._kick(f"smappee:{aid}")
+        self._poke()
+
+    async def remove_smappee(self, aid: str) -> bool:
+        """Het account en al zijn blokken weghalen. Het account bij Smappee verandert niet."""
+        if aid not in self.smappee_accounts:
+            return False
+        for did in [k for k, v in self.devices.items() if v["driver"] == "smappee" and v["account"] == aid]:
+            await self.remove(did)
+        t = self.tasks.pop(f"smappee:{aid}", None)
+        if t:
+            t.cancel()
+        self.wake.pop(f"smappee:{aid}", None)
+        del self.smappee_accounts[aid]
+        self.sm.pop(aid, None)
+        self._save()
+        self._poke()
+        return True
+
+    async def claim_smappee(self, aid: str, keys: list[str] | None = None) -> list[str]:
+        """Laadpunten van een account als blok toevoegen (`keys` leeg: alles wat er nog niet staat). Een sleutel is `<serienummer>:<smart device>`."""
+        st = self.sm.get(aid)
+        if aid not in self.smappee_accounts or not st or not st["units"]:
+            raise ModelError("Smappee is niet bereikbaar: er is nog geen lijst van laadpunten")
+        have = {f"{v['sid']}:{v['cid']}" for v in self.devices.values() if v["driver"] == "smappee" and v["account"] == aid}
+        if keys:
+            if any(k not in st["units"] for k in keys):
+                raise ModelError("Smappee kent dit laadpunt niet (meer)")
+            take = [k for k in keys if k not in have]
+        else:
+            take = [k for k in st["units"] if k not in have]
+        if not take:
+            raise ModelError("alles wat Smappee aanbiedt staat er al")
+        if len(self.devices) + len(take) > MAX_DEVICES:
+            raise ModelError(f"maximaal {MAX_DEVICES} apparaten")
+        new = []
+        for key in take:
+            unit = st["units"][key]
+            desc = smappee.describe(unit)
+            hid = smappee.hid_of(unit["serial"], unit["id"])
+            did = _slug(hid)
+            if did in self.devices:
+                continue
+            self.devices[did] = self._defaults({"hid": hid, "name": desc["name"], "driver": "smappee", "account": aid, "sid": unit["serial"], "cid": unit["id"], "type": desc["type"], "fw": desc["fw"]})
+            self.smappee_desc[did] = {**desc, "id": hid}
+            self._apply_desc(did, self.smappee_desc[did])
+            new.append(did)
+        self._save()
+        if st["online"]:
+            await self._smappee_flush(aid)
+        self._poke()
+        return new
+
+    def _start_smappee(self, aid: str) -> None:
+        if f"smappee:{aid}" not in self.tasks:
+            self.sm.setdefault(aid, self._smappee_new())
+            self.wake[f"smappee:{aid}"] = asyncio.Event()
+            self.tasks[f"smappee:{aid}"] = asyncio.get_running_loop().create_task(self._run_smappee(aid))
+
+    @staticmethod
+    def _smappee_new() -> dict:
+        return {"units": {}, "stations": {}, "struct_at": 0.0, "sessions": {}, "sess_at": {}, "sess_active": {}, "token": None, "exp": 0.0, "online": False, "error": "", "auth": False, "burst": []}
+
+    def _smappee_kick(self, aid: str) -> None:
+        """Na een opdracht: Smappee voert hem asynchroon uit, dus over 3, 10 en 30 s kijken we hoe het laadpunt erbij staat."""
+        st = self.sm.get(aid)
+        if st is not None:
+            st["burst"] = list(SMAPPEE_BURST)
+            st["sess_at"] = {}  # en de sessies ook opnieuw
+        self._kick(f"smappee:{aid}")
+
+    def _smappee_children(self, aid: str) -> list[str]:
+        return [did for did, dev in self.devices.items() if dev["driver"] == "smappee" and dev["account"] == aid]
+
+    async def _smappee_login(self, st: dict, acc: dict) -> None:
+        token, ttl = await smappee.login(self._session(), acc["username"], acc["password"])
+        st["token"], st["exp"] = token, time.monotonic() + ttl
+
+    async def _smappee_call(self, st: dict, acc: dict, method: str, path: str, body=None, params: dict | None = None) -> tuple[int, object]:
+        """Een verzoek met het toegangstoken; verlopen of ingetrokken (401) = een keer opnieuw inloggen en nog een keer proberen."""
+        for attempt in (0, 1):
+            if st["token"] is None or time.monotonic() > st["exp"] - SMAPPEE_REAUTH:
+                await self._smappee_login(st, acc)
+            try:
+                return await smappee.request(self._session(), st["token"], method, path, body, params)
+            except smappee.SmappeeError as e:
+                if e.code != "token" or attempt:
+                    raise
+                st["token"] = None
+        raise smappee.SmappeeError("token", "de sessie bij Smappee is verlopen")
+
+    async def _smappee_structure(self, st: dict, acc: dict) -> None:
+        """De laadstations van het account en hun laadpunten. Verandert zelden, dus maar eens per half uur (en bij het koppelen)."""
+        status, data = await self._smappee_call(st, acc, "GET", f"{smappee.API}/v11/user/servicelocations", params={"fullDetails": "true"})
+        if status != 200:
+            raise smappee.SmappeeError("net", f"Smappee antwoordt met HTTP {status}", status)
+        stations = smappee.stations(data)
+        for serial, stn in stations.items():
+            status, det = await self._smappee_call(st, acc, "GET", f"{smappee.API}/v10/chargingstations/{serial}", params={"includeDetails": "true"})
+            if status != 200:
+                raise smappee.SmappeeError("net", f"Smappee antwoordt met HTTP {status} over laadstation {serial}", status)
+            stn["connectors"] = smappee.connectors(det)
+            stn["available"] = det.get("available") if isinstance(det, dict) and isinstance(det.get("available"), bool) else None
+        st["stations"], st["struct_at"] = stations, time.monotonic()
+
+    async def _smappee_cycle(self, aid: str, st: dict, acc: dict, flush: bool = True) -> None:
+        """Eén ronde: de lijst (zo nodig), de laadpunten met hun stand, en de sessies als die aan de beurt zijn."""
+        now = time.monotonic()
+        if not st["stations"] or now - st["struct_at"] >= SMAPPEE_STRUCT:
+            await self._smappee_structure(st, acc)
+        units: dict[str, dict] = {}
+        by_loc: dict[str, dict] = {}
+        for serial, stn in st["stations"].items():
+            if stn["loc"] not in by_loc:
+                status, data = await self._smappee_call(st, acc, "GET", f"{smappee.API}/v10/servicelocation/{stn['loc']}/homecontrol/smart/devices", params={"excludedCategories": ""})
+                if status != 200:
+                    raise smappee.SmappeeError("net", f"Smappee antwoordt met HTTP {status}", status)
+                by_loc[stn["loc"]] = smappee.device_map(data)
+            for c in stn["connectors"]:
+                dev = by_loc[stn["loc"]].get(c["id"])
+                if dev is not None:
+                    units[f"{serial}:{c['id']}"] = {**c, "serial": serial, "loc": stn["loc"], "dev": dev, "station_available": stn.get("available"), "only": len(stn["connectors"]) == 1}
+        st["units"] = units
+        for serial in st["stations"]:
+            mine = [u for u in units.values() if u["serial"] == serial]
+            active = any(smappee.state_of(u["dev"]) in (smappee.S_CHARGING, smappee.S_PAUSED) for u in mine)
+            due = now - st["sess_at"].get(serial, -1e9) >= (SMAPPEE_SESS_ACTIVE if active else SMAPPEE_SESS_IDLE) or st["sess_active"].get(serial) != active
+            if not mine or not due:
+                continue
+            frm = int((time.time() - smappee.SESSION_DAYS * 86400) * 1000)
+            try:
+                status, data = await self._smappee_call(st, acc, "GET", f"{smappee.API}/v10/chargingstations/{serial}/sessions", params={"range": f"{frm},{int(time.time() * 1000)}", "rangeMode": "stop_or_start"})
+            except smappee.SmappeeError as e:
+                if e.code in ("rate", "auth", "maintenance"):
+                    raise
+                log.warning("Smappee %s: sessies niet te lezen: %s", serial, e)
+                continue
+            if status != 200 or not isinstance(data, list):
+                log.warning("Smappee %s: sessies niet te lezen (HTTP %s)", serial, status)
+                continue
+            for u in mine:
+                st["sessions"][f"{serial}:{u['id']}"] = smappee.sessions(data, u, u["only"])
+            st["sess_at"][serial], st["sess_active"][serial] = now, active
+        if flush:
+            await self._smappee_flush(aid)
+
+    async def _smappee_flush(self, aid: str) -> None:
+        """De lijst van Smappee als HUISDEV-state naar elk blok. Een laadpunt dat niet in de lijst staat is weg uit het account."""
+        st = self.sm[aid]
+        st.update(online=True, error="", auth=False)
+        for did in self._smappee_children(aid):
+            dev = self.devices[did]
+            key = f"{dev['sid']}:{dev['cid']}"
+            unit = st["units"].get(key)
+            if unit is None:
+                self._miss(did, "dit laadpunt staat niet meer in je Smappee-account", hard=True)
+                continue
+            desc = {**smappee.describe(unit, dev["name"]), "id": dev["hid"]}
+            self.smappee_desc[did] = desc
+            sess = st["sessions"].get(key) or []
+            vals = smappee.values(unit, sess[0]["kwh"] if sess else None)
+            pts = {p["id"]: ({"v": vals[p["id"]], "age": 0} if vals.get(p["id"]) is not None else {"v": None}) for p in desc["points"]}
+            await self._on_state(did, {"proto": "1.0", "rev": desc["rev"], "points": pts, "actions": {}})
+        self._poke()
+
+    def _smappee_down(self, aid: str, st: dict, e: smappee.SmappeeError) -> None:
+        st.update(online=False, error=str(e), auth=e.code == "auth")
+        for did in self._smappee_children(aid):
+            self._miss(did, str(e), hard=True)  # wat we niet meer horen, laat geen waarde meer vers: meteen offline
+        self._poke()
+
+    async def _run_smappee(self, aid: str) -> None:
+        while True:
+            acc = self.smappee_accounts.get(aid)
+            if not acc:
+                return
+            st = self.sm.setdefault(aid, self._smappee_new())
+            delay = None
+            try:
+                await self._smappee_cycle(aid, st, acc)
+            except smappee.SmappeeError as e:
+                self._smappee_down(aid, st, e)
+                delay = SMAPPEE_AUTH_WAIT if e.code == "auth" else max(e.wait, SMAPPEE_BACKOFF) if e.code == "rate" else None
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - een rare lijst mag het volgen van dit account niet voorgoed stilleggen
+                log.exception("Smappee %s: lijst niet te verwerken", aid)
+                self._smappee_down(aid, st, smappee.SmappeeError("net", "onbegrijpelijk antwoord"))
+            if delay is None:
+                delay = st["burst"].pop(0) if st["burst"] else SMAPPEE_POLL
+            ev = self.wake.get(f"smappee:{aid}")
+            woke = False
+            try:
+                await asyncio.wait_for(ev.wait(), delay) if ev else await asyncio.sleep(delay)
+                woke = ev is not None
+            except asyncio.TimeoutError:
+                pass
+            if ev:
+                ev.clear()
+            if woke and st["burst"] and not st["auth"]:  # een opdracht net verstuurd: eerst de tijd geven die de lader nodig heeft
+                await asyncio.sleep(st["burst"].pop(0))
+
+    async def _smappee_send(self, did: str, dev: dict, pid: str, v) -> dict:
+        acc, st = self.smappee_accounts.get(dev["account"]), self.sm.get(dev["account"])
+        if not acc or not st or did not in self.online:
+            raise ModelError("niet verstuurd: geen verbinding met Smappee")
+        unit = st["units"].get(f"{dev['sid']}:{dev['cid']}")
+        if unit is None:
+            raise ModelError("dit laadpunt staat niet meer in je Smappee-account")
+        try:
+            req = smappee.write_request(unit, pid, v)
+        except ValueError as e:
+            raise ModelError(str(e)) from None
+        if req is None:
+            return {"ok": True, "result": "unchanged"}  # staat al zo: hervatten zou de lader op Standaard zetten, dus dan sturen we niets
+        now = time.monotonic()
+        if now - self._smappee_sent.get((did, pid), -1e9) < SMAPPEE_WRITE_GAP:
+            raise ModelError(f"te snel na de vorige opdracht voor dit punt: wacht {SMAPPEE_WRITE_GAP:g} seconden")
+        self._smappee_sent[(did, pid)] = now
+        method, path, body = req
+        try:
+            status, _data = await self._smappee_call(st, acc, method, path, body)
+        except smappee.SmappeeError as e:
+            raise ModelError(e.reason) from None
+        if status not in (200, 201, 204):
+            raise ModelError(f"Smappee weigert dit (HTTP {status})")
+        self._smappee_kick(dev["account"])
+        return {"ok": True, "result": "queued"}  # Smappee nam de opdracht aan; of de lader hem uitvoerde, zie je aan de stand bij de volgende poll
+
+    def smappee_sessions(self, did: str) -> list[dict] | None:
+        """De sessies van een Smappee-laadpunt (nieuwste eerst, zie smappee.sessions) voor het laadblok, of None: geen Smappee-blok, of Smappee is nu niet bereikbaar."""
+        dev = self.devices.get(did)
+        st = self.sm.get(dev["account"]) if dev and dev["driver"] == "smappee" else None
+        if not st or not st["online"]:
+            return None
+        return list(st["sessions"].get(f"{dev['sid']}:{dev['cid']}") or [])
+
+    def point_value(self, did: str, pid: str):
+        """De waarde van een punt nu (None: onbekend, offline of geen punt), voor het laadblok."""
+        dev = self.devices.get(did)
+        p = self._by_id(dev, pid) if dev else None
+        return self._value_of(did, p) if p else None
+
+    def smappee_view(self) -> list[dict]:
+        """De Smappee-accounts voor de pagina, met wat ze aanbieden. Nooit het wachtwoord of de gebruikersnaam."""
+        out = []
+        for aid, acc in self.smappee_accounts.items():
+            st = self.sm.get(aid) or self._smappee_new()
+            have = {f"{v['sid']}:{v['cid']}": k for k, v in self.devices.items() if v["driver"] == "smappee" and v["account"] == aid}
+            units = []
+            for key, u in st["units"].items():
+                units.append({"key": key, "serial": u["serial"], "cid": u["id"], "hid": smappee.hid_of(u["serial"], u["id"]), "name": smappee.describe(u)["name"], "id": have.get(key), "claimed": key in have})
+            out.append({"id": aid, "name": acc["name"], "online": st["online"], "error": st["error"], "auth": st["auth"], "units": sorted(units, key=lambda x: (x["name"].lower(), x["key"]))})
+        return out
+
     async def _refetch(self, did: str) -> None:
         dev = self.devices[did]
-        if dev["driver"] in ("esphome", "hue", "nuki", "brink"):  # de beschrijving komt uit de eventstroom of de poll en is al in `_es_flush`, `_hue_flush`, `_nuki_flush` of `_brink_flush` gemaakt
-            self._apply_desc(did, {"esphome": lambda: self.es[did]["desc"], "hue": lambda: self.hue_desc[did], "nuki": lambda: self.nuki_desc[did], "brink": lambda: self.brink_desc[did]}[dev["driver"]]())
+        if dev["driver"] in ("esphome", "hue", "nuki", "brink", "smappee"):  # de beschrijving komt uit de eventstroom of de poll en is al in `_es_flush`, `_hue_flush`, `_nuki_flush` of `_brink_flush` gemaakt
+            self._apply_desc(did, {"esphome": lambda: self.es[did]["desc"], "hue": lambda: self.hue_desc[did], "nuki": lambda: self.nuki_desc[did], "brink": lambda: self.brink_desc[did], "smappee": lambda: self.smappee_desc[did]}[dev["driver"]]())
             self._save()
             self._poke()
             return
@@ -1829,6 +2152,8 @@ class EspDevHub:
             return await self._hue_send(did, dev, pid, v)
         if dev["driver"] == "brink":
             return await self._brink_send(did, dev, pid, v)
+        if dev["driver"] == "smappee":
+            return await self._smappee_send(did, dev, pid, v)
         if dev["driver"] == "esphome":
             eid = dev["emap"].get(pid)
             if not eid:
@@ -1993,7 +2318,7 @@ class EspDevHub:
         for did, dev in self.devices.items():
             pts = [self._point_view(did, dev, p) for p in dev["points"]]
             out.append({"id": did, "hid": dev["hid"], "name": dev["name"], "host": self.bridges[dev["bridge"]]["host"] if dev["driver"] == "hue" and dev["bridge"] in self.bridges
-                        else "api.nuki.io" if dev["driver"] == "nuki" else "www.brink-home.com" if dev["driver"] == "brink" else dev["host"], "bridge": dev["bridge"], "account": dev["account"], "port": dev["port"], "type": dev["type"], "fw": dev["fw"], "proto": dev["proto"],
+                        else "api.nuki.io" if dev["driver"] == "nuki" else "www.brink-home.com" if dev["driver"] == "brink" else "dashboard.smappee.net" if dev["driver"] == "smappee" else dev["host"], "bridge": dev["bridge"], "account": dev["account"], "port": dev["port"], "type": dev["type"], "fw": dev["fw"], "proto": dev["proto"],
                         "proto_state": self.proto_state_of(dev), "current": f"{CURRENT[0]}.{CURRENT[1]}", "rev": dev["rev"], "online": did in self.online, "error": self.errors.get(did, ""),
                         "configured": True, "driver": dev["driver"], "ha": dev["ha"], "skipped": list(dev["skipped"]), "shown": self.shown(dev), "points": pts,
                         "actions": [{**a, "disabled": a["id"] in self.off.get(did, {}), "reason": self.off.get(did, {}).get(a["id"], "")} for a in dev["actions"]],
@@ -2062,8 +2387,8 @@ class EspDevHub:
             if not dev["ha"]:
                 continue
             drv = dev["driver"]
-            device = {"identifiers": [f"kk_esp_{did}"], "name": dev["name"], "manufacturer": {"esphome": "ESPHome", "hue": "Signify", "nuki": "Nuki", "brink": "Brink"}.get(drv, "Zelfbouw"),
-                      "model": {"esphome": "ESPHome (webserver)", "hue": dev["type"] or "Hue", "nuki": "Smart Lock", "brink": "Ventilatie-unit"}.get(drv) or f"{dev['type'] or 'apparaat'} (HUISDEV)", "sw_version": dev["fw"] or None}
+            device = {"identifiers": [f"kk_esp_{did}"], "name": dev["name"], "manufacturer": {"esphome": "ESPHome", "hue": "Signify", "nuki": "Nuki", "brink": "Brink", "smappee": "Smappee"}.get(drv, "Zelfbouw"),
+                      "model": {"esphome": "ESPHome (webserver)", "hue": dev["type"] or "Hue", "nuki": "Smart Lock", "brink": "Ventilatie-unit", "smappee": "Laadpaal (EV Wall)"}.get(drv) or f"{dev['type'] or 'apparaat'} (HUISDEV)", "sw_version": dev["fw"] or None}
             device = {k: v for k, v in device.items() if v}
             for p in dev["points"]:
                 domain, extra = self._entity(did, p)

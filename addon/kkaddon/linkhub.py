@@ -414,6 +414,12 @@ class LinkHub:
         if obj.startswith("k:"):  # een laadpaal: de eigenaar noteert wie start, en alleen die kan stoppen
             if self.charge is None or obj[2:] not in self.charge.chargers:
                 return "onbekende laadpaal"
+            if op in ("pause", "resume", "current"):  # een Smappee-laadpaal: alleen tijdens de eigen sessie (chargehub beslist)
+                try:
+                    self.charge.control_nowait(obj[2:], self.charge.who_peer(peer), op, m.get("value"))
+                except ModelError as err:
+                    return str(err)
+                return None
             if op not in ("start", "stop"):
                 return "ongeldig bevel"
             try:

@@ -521,6 +521,8 @@ def _card(cid, v) -> dict:
         if not isinstance(ref, str) or (ref and not _cards.CHARGER_REF.fullmatch(ref)):
             raise ModelError("laadpaal: ongeldige laadpaal")
         out["charger"] = ref  # k:<id> van deze installatie, of r:<installatie>:k:<id>; leeg = nog niet gekozen
+        if v.get("amps"):  # een regelaar voor de stroom (ampère) op de kaart; alleen voor een Smappee-laadpaal. Zonder staat er niets (zo blijft een bestaande kaart gelijk)
+            out["amps"] = True
         legacy = None if ref else _legacy_charger(v)
         if legacy:  # de instellingen van voor 0.28: chargehub.adopt maakt er een laadpaal-blok van en wist ze hier
             out["legacy"] = legacy
@@ -1379,7 +1381,7 @@ class Model:
         old = self.cards.get(cid)
         if old is None:
             raise ModelError("onbekende kaart")
-        unknown = set(fields) - (set(old) - {"type"})
+        unknown = set(fields) - (set(old) - {"type"}) - ({"amps"} if old["type"] == "charger" else set())
         if unknown:
             raise ModelError(f"kaart: onbekend veld {sorted(unknown)[0]}")
         cards = {**self.cards, cid: _card(cid, {**old, **fields})}
