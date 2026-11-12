@@ -18,6 +18,19 @@ De stroom is bij Smappee een percentage; een heel getal ampère maakt daar het d
 komt dat altijd op dezelfde ampère uit. Staat de lader op Slim of Zon, dan negeert hij die limiet: het punt is dan onbekend en schrijven wordt geweigerd.
 
 Een punt is alleen bekend als de lader het zelf meldt; een onbekende status is onbekend, nooit een gok.
+
+**Verbruik en teller** komen van de officiële API (`app1pub.smappee.net/dev/v3`, zoals JavaLox die gebruikt) en vragen een client-id en secret van Smappee. Dat is een ander pad dan het dashboard
+en er mogen **hoogstens 20 verzoeken per uur** op (`Budget`: elk verzoek, ook dat voor het token, telt mee, en de telling blijft bewaard over een herstart).
+
+  token     `POST /dev/v1/oauth2/token` (form: grant_type=password, username, password, client_id, client_secret)
+  teller    `GET /dev/v3/servicelocation/<loc>/consumption/?aggregation=5&from=<1 jan 2024>&to=<nu>`   de som van `active` (drie fasen, Wh) over alle jaren, als kWh
+  vermogen  `GET /dev/v3/servicelocation/<loc>/consumption/?aggregation=1&from=<nu - 15 min>&to=<nu>`  het nieuwste afgeronde blok van 5 minuten: Wh x 12 = W; onder 0,3 Wh is het slaapverbruik (0)
+
+Het verbruik geldt voor de hele servicelocatie van het laadstation: bij een station met twee laadpunten is het niet aan een van beide toe te wijzen en blijft het onbekend.
+
+**Geschat uit de sessie** (`note_energy`, `virtual_power`, `virtual_meter`), zonder verzoeken: terwijl een laadpunt laadt groeit de energie van de lopende sessie (`energy`, elke minuut gelezen).
+Het vermogen is de groei tussen de momenten waarop een nieuwe waarde voor het eerst gezien werd (zo valt de vertraging van het pollen weg), en de teller is de laatste waarde van de API plus wat de sessies sindsdien erbij kregen.
+Dat is een schatting: de API telt zelf met enkele minuten vertraging, en hoe vaak Smappee `energy` van een lopende sessie bijwerkt is niet gezien.
 """
 from __future__ import annotations
 
@@ -36,6 +49,14 @@ API = "/api"
 TIMEOUT = 20
 MAX_BODY = 4 << 20
 SESSION_DAYS = 7  # zover terug vragen we sessies (zoals de HA-integratie)
+PUB = "https://app1pub.smappee.net"
+PUB_TOKEN = "/dev/v1/oauth2/token"
+PUB_CONSUMPTION = "/dev/v3/servicelocation/{loc}/consumption/"
+PUB_METER_FROM = 1704063600000  # 1 jan 2024 (ms): vanaf dan telt de teller, zoals bij JavaLox
+AGG_5MIN, AGG_YEAR = 1, 5
+BUCKET_MS = 300_000
+SLEEP_WH = 0.3  # onder zoveel Wh in 5 minuten is het slaapverbruik van de laadpaal: geen verbruik
+PUB_LIMIT = 20  # verzoeken per uur die Smappee toelaat
 SERIAL_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")  # het id van een smart device: een getal, of (zoals bij een echt account bleek) een tekst; het gaat in de URL, dus alleen veilige tekens
 DEFAULT_MIN, DEFAULT_MAX = 6, 32  # A, als de lader zijn bereik niet meldt (zoals de HA-integratie)
@@ -336,19 +357,22 @@ def describe(unit: dict, name: str = "") -> dict:
         _pt("paused", "Gepauzeerd", "bool", writable=True),
         _pt("current", "Stroom", "int", unit="A", min=lo, max=hi, step=1, writable=True),
         _pt("session_kwh", "Laatste sessie", "float", unit="kWh", cls="energy", decimals=2),
-        _pt("available", "Beschikbaar", "bool", diag=True),
     ]
+    pts.append(_pt("power", "Verbruik", "float", unit="W", cls="power", decimals=0, state="measurement"))  # geschat uit de sessie, en met de sleutels van de officiele API ook daaruit
+    if unit.get("pub"):  # alleen met de sleutels van de officiele API (client-id en secret): de teller van de hele servicelocatie
+        pts.append(_pt("meter", "Teller", "float", unit="kWh", cls="energy", decimals=2, state="total_increasing"))
+    pts.append(_pt("available", "Beschikbaar", "bool", diag=True))
     body = json.dumps(pts, sort_keys=True, separators=(",", ":"))
     return {"proto": "1.0", "rev": hashlib.sha1(body.encode()).hexdigest()[:8], "type": "Laadpaal", "name": name or unit.get("name") or "Laadpaal", "fw": "", "lib": "",
             "points": pts, "actions": []}
 
 
-def values(unit: dict, session_kwh: float | None = None) -> dict[str, Any]:
-    """De waarde per punt, of None. `session_kwh` is de energie van de laatste sessie van dit laadpunt uit de sessielijst."""
+def values(unit: dict, session_kwh: float | None = None, power: float | None = None, meter: float | None = None) -> dict[str, Any]:
+    """De waarde per punt, of None. `session_kwh` is de energie van de laatste sessie van dit laadpunt uit de sessielijst; `power` (W) en `meter` (kWh) komen van de officiele API."""
     dev = unit["dev"]
     st = state_of(dev)
     pz = None if st is None else st == S_PAUSED
-    return {"state": st, "charging": None if st is None else st == S_CHARGING, "paused": pz, "current": current_of(dev), "session_kwh": session_kwh,
+    return {"state": st, "charging": None if st is None else st == S_CHARGING, "paused": pz, "current": current_of(dev), "session_kwh": session_kwh, "power": power, "meter": meter,
             "available": unit.get("station_available") if isinstance(unit.get("station_available"), bool) else None}
 
 
@@ -508,4 +532,183 @@ async def request(session: aiohttp.ClientSession, token: str, method: str, path:
         raise SmappeeError("token", "de sessie bij Smappee is verlopen", status)
     if status == 403:
         raise SmappeeError("forbidden", "Smappee weigert dit voor dit account (geen schrijfrecht op dit laadstation?)", status)
+    return status, data
+
+
+# ------------------------------------------------------------ de officiele API: verbruik en teller, met een budget
+
+class Budget:
+    """Hoeveel verzoeken er het afgelopen uur zijn gedaan, en of er nog een mag. De tijdstippen staan in een bestand (per client-id, als hash), zodat een herstart het budget niet vergeet.
+    `limit` is wat wij zelf willen gebruiken, nooit meer dan wat Smappee toelaat (`PUB_LIMIT`)."""
+
+    def __init__(self, path, client_id: str, limit: int, window: float = 3600.0, clock=time.time) -> None:
+        self.path, self.window, self.clock = path, window, clock
+        self.key = hashlib.sha1(client_id.encode()).hexdigest()[:10]
+        self.limit = max(1, min(int(limit), PUB_LIMIT))
+        self.stamps: list[float] = []
+        try:
+            raw = json.loads(open(path, encoding="utf-8").read())
+            got = raw.get(self.key) if isinstance(raw, dict) else None
+            self.stamps = [float(x) for x in got if isinstance(x, (int, float)) and not isinstance(x, bool)] if isinstance(got, list) else []
+        except (OSError, ValueError):
+            pass
+        self._prune()
+
+    def _prune(self) -> None:
+        now = self.clock()
+        self.stamps = [t for t in self.stamps if now - self.window < t <= now + 60]  # een tijdstip uit de toekomst (de klok liep terug) telt ook, maar niet voor altijd
+
+    def used(self) -> int:
+        self._prune()
+        return len(self.stamps)
+
+    def free(self) -> int:
+        return max(0, self.limit - self.used())
+
+    def can(self, n: int = 1) -> bool:
+        return self.free() >= n
+
+    def spend(self) -> None:
+        """Een verzoek gaat weg: dat telt, ook als het mislukt."""
+        self._prune()
+        self.stamps.append(self.clock())
+        self._save()
+
+    def _save(self) -> None:
+        import os
+        import tempfile
+        try:
+            raw = json.loads(open(self.path, encoding="utf-8").read())
+            raw = raw if isinstance(raw, dict) else {}
+        except (OSError, ValueError):
+            raw = {}
+        raw[self.key] = self.stamps
+        try:
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.path) or ".", prefix=".budget-", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(raw, f)
+            os.replace(tmp, self.path)
+        except OSError:
+            pass  # het budget in het geheugen blijft gelden
+
+
+VP_WINDOW = 900.0  # s: de veranderingen van de laatste zoveel seconden tellen mee voor het geschatte vermogen
+VP_MIN_SPAN = 120.0  # s: er moet zoveel tijd tussen de eerste en de laatste verandering zitten (anders is de afronding van `energy` te groot)
+VP_MAX_AGE = 240.0  # s: de laatste verandering mag niet ouder zijn (verandert de energie niet meer, dan weten we het vermogen niet)
+
+
+def note_energy(events: list, now: float, kwh: float, keep: int = 8) -> list:
+    """De veranderingen van de energie van een lopende sessie: [(tijdstip waarop een nieuwe waarde voor het eerst gezien werd, kWh)]. Een gelijke waarde voegt niets toe."""
+    out = [e for e in events if now - e[0] <= 2 * VP_WINDOW]
+    if not out or out[-1][1] != kwh:
+        out.append((now, kwh))
+    return out[-keep:]
+
+
+def virtual_power(events: list, now: float) -> float | None:
+    """Het vermogen in W uit de groei van de sessie-energie tussen de eerste en de laatste verandering in het venster: kWh x 3,6 miljoen / seconden. Onbekend (None) bij te weinig of te oude veranderingen,
+    een te korte tijd ertussen, of een energie die niet groeit."""
+    ev = [e for e in events if now - e[0] <= VP_WINDOW]
+    if len(ev) < 2 or now - ev[-1][0] > VP_MAX_AGE:
+        return None
+    (t0, k0), (t1, k1) = ev[0], ev[-1]
+    if t1 - t0 < VP_MIN_SPAN or k1 <= k0:
+        return None
+    return round((k1 - k0) * 3_600_000.0 / (t1 - t0), 0)
+
+
+def virtual_meter(meter: float | None, base: dict | None, sessions: list) -> float | None:
+    """De teller van nu: de laatste waarde van de API (`meter`) plus wat de sessies sindsdien erbij kregen. `base` is wat er bij die lezing liep: {wall: tijdstip in seconden, key: de lopende sessie of None, kwh: haar energie toen};
+    `sessions` zijn de sessies van het laadpunt (nieuwste eerst). Een sessie die na de lezing begon telt helemaal mee, de sessie die toen liep alleen wat erbij kwam. Onbekend (None) als dat niet te weten is."""
+    if meter is None or base is None:
+        return None
+    add = 0.0
+    for s in sessions:
+        same = base["key"] is not None and s["key"] == base["key"]
+        if not same and s["start"] < base["wall"]:
+            continue
+        if s["kwh"] is None:
+            return None
+        add += max(0.0, s["kwh"] - base["kwh"]) if same else s["kwh"]
+    return round(meter + add, 3)
+
+
+def meter_kwh(data: Any) -> float | None:
+    """De teller: de som van `active` (de drie fasen, Wh) over alle blokken van `consumption`, als kWh. Onbekend (None) als het antwoord niet de vorm heeft die we kennen."""
+    cons = data.get("consumptions") if isinstance(data, dict) else None
+    if not isinstance(cons, list):
+        return None
+    total, seen = 0.0, False
+    for c in cons:
+        act = c.get("active") if isinstance(c, dict) else None
+        for v in act if isinstance(act, list) else []:
+            x = _num(v)
+            if x is not None:
+                total, seen = total + x, True
+    return round(total / 1000.0, 3) if seen else None
+
+
+def rate_w(data: Any, now_ms: float) -> float | None:
+    """Het huidige verbruik in W: het nieuwste afgeronde blok van 5 minuten (anders, zonder tijdstippen, het eerste zoals JavaLox), de som van de drie fasen in Wh, maal 12. Onder `SLEEP_WH` is het 0 (slaapverbruik).
+    Een antwoord zonder blokken of zonder `active` is onbekend, niet 0."""
+    cons = data.get("consumptions") if isinstance(data, dict) else None
+    if not isinstance(cons, list) or not cons or not all(isinstance(c, dict) for c in cons):
+        return None
+    stamped = [(_num(c.get("timestamp")), c) for c in cons]
+    done = [(ts, c) for ts, c in stamped if ts is not None and ts + BUCKET_MS <= now_ms]
+    if done:
+        pick = max(done, key=lambda x: x[0])[1]
+    elif any(ts is not None for ts, _ in stamped):
+        return None  # er zijn tijdstippen en geen blok is afgerond
+    else:
+        pick = cons[0]
+    act = pick.get("active")
+    vals = [_num(v) for v in act[:3]] if isinstance(act, list) else []
+    vals = [v for v in vals if v is not None]
+    if not vals:
+        return None
+    d = sum(vals)
+    return 0.0 if d < SLEEP_WH else round(d * 12.0, 1)
+
+
+async def pub_token(session: aiohttp.ClientSession, username: str, password: str, client_id: str, client_secret: str) -> tuple[str, float]:
+    """Een token voor de officiele API (grant_type=password, zoals JavaLox). Geeft (token, geldig in seconden). 400 of 401 zijn onjuiste gegevens: probeer het dan niet steeds opnieuw."""
+    try:
+        async with session.post(f"{PUB}{PUB_TOKEN}", data={"grant_type": "password", "username": username, "password": password, "client_id": client_id, "client_secret": client_secret},
+                                timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as r:
+            raw = await _read(r)
+            status = r.status
+            _classify(status, raw, r)
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+        raise SmappeeError("net", f"geen verbinding met de API van Smappee: {e or 'time-out'}") from None
+    if status in (400, 401, 403):
+        raise SmappeeError("auth", "de API van Smappee weigert de client-id, het secret, de gebruikersnaam of het wachtwoord", status)
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        data = {}
+    if status != 200 or not isinstance(data, dict) or not isinstance(data.get("access_token"), str) or not data["access_token"]:
+        raise SmappeeError("net", f"de API van Smappee geeft geen token (HTTP {status})", status)
+    exp = _num(data.get("expires_in"))
+    return data["access_token"], exp if exp is not None and exp > 60 else 3600.0
+
+
+async def pub_consumption(session: aiohttp.ClientSession, token: str, loc: str, aggregation: int, frm_ms: int, to_ms: int) -> tuple[int, Any]:
+    """`GET consumption` van een servicelocatie. Geeft (status, JSON). Een verlopen token (401), te veel verzoeken (429, met `Retry-After`) en onderhoud zijn een SmappeeError."""
+    try:
+        async with session.get(f"{PUB}{PUB_CONSUMPTION.format(loc=loc)}", params={"aggregation": aggregation, "from": frm_ms, "to": to_ms},
+                               headers={"Authorization": f"Bearer {token}"}, timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as r:
+            raw = await _read(r)
+            status = r.status
+            _classify(status, raw, r)
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+        raise SmappeeError("net", f"geen verbinding met de API van Smappee: {e or 'time-out'}") from None
+    if status == 401:
+        raise SmappeeError("token", "het token van de API van Smappee is verlopen", status)
+    if status == 403:
+        raise SmappeeError("forbidden", "de API van Smappee weigert dit (geen recht op deze servicelocatie)", status)
+    try:
+        data = json.loads(raw.decode("utf-8")) if raw else {}
+    except (ValueError, UnicodeDecodeError):
+        data = {}
     return status, data

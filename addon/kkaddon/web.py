@@ -822,14 +822,17 @@ async def brink_delete(request: web.Request) -> web.Response:
 async def smappee_add(request: web.Request) -> web.Response:
     """Een Smappee-account koppelen met de gebruikersnaam en het wachtwoord van het dashboard. Het wachtwoord staat alleen in de body en komt nergens terug."""
     b = await _body(request)
-    aid = await _espdev(request).add_smappee(str(b.get("username") or ""), str(b.get("password") or ""), str(b.get("name") or ""))
+    aid = await _espdev(request).add_smappee(str(b.get("username") or ""), str(b.get("password") or ""), str(b.get("name") or ""), str(b.get("client_id") or ""), str(b.get("client_secret") or ""),
+                                             b.get("budget"))
     return web.json_response({"ok": True, "id": aid})
 
 
 async def smappee_put(request: web.Request) -> web.Response:
     """Een nieuw wachtwoord of een andere naam voor een Smappee-account."""
     b = await _body(request)
-    _espdev(request).update_smappee(request.match_info["aid"], str(b.get("password") or ""), str(b["name"]) if "name" in b else None)
+    _espdev(request).update_smappee(request.match_info["aid"], str(b.get("password") or ""), str(b["name"]) if "name" in b else None,
+                                    str(b.get("client_id") or "") if "client_id" in b or "client_secret" in b else None, str(b.get("client_secret") or "") if "client_id" in b or "client_secret" in b else None,
+                                    b.get("budget"))
     return web.json_response({"ok": True})
 
 

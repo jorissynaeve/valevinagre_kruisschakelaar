@@ -564,6 +564,7 @@ function scEspProto(b) {
     const ac = (S.smappee || []).find((x) => x.id === b.account);
     return `<div class="sub">Account <b>${esc(ac ? ac.name : b.account)}</b> bij Smappee (cloud, <code>dashboard.smappee.net</code>).${ac && ac.error ? ` ${esc(ac.error)}.` : ''} De stand wordt elke minuut opgehaald en na een opdracht snel nog een paar keer; Smappee heeft geen officiële API en kan dit zonder waarschuwing veranderen.</div>
       ${ac && ac.auth ? `<div class="row"><button class="btn small danger" type="button" data-sc="smappeepw" data-account="${esc(b.account)}">Nieuw wachtwoord invoeren</button><span class="sub">de add-on probeert een onjuist wachtwoord niet steeds opnieuw</span></div>` : ''}
+      <div class="sub">${ac && ac.pub && ac.pub.on ? `<b>Teller</b> (kWh, totaal sinds 1 januari 2024) en <b>Verbruik</b> komen van de officiële API van Smappee, binnen ${ac.pub.limit} verzoeken per uur (nu ${ac.pub.used} gebruikt)${ac.pub.error ? `: ${esc(ac.pub.error)}` : ''}. Terwijl hij laadt wordt het verbruik geschat uit de groei van de sessie en de teller loopt mee; zonder laden is het verbruik 0. Het zijn schattingen; de API zelf loopt enkele minuten achter.` : 'Het <b>Verbruik</b> wordt geschat uit de groei van de laadsessie (0 als hij niet laadt). Voor de <b>Teller</b> (totaal) is de API van Smappee nodig: kies in het menu (+ Module → Smappee) <i>Teller en verbruik koppelen</i>.'}</div>
       <div class="row"><button class="btn small" type="button" data-sc="smappeecharge" data-id="${esc(b.id)}" ${scBlocks().some((x) => x.kind === 'charge' && x.espdev === b.id) ? 'disabled' : ''}>Laadsessies en badges bijhouden</button><span class="sub">maakt er een laadpaal-blok van met een log per badge en huis</span></div>
       <div class="row"><label class="chk" title="Zet dit alleen aan als je de waarden ook via deze add-on in Home Assistant wilt."><input type="checkbox" data-esha ${b.ha ? 'checked' : ''}> ook als entiteiten in Home Assistant</label></div>`;
   }
@@ -1349,6 +1350,7 @@ function scSmappeeMenu() { // Smappee-accounts: de laadpunten die ze aanbieden e
     const state = a.online ? `verbonden · ${a.units.length} ${a.units.length === 1 ? 'laadpunt' : 'laadpunten'}` : (a.error || 'verbinden…');
     return `<div class="scmenuwide"><div class="sub"><b>${esc(a.name)}</b> · ${esc(state)}</div>
       <div class="scmenulist">${left.map((u) => `<button class="scmenuitem" type="button" data-sc="smappeeclaim" data-account="${esc(a.id)}" data-key="${esc(u.key)}"><b>${esc(u.name)}</b><span class="sub">Smappee-laadpunt ${esc(u.serial)}</span></button>`).join('')}
+      <button class="scmenuitem" type="button" data-sc="smappeepub" data-account="${esc(a.id)}"><b>${a.pub && a.pub.on ? 'Teller en verbruik: sleutels wijzigen' : 'Teller en verbruik koppelen'}</b><span class="sub">${a.pub && a.pub.on ? `${a.pub.used} van ${a.pub.limit} verzoeken dit uur${a.pub.error ? ` · ${esc(a.pub.error)}` : ''}` : 'met de client-id en het secret van de API van Smappee (zoals JavaLox)'}</span></button>
       <button class="scmenuitem" type="button" data-sc="smappeepw" data-account="${esc(a.id)}"><b>Wachtwoord wijzigen</b><span class="sub">als je het bij Smappee veranderde</span></button>
       <button class="scmenuitem" type="button" data-sc="smappeedel" data-account="${esc(a.id)}"><b>Account loskoppelen</b><span class="sub">haalt zijn blokken weg</span></button></div>
       ${a.online && !left.length ? '<div class="sub">Alle laadpunten staan al op een pagina.</div>' : ''}</div>`;
@@ -2076,7 +2078,9 @@ const SC_ACTIONS = {
     if (!username) return;
     const password = prompt('Wachtwoord van dit account (het wordt alleen in de add-on bewaard en alleen naar Smappee gestuurd):') || '';
     if (!password) return;
-    await api('POST', 'espdev/smappee/account', { username, password });
+    const client_id = (prompt('Optioneel, voor de teller en het verbruik: de client-id van de API van Smappee (zoals in JavaLox). Laat leeg om over te slaan:') || '').trim();
+    const client_secret = client_id ? (prompt('Het client-secret bij die client-id (het wordt alleen in de add-on bewaard):') || '') : '';
+    await api('POST', 'espdev/smappee/account', { username, password, client_id, client_secret });
     SC.force = true;
     await refresh();
     toast('Gekoppeld. Kies in het menu (+ Module → Smappee) welk laadpunt je wilt toevoegen.', 6000);
@@ -2099,6 +2103,22 @@ const SC_ACTIONS = {
     SC.force = true;
     await refresh();
     toast('Laadpaal-blok gemaakt. Koppel de badges aan een huis; sessies vanaf nu worden per huis geboekt.', 6000);
+  },
+  smappeepub: async (d) => {
+    const ac = (S.smappee || []).find((x) => x.id === d.account);
+    if (ac && ac.pub && ac.pub.on && confirm('Verbruik en teller uitzetten (de sleutels van de API wissen)? Kies Annuleren om de sleutels te wijzigen.')) {
+      await api('PUT', `espdev/smappee/account/${d.account}`, { client_id: '', client_secret: '' });
+    } else {
+      const client_id = (prompt('De client-id van de API van Smappee (voor de teller en het verbruik, zoals in JavaLox):') || '').trim();
+      if (!client_id) return;
+      const client_secret = prompt('Het client-secret bij die client-id (het wordt alleen in de add-on bewaard):') || '';
+      if (!client_secret) return;
+      const b = (prompt(`Hoeveel verzoeken per uur aan de API van Smappee mag de add-on hoogstens doen? Smappee laat er 20 toe; deel je de client met JavaLox, kies dan minder. Standaard 14:`, String((ac && ac.pub && ac.pub.limit) || 14)) || '').trim();
+      await api('PUT', `espdev/smappee/account/${d.account}`, { client_id, client_secret, ...(b ? { budget: +b } : {}) });
+    }
+    SC.force = true;
+    await refresh();
+    toast('Bijgewerkt. De teller en het verbruik komen binnen enkele minuten; de punten staan in de zijbalk van het laadpunt.', 6000);
   },
   smappeepw: async (d) => {
     const password = prompt('Nieuw wachtwoord van dit Smappee-account:') || '';

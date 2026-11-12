@@ -92,6 +92,17 @@ SMAPPEE_SESS_ACTIVE = 60.0  # s: de sessies opnieuw vragen zolang er geladen of 
 SMAPPEE_SESS_IDLE = 600.0  # s: en anders
 SMAPPEE_WRITE_GAP = 5.0  # s: dezelfde opdracht (pauze, of de stroom) die sneller volgt, wordt geweigerd (een bron die flappert belast de cloud niet; een ingang probeert het later opnieuw). Per punt: pauzeren en daarna de stroom kan meteen
 SERIAL_RE = smappee.SERIAL_RE
+PUB_BUDGET = 14  # verzoeken per uur aan de officiele API die wij zelf hoogstens doen (Smappee laat er 20 toe; het token telt mee en JavaLox deelt misschien dezelfde client)
+PUB_RATE_ACTIVE = 360.0  # s: het verbruik tijdens laden of pauze (een blok van Smappee is 5 minuten)
+PUB_RATE_IDLE = 900.0  # s: en anders
+PUB_METER_EVERY = 1800.0  # s: de teller; daarnaast eenmaal als een sessie net klaar is
+PUB_RETRY = 600.0  # s: na een mislukking pas weer proberen
+PUB_MIN_GAP = 300.0  # s: de teller na het einde van een sessie hoogstens zo vaak
+PUB_STALE_RATE = 2400.0  # s: een verbruik dat zo oud is, is onbekend
+PUB_STALE_METER = 7200.0  # s: idem voor de teller
+PUB_HOLD_AUTH = 3600.0  # s: onjuiste sleutels proberen we niet steeds opnieuw
+PUB_HOLD_RATE = 1800.0  # s: minstens zo lang wachten na "te veel verzoeken"
+PUB_HOLD_MAINT = 900.0  # s: na onderhoud
 ACT_PREFIX = "do_"  # in `dev["inputs"]`: een ingang die een actie start (do_unlock), naast de ingangen die een punt instellen
 ACTION_GAP = 5.0  # s: een actie die een ingang start, hoogstens zo vaak (een bron die flappert opent geen deur drie keer)
 
@@ -320,6 +331,7 @@ class EspDevHub:
         self.sm: dict[str, dict] = {}  # account -> wat Smappee tot nu meldde: {units, stations, sessions, token, online, error, auth, burst}
         self.smappee_desc: dict[str, dict] = {}  # did -> de descriptor van een laadpunt volgens de laatste lijst van Smappee
         self._smappee_sent: dict[tuple[str, str], float] = {}
+        self._pub_budgets: dict[str, smappee.Budget] = {}  # client-id -> hoeveel verzoeken aan de officiele API er dit uur zijn gedaan (bewaard in smappee_budget.json)
         self._hue_locks: dict[str, asyncio.Lock] = {}
         self._hue_sent: dict[str, float] = {}
         self._listen = None
@@ -361,7 +373,11 @@ class EspDevHub:
                 self.brink_accounts[k] = {"name": _text(v.get("name"), 60) or "Brink Home", "email": v["email"].strip()[:200], "password": v["password"][:200]}
         for k, v in (raw.get("smappee") or {}).items() if isinstance(raw.get("smappee"), dict) else []:
             if isinstance(v, dict) and BRIDGE_RE.match(k) and isinstance(v.get("username"), str) and v["username"].strip() and isinstance(v.get("password"), str) and v["password"]:
-                self.smappee_accounts[k] = {"name": _text(v.get("name"), 60) or "Smappee", "username": v["username"].strip()[:200], "password": v["password"][:200]}
+                cid, sec = (_text(v.get("client_id"), 200), v["client_secret"][:200] if isinstance(v.get("client_secret"), str) else "")
+                bud = v.get("budget")
+                self.smappee_accounts[k] = {"name": _text(v.get("name"), 60) or "Smappee", "username": v["username"].strip()[:200], "password": v["password"][:200],
+                                            "client_id": cid if cid and sec else "", "client_secret": sec if cid and sec else "",
+                                            "budget": bud if isinstance(bud, int) and not isinstance(bud, bool) and 1 <= bud <= smappee.PUB_LIMIT else PUB_BUDGET}
         for k, v in (raw.get("devices") or {}).items():
             if isinstance(v, dict) and re.fullmatch(r"[a-z0-9_]{1,40}", k) and isinstance(v.get("hid"), str) and ID_RE.match(v["hid"]):
                 self.devices[k] = self._defaults(v)
@@ -1729,28 +1745,41 @@ class EspDevHub:
 
     # ------------------------------------------------------------ Smappee: een account (gebruikersnaam en wachtwoord van het dashboard) dat gepold wordt, en een blok per laadpunt
 
-    async def add_smappee(self, username: str, password: str, name: str = "") -> str:
-        """Een Smappee-account koppelen. Het wachtwoord wordt meteen gecontroleerd door in te loggen. Geeft het id van het account."""
+    @staticmethod
+    def _smappee_keys(client_id, client_secret, budget) -> tuple[str, str, int | None]:
+        """De sleutels van de officiele API (client-id en secret, samen of geen) en het budget (verzoeken per uur, 1 tot 20)."""
+        cid, sec = _text(client_id, 200), (client_secret or "")[:200] if isinstance(client_secret, str) else ""
+        if bool(cid) != bool(sec):
+            raise ModelError("geef zowel de client-id als het secret van de API van Smappee, of geen van beide")
+        if budget is not None and (isinstance(budget, bool) or not isinstance(budget, int) or not 1 <= budget <= smappee.PUB_LIMIT):
+            raise ModelError(f"het budget is een aantal verzoeken per uur, van 1 tot {smappee.PUB_LIMIT} (Smappee laat er {smappee.PUB_LIMIT} toe)")
+        return cid, sec, budget
+
+    async def add_smappee(self, username: str, password: str, name: str = "", client_id: str = "", client_secret: str = "", budget: int | None = None) -> str:
+        """Een Smappee-account koppelen. Het wachtwoord wordt meteen gecontroleerd door in te loggen, en de sleutels van de officiele API (voor verbruik en teller) door er een keer mee te lezen. Geeft het id van het account."""
         username, password = _text(username, 200), (password or "")[:200]
         if not username or not password:
             raise ModelError("geef de gebruikersnaam en het wachtwoord van je Smappee-dashboard")
+        client_id, client_secret, budget = self._smappee_keys(client_id, client_secret, budget)
         aid = smappee.account_id(username)
         if aid in self.smappee_accounts:
             raise ModelError("dit account staat er al")
         if len(self.smappee_accounts) >= MAX_SMAPPEE:
             raise ModelError(f"maximaal {MAX_SMAPPEE} Smappee-accounts")
-        st, acc = self._smappee_new(), {"username": username, "password": password}
+        st, acc = self._smappee_new(), {"username": username, "password": password, "client_id": client_id, "client_secret": client_secret, "budget": budget or PUB_BUDGET}
         try:
             await self._smappee_login(st, acc)
             await self._smappee_cycle(aid, st, acc, flush=False)
         except smappee.SmappeeError as e:
             log.warning("Smappee koppelen mislukt: %s", e)
             raise ModelError(e.reason) from None
+        if client_id and st.get("pub") and st["pub"]["error"]:
+            raise ModelError(f"verbruik en teller: {st['pub']['error']}")
         if not st["units"]:
             why = self._smappee_explain(st)
             log.warning("Smappee: geen laadpunten gevonden (%s)", why)
             raise ModelError(f"dit account heeft geen laadpunten bij Smappee (of geen recht om ze te zien). Wat Smappee gaf: {why}")
-        self.smappee_accounts[aid] = {"name": _text(name, 60) or "Smappee", "username": username, "password": password}
+        self.smappee_accounts[aid] = {"name": _text(name, 60) or "Smappee", **acc}
         self.sm[aid] = st
         st.update(online=True, error="", auth=False)
         self._save()
@@ -1758,15 +1787,28 @@ class EspDevHub:
         self._poke()
         return aid
 
-    def update_smappee(self, aid: str, password: str, name: str | None = None) -> None:
-        """Een nieuw wachtwoord (na een wijziging bij Smappee): de volgende ronde logt meteen opnieuw in, ook als het account net was stilgezet na een onjuist wachtwoord."""
+    def update_smappee(self, aid: str, password: str, name: str | None = None, client_id: str | None = None, client_secret: str | None = None, budget: int | None = None) -> None:
+        """Een nieuw wachtwoord (na een wijziging bij Smappee): de volgende ronde logt meteen opnieuw in, ook als het account net was stilgezet na een onjuist wachtwoord. Ook de sleutels van de officiele API
+        (client-id en secret samen; beide leeg haalt verbruik en teller weg) en het budget (verzoeken per uur)."""
         acc = self.smappee_accounts.get(aid)
         if not acc:
             raise ModelError("onbekend account")
-        if not password and name is None:
-            raise ModelError("geef een nieuw wachtwoord of een naam")
+        keys = client_id is not None or client_secret is not None
+        if not password and name is None and not keys and budget is None:
+            raise ModelError("geef een nieuw wachtwoord, een naam, de sleutels van de API of een budget")
+        if keys:
+            cid, sec, _ = self._smappee_keys(client_id or "", client_secret or "", None)
+        if budget is not None:
+            self._smappee_keys("", "", budget)
         if password:
             acc["password"] = password[:200]
+        if keys:
+            self._pub_budgets.pop(acc["client_id"], None)
+            acc["client_id"], acc["client_secret"] = cid, sec
+            if aid in self.sm:
+                self.sm[aid]["pub"] = None
+        if budget is not None:
+            acc["budget"] = budget
         if name is not None:
             acc["name"] = _text(name, 60) or acc["name"]
         st = self.sm.get(aid)
@@ -1834,7 +1876,7 @@ class EspDevHub:
 
     @staticmethod
     def _smappee_new() -> dict:
-        return {"units": {}, "stations": {}, "struct_at": 0.0, "sessions": {}, "sess_at": {}, "sess_active": {}, "token": None, "exp": 0.0, "online": False, "error": "", "auth": False, "burst": []}
+        return {"units": {}, "stations": {}, "struct_at": 0.0, "sessions": {}, "sess_at": {}, "sess_active": {}, "token": None, "exp": 0.0, "online": False, "error": "", "auth": False, "burst": [], "pub": None}
 
     def _smappee_kick(self, aid: str) -> None:
         """Na een opdracht: Smappee voert hem asynchroon uit, dus over 3, 10 en 30 s kijken we hoe het laadpunt erbij staat."""
@@ -1917,7 +1959,7 @@ class EspDevHub:
             for c in stn["connectors"]:
                 dev = by_loc[stn["loc"]].get(c["id"]) or (by_loc[stn["loc"]].get(c["uuid"]) if c["uuid"] else None)
                 if dev is not None:
-                    units[f"{serial}:{c['id']}"] = {**c, "serial": serial, "loc": stn["loc"], "dev": dev, "station_available": stn.get("available"), "only": len(stn["connectors"]) == 1}
+                    units[f"{serial}:{c['id']}"] = {**c, "serial": serial, "loc": stn["loc"], "dev": dev, "station_available": stn.get("available"), "only": len(stn["connectors"]) == 1, "pub": bool(acc.get("client_id"))}
         st["units"] = units
         for serial in st["stations"]:
             mine = [u for u in units.values() if u["serial"] == serial]
@@ -1938,7 +1980,9 @@ class EspDevHub:
                 continue
             for u in mine:
                 st["sessions"][f"{serial}:{u['id']}"] = smappee.sessions(data, u, u["only"])
+                self._smappee_note(st, u, now)
             st["sess_at"][serial], st["sess_active"][serial] = now, active
+        await self._smappee_pub(st, acc)
         if flush:
             await self._smappee_flush(aid)
 
@@ -1956,10 +2000,134 @@ class EspDevHub:
             desc = {**smappee.describe(unit, dev["name"]), "id": dev["hid"]}
             self.smappee_desc[did] = desc
             sess = st["sessions"].get(key) or []
-            vals = smappee.values(unit, sess[0]["kwh"] if sess else None)
+            power, meter = self._smappee_pubvals(st, unit)
+            vals = smappee.values(unit, sess[0]["kwh"] if sess else None, power, meter)
             pts = {p["id"]: ({"v": vals[p["id"]], "age": 0} if vals.get(p["id"]) is not None else {"v": None}) for p in desc["points"]}
             await self._on_state(did, {"proto": "1.0", "rev": desc["rev"], "points": pts, "actions": {}})
         self._poke()
+
+    # ---- verbruik en teller: de officiele API, met een budget (hoogstens 20 verzoeken per uur, ook het token telt)
+
+    def _smappee_budget(self, acc: dict) -> smappee.Budget:
+        b = self._pub_budgets.get(acc["client_id"])
+        if b is None:
+            b = self._pub_budgets[acc["client_id"]] = smappee.Budget(self.path.with_name("smappee_budget.json"), acc["client_id"], acc.get("budget") or PUB_BUDGET)
+        b.limit = max(1, min(int(acc.get("budget") or PUB_BUDGET), smappee.PUB_LIMIT))
+        return b
+
+    @staticmethod
+    def _smappee_note(st: dict, unit: dict, now: float) -> None:
+        """De energie van de lopende sessie van een laadpunt onthouden (alleen als ze veranderde), voor het geschatte vermogen. Zonder lopende sessie is er niets te onthouden."""
+        key = f"{unit['serial']}:{unit['id']}"
+        sess = st["sessions"].get(key) or []
+        run = sess[0] if sess and sess[0]["end"] is None and sess[0]["kwh"] is not None else None
+        e = st.setdefault("energy", {})
+        if run is None:
+            e.pop(key, None)
+            return
+        cur = e.get(key)
+        if cur is None or cur["key"] != run["key"]:
+            cur = e[key] = {"key": run["key"], "events": []}
+        cur["events"] = smappee.note_energy(cur["events"], now, run["kwh"])
+
+    @staticmethod
+    def _smappee_pubvals(st: dict, unit: dict) -> tuple[float | None, float | None]:
+        """Verbruik (W) en teller (kWh) voor een laadpunt, of None.
+        Verbruik: niet aan het laden (status bekend) is 0; aan het laden is het geschat uit de groei van de sessie-energie, en anders (of als dat nog niet kan) het laatste blok van de officiele API; is de status onbekend, dan alleen dat blok.
+        Teller: de laatste waarde van de officiele API plus wat de sessies sindsdien erbij kregen. Het verbruik van de API geldt voor de hele servicelocatie en is dus onbekend bij een laadstation met twee laadpunten."""
+        now, key = time.monotonic(), f"{unit['serial']}:{unit['id']}"
+        state = smappee.state_of(unit["dev"])
+        p = ((st.get("pub") or {}).get("loc") or {}).get(unit["loc"]) if unit.get("pub") and unit.get("only") else None
+        if state is not None and state != smappee.S_CHARGING:
+            power = 0.0
+        else:
+            power = smappee.virtual_power(((st.get("energy") or {}).get(key) or {}).get("events") or [], now) if state == smappee.S_CHARGING and unit.get("only") else None
+            if power is None and p and p["rate_at"] is not None and now - p["rate_at"] <= PUB_STALE_RATE:
+                power = p["rate"]
+        meter = None
+        if p and p["meter_at"] is not None and now - p["meter_at"] <= PUB_STALE_METER:
+            est = smappee.virtual_meter(p["meter"], p.get("base"), st["sessions"].get(key) or [])
+            meter = est if est is not None else p["meter"]
+        return power, meter
+
+    async def _smappee_pub_read(self, pub: dict, acc: dict, budget: smappee.Budget, loc: str, aggregation: int, frm_ms: int) -> object | None:
+        """Een keer lezen bij de officiele API, binnen het budget (het token en het verzoek tellen allebei). Geeft de JSON, of None als er geen budget is."""
+        for attempt in (0, 1):
+            need = 1 if pub["token"] and time.monotonic() < pub["exp"] - 60 else 2
+            if not budget.can(need):
+                return None
+            if need == 2:
+                budget.spend()
+                pub["token"] = None
+                tok, ttl = await smappee.pub_token(self._session(), acc["username"], acc["password"], acc["client_id"], acc["client_secret"])
+                pub["token"], pub["exp"] = tok, time.monotonic() + ttl
+            budget.spend()
+            try:
+                status, data = await smappee.pub_consumption(self._session(), pub["token"], loc, aggregation, frm_ms, int(time.time() * 1000))
+            except smappee.SmappeeError as e:
+                if e.code == "token" and attempt == 0:
+                    pub["token"] = None  # een keer opnieuw een token, als het budget het toelaat
+                    continue
+                raise
+            if status != 200:
+                raise smappee.SmappeeError("net", f"de API van Smappee antwoordt met HTTP {status}", status)
+            return data
+        return None
+
+    async def _smappee_pub(self, st: dict, acc: dict) -> None:
+        """Het verbruik en de teller van elk laadstation, als de sleutels van de officiele API bekend zijn en het budget het toelaat. Een fout stopt de ronde van het dashboard niet."""
+        if not acc.get("client_id"):
+            return
+        pub = st["pub"] = st.get("pub") or {"token": None, "exp": 0.0, "hold": 0.0, "error": "", "auth": False, "loc": {}}
+        now = time.monotonic()
+        if now < pub["hold"]:
+            return
+        budget = self._smappee_budget(acc)
+        for serial, stn in st["stations"].items():
+            loc = stn["loc"]
+            p = pub["loc"].setdefault(loc, {"rate": None, "rate_at": None, "meter": None, "meter_at": None, "next_rate": 0.0, "next_meter": 0.0, "active": False, "base": None})
+            active = any(smappee.state_of(u["dev"]) in (smappee.S_CHARGING, smappee.S_PAUSED) for u in st["units"].values() if u["serial"] == serial)
+            if p["active"] and not active and (p["meter_at"] is None or now - p["meter_at"] >= PUB_MIN_GAP):
+                p["next_meter"] = 0.0  # een sessie is net klaar: de teller opnieuw
+            p["active"] = active
+            for kind in ("rate", "meter"):
+                if time.monotonic() < p[f"next_{kind}"]:
+                    continue
+                t0 = time.time()
+                try:
+                    data = await self._smappee_pub_read(pub, acc, budget, loc, smappee.AGG_5MIN if kind == "rate" else smappee.AGG_YEAR,
+                                                        int(time.time() * 1000) - 15 * 60 * 1000 if kind == "rate" else smappee.PUB_METER_FROM)
+                except smappee.SmappeeError as e:
+                    pub["error"] = e.reason
+                    pub["token"] = None if e.code in ("auth", "token") else pub["token"]
+                    p[f"next_{kind}"] = time.monotonic() + PUB_RETRY
+                    if e.code in ("auth", "rate", "maintenance"):
+                        pub["auth"] = e.code == "auth"
+                        pub["hold"] = time.monotonic() + (PUB_HOLD_AUTH if e.code == "auth" else max(e.wait, PUB_HOLD_RATE) if e.code == "rate" else PUB_HOLD_MAINT)
+                        log.warning("Smappee verbruik: %s; %d s wachten", e.reason, pub["hold"] - time.monotonic())
+                        return
+                    log.warning("Smappee verbruik: %s", e.reason)
+                    continue
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - een rare lijst mag het volgen van dit account niet stilleggen
+                    log.exception("Smappee verbruik niet te verwerken")
+                    pub["error"] = "onbegrijpelijk antwoord van de API van Smappee"
+                    p[f"next_{kind}"] = time.monotonic() + PUB_RETRY
+                    continue
+                if data is None:  # geen budget meer dit uur: straks opnieuw
+                    break
+                at = time.monotonic()
+                if kind == "rate":
+                    p["rate"], p["rate_at"], p["next_rate"] = smappee.rate_w(data, time.time() * 1000), at, at + (PUB_RATE_ACTIVE if active else PUB_RATE_IDLE)
+                else:
+                    p["meter"], p["meter_at"], p["next_meter"] = smappee.meter_kwh(data), at, at + PUB_METER_EVERY
+                    mine = [u for u in st["units"].values() if u["serial"] == serial]
+                    if len(mine) == 1:  # wat er bij deze lezing liep: de teller van nu is deze waarde plus wat de sessies sindsdien erbij kregen
+                        sess = st["sessions"].get(f"{serial}:{mine[0]['id']}") or []
+                        run = sess[0] if sess and sess[0]["end"] is None else None
+                        p["base"] = {"wall": t0, "key": run["key"] if run else None, "kwh": (run["kwh"] or 0.0) if run else 0.0}
+                pub["error"], pub["auth"] = "", False
 
     def _smappee_down(self, aid: str, st: dict, e: smappee.SmappeeError) -> None:
         st.update(online=False, error=str(e), auth=e.code == "auth")
@@ -2048,7 +2216,10 @@ class EspDevHub:
             units = []
             for key, u in st["units"].items():
                 units.append({"key": key, "serial": u["serial"], "cid": u["id"], "hid": smappee.hid_of(u["serial"], u["id"]), "name": smappee.describe(u)["name"], "id": have.get(key), "claimed": key in have})
-            out.append({"id": aid, "name": acc["name"], "online": st["online"], "error": st["error"], "auth": st["auth"], "units": sorted(units, key=lambda x: (x["name"].lower(), x["key"]))})
+            pub = st.get("pub")
+            b = self._smappee_budget(acc) if acc.get("client_id") else None
+            out.append({"id": aid, "name": acc["name"], "online": st["online"], "error": st["error"], "auth": st["auth"], "units": sorted(units, key=lambda x: (x["name"].lower(), x["key"])),
+                        "pub": {"on": bool(acc.get("client_id")), "error": pub["error"] if pub else "", "auth": bool(pub and pub["auth"]), "used": b.used() if b else 0, "limit": b.limit if b else 0}})
         return out
 
     async def _refetch(self, did: str) -> None:

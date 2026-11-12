@@ -44,6 +44,18 @@ class FakeSmappee:
         self.bare_modules = False  # de modules van het laadstation wijzen geen smart device aan (zoals bij een echt account bleek)
         self.runner = None
         self.port = 0
+        # de officiele API (verbruik en teller): alleen met een client-id en secret
+        self.client_id, self.client_secret = "cid-123", "sec-456"
+        self.pub_calls: list[str] = []  # "token", "rate" of "meter"
+        self.pub_tokens: dict[str, float] = {}
+        self.pub_status = 0
+        self.pub_retry_after = ""
+        self.pub_ttl = 3600
+        self.bucket_wh = [100.0, 50.0, 50.0]  # een afgerond blok van 5 minuten: 200 Wh = 2400 W
+        self.open_bucket_wh = [1.0, 0.0, 0.0]  # het blok dat nog loopt: moet genegeerd worden
+        self.year_buckets = [[1000.0, 2000.0, 500.0], [4000.0, 3000.0, 1500.0]]  # samen 12 kWh
+        self.no_timestamps = False
+        self.live_kw = 0.0  # de lopende sessie (zonder `to`) groeit met dit vermogen
 
     @staticmethod
     def _new_conn(did: int, pos: int, name: str) -> dict:
@@ -147,7 +159,11 @@ class FakeSmappee:
         self.session_calls += 1
         if self.sessions_status:
             return web.Response(status=self.sessions_status)
-        return web.json_response(self.sessions)
+        out = [dict(s) for s in self.sessions]
+        for s in out:
+            if "to" not in s and self.live_kw:
+                s["energy"] = round(s["energy"] + self.live_kw * (NOW_MS() - s["from"]) / 3_600_000.0, 5)
+        return web.json_response(out)
 
     def _apply(self, did: int, name: str, body: list):
         c = self.conn[did]
@@ -177,8 +193,50 @@ class FakeSmappee:
             self._apply(did, name, body)
         return web.json_response({})
 
+    def revoke_pub_tokens(self):
+        self.pub_tokens.clear()
+
+    async def _pub_token(self, r: web.Request) -> web.Response:
+        self.pub_calls.append("token")
+        if self.pub_status == 429 or self.pub_retry_after:
+            return web.Response(status=429, headers={"Retry-After": self.pub_retry_after or "60"})
+        f = await r.post()
+        if (f.get("grant_type") != "password" or f.get("client_id") != self.client_id or f.get("client_secret") != self.client_secret
+                or f.get("username") != self.username or f.get("password") != self.password):
+            return web.json_response({"error": "invalid_client"}, status=400)
+        tok = secrets.token_hex(16)
+        self.pub_tokens[tok] = time.monotonic() + self.pub_ttl
+        return web.json_response({"access_token": tok, "refresh_token": secrets.token_hex(8), "expires_in": self.pub_ttl, "token_type": "bearer"})
+
+    async def _pub_consumption(self, r: web.Request) -> web.Response:
+        h = r.headers.get("Authorization", "")
+        t = h[7:] if h.startswith("Bearer ") else ""
+        agg = r.query.get("aggregation")
+        self.pub_calls.append("rate" if agg == "1" else "meter" if agg == "5" else f"agg{agg}")
+        if t not in self.pub_tokens or time.monotonic() > self.pub_tokens[t]:
+            return web.Response(status=401)
+        if self.pub_retry_after:
+            return web.Response(status=429, headers={"Retry-After": self.pub_retry_after})
+        if self.pub_status:
+            return web.Response(status=self.pub_status)
+        if r.match_info["loc"] != str(LOC):
+            return web.Response(status=403)
+        if agg == "5":
+            return web.json_response({"serviceLocationId": LOC, "consumptions": [{"timestamp": 1704067200000 + i * 31536000000, "active": b} for i, b in enumerate(self.year_buckets)]})
+        now = NOW_MS()
+        cur = now - now % 300000
+        out = []
+        for k in range(3, -1, -1):
+            c = {"active": self.open_bucket_wh if k == 0 else self.bucket_wh}
+            if not self.no_timestamps:
+                c["timestamp"] = cur - k * 300000
+            out.append(c)
+        return web.json_response({"serviceLocationId": LOC, "consumptions": out})
+
     async def start(self, port=0):
         app = web.Application()
+        app.router.add_post("/dev/v1/oauth2/token", self._pub_token)
+        app.router.add_get("/dev/v3/servicelocation/{loc}/consumption/", self._pub_consumption)
         app.router.add_post("/dashapi/login", self._login)
         app.router.add_get("/api/v11/user/servicelocations", self._locations)
         app.router.add_get("/api/v10/chargingstations/{serial}", self._station)

@@ -41,13 +41,14 @@ def fast(monkeypatch):
     monkeypatch.setattr(eh, "TICK", 3600)
 
 
-async def rig(tmp_path, monkeypatch, fake=None, claim=True):
+async def rig(tmp_path, monkeypatch, fake=None, claim=True, keys=False, budget=None):
     r = Rig(tmp_path)
     hub = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)
     fake = fake or FakeSmappee()
     await fake.start()
     monkeypatch.setattr(smappee, "BASE", f"http://127.0.0.1:{fake.port}")
-    aid = await hub.add_smappee(USERNAME, PASSWORD)
+    monkeypatch.setattr(smappee, "PUB", f"http://127.0.0.1:{fake.port}")
+    aid = await hub.add_smappee(USERNAME, PASSWORD, client_id=fake.client_id if keys else "", client_secret=fake.client_secret if keys else "", budget=budget)
     await eventually(lambda: hub.sm[aid]["online"])
     dids = await hub.claim_smappee(aid) if claim else []
     return r, hub, fake, aid, dids
@@ -148,11 +149,11 @@ def test_the_current_is_unknown_when_the_charger_runs_smart_or_solar():
 def test_the_points_are_valid_huisdev_points_and_only_two_are_writable():
     d = smappee.describe(unit_of())
     p = {x["id"]: x for x in d["points"]}
-    assert list(p) == ["state", "charging", "paused", "current", "session_kwh", "available"]
+    assert list(p) == ["state", "charging", "paused", "current", "session_kwh", "power", "available"]
     assert [i for i, x in p.items() if x["writable"]] == ["paused", "current"] and not d["actions"], "alleen pauzeren en de stroom; geen start en stop"
     assert (p["current"]["min"], p["current"]["max"], p["current"]["step"], p["current"]["unit"], p["state"]["kind"], p["available"]["diag"]) == (6, 32, 1, "A", "enum", True)
     c = eh.clean_descriptor({"proto": "1.0", "rev": d["rev"], "device": {"id": "smappee-5001000042-8101"}, "points": [{**x, "class": x["cls"]} for x in d["points"]], "actions": []})
-    assert len(c["points"]) == 6
+    assert len(c["points"]) == 7
     assert smappee.describe(unit_of(min=6, max=16))["rev"] != d["rev"], "een ander bereik is een andere descriptor"
     assert smappee.describe(unit_of())["rev"] == d["rev"] and d["name"] == "Laadpunt 1" and d["type"] == "Laadpaal"
 
@@ -280,7 +281,7 @@ def test_an_account_is_checked_by_logging_in_and_the_password_is_never_shown(tmp
             await hub.add_smappee(USERNAME, "fout")
         assert hub.smappee_accounts == {} and not (tmp_path / "espdev.json").exists() and fake.bad_logins == 1, "een wachtwoord dat niet werkt wordt niet bewaard, en maar een keer geprobeerd"
         aid = await hub.add_smappee(USERNAME, PASSWORD, name="Thuis")
-        assert aid == smappee.account_id(USERNAME) and hub.smappee_accounts[aid] == {"name": "Thuis", "username": USERNAME, "password": PASSWORD}
+        assert aid == smappee.account_id(USERNAME) and hub.smappee_accounts[aid] == {"name": "Thuis", "username": USERNAME, "password": PASSWORD, "client_id": "", "client_secret": "", "budget": eh.PUB_BUDGET}
         assert json.loads((tmp_path / "espdev.json").read_text(encoding="utf-8"))["smappee"][aid]["password"] == PASSWORD
         await eventually(lambda: hub.sm[aid]["online"])
         shown = json.dumps([hub.smappee_view(), hub.status(), r.engine.snapshot()["smappee"]])
@@ -782,4 +783,376 @@ def test_with_text_ids_the_whole_chain_works(tmp_path, monkeypatch):
         hub2 = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)
         assert hub2.devices[did]["cid"] == f"3f2a-{DEVICE}-b7", "het id als tekst blijft bewaard na een herstart"
         await fake.stop()
+    asyncio.run(go())
+
+
+# ------------------------------------------------------------ verbruik en teller: de officiele API met een budget van 20 verzoeken per uur
+
+
+def bucket(ts, active):
+    return {"timestamp": ts, "active": active}
+
+
+def test_the_meter_is_the_sum_of_all_phases_and_buckets_in_kwh_and_unknown_when_the_answer_is_odd():
+    assert smappee.meter_kwh({"consumptions": [{"active": [1000, 2000, 500]}, {"active": [4000, 3000, 1500]}]}) == 12.0
+    assert smappee.meter_kwh({"consumptions": [{"active": [1500.5]}]}) == 1.5 and smappee.meter_kwh({"consumptions": [{"active": [0, 0, 0]}]}) == 0.0
+    for odd in (None, {}, {"consumptions": "x"}, {"consumptions": []}, {"consumptions": [{}]}, {"consumptions": [{"active": ["a", None, True]}]}, [], 5):
+        assert smappee.meter_kwh(odd) is None, odd
+
+
+def test_the_rate_is_the_newest_finished_five_minute_block_times_twelve_and_sleep_use_is_zero():
+    now = 1_700_000_000_000
+    ts = now - now % 300000
+    cons = [bucket(ts - 900000, [10, 10, 10]), bucket(ts - 600000, [100, 50, 50]), bucket(ts - 300000, [200, 100, 100]), bucket(ts, [1, 0, 0])]
+    assert smappee.rate_w({"consumptions": cons}, now) == 4800.0, "het nieuwste afgeronde blok (400 Wh x 12), niet het blok dat nog loopt"
+    assert smappee.rate_w({"consumptions": [bucket(ts - 300000, [0.1, 0.1, 0.0])]}, now) == 0.0, "onder 0,3 Wh is het slaapverbruik"
+    assert smappee.rate_w({"consumptions": [bucket(ts - 300000, [0.1, 0.1, 0.09])]}, now) == 0.0 and smappee.rate_w({"consumptions": [bucket(ts - 300000, [0.2, 0.1, 0.1])]}, now) == 4.8, "0,3 Wh telt zelf al mee (zoals `d < 0.3` bij JavaLox)"
+    assert smappee.rate_w({"consumptions": [{"active": [10, 20, 30]}, {"active": [99, 99, 99]}]}, now) == 720.0, "zonder tijdstippen het eerste blok, zoals JavaLox"
+    assert smappee.rate_w({"consumptions": [bucket(ts, [10, 10, 10])]}, now) is None, "alleen een blok dat nog loopt: onbekend"
+    for odd in (None, {}, {"consumptions": []}, {"consumptions": [5]}, {"consumptions": [{"active": []}]}, {"consumptions": [{"active": ["x"]}]}, {"consumptions": [{"timestamp": 1}]}):
+        assert smappee.rate_w(odd, now) is None, odd
+
+
+def test_the_budget_counts_requests_in_the_last_hour_keeps_them_over_a_restart_and_never_exceeds_twenty(tmp_path):
+    path = tmp_path / "smappee_budget.json"
+    t = [1_700_000_000.0]
+    b = smappee.Budget(path, "mijn-client-id", 14, clock=lambda: t[0])
+    assert (b.limit, b.used(), b.free(), b.can(14), b.can(15)) == (14, 0, 14, True, False)
+    for _ in range(14):
+        b.spend()
+    assert (b.used(), b.free(), b.can()) == (14, 0, False)
+    assert "mijn-client-id" not in path.read_text(encoding="utf-8"), "het client-id staat als hash in het bestand"
+    again = smappee.Budget(path, "mijn-client-id", 14, clock=lambda: t[0])
+    assert again.used() == 14 and not again.can(), "een herstart vergeet het budget niet"
+    other = smappee.Budget(path, "een-andere-client", 14, clock=lambda: t[0])
+    assert other.used() == 0, "een andere client heeft een eigen telling"
+    t[0] += 1800
+    assert again.used() == 14, "na een half uur tellen ze nog mee"
+    t[0] += 1801
+    assert again.used() == 0 and again.can(14), "na een uur niet meer"
+    assert smappee.Budget(path, "x", 99).limit == 20 and smappee.Budget(path, "x", 0).limit == 1, "nooit meer dan wat Smappee toelaat"
+    path.write_text("kapot", encoding="utf-8")
+    assert smappee.Budget(path, "x", 5).used() == 0, "een kapot bestand houdt niemand tegen"
+
+
+def test_the_default_schedule_stays_well_under_twenty_requests_per_hour():
+    worst = 3600 / eh.PUB_RATE_ACTIVE + 3600 / eh.PUB_METER_EVERY + 2  # laden de hele uur, plus een token of twee
+    assert worst <= eh.PUB_BUDGET <= smappee.PUB_LIMIT == 20, worst
+    assert eh.PUB_RATE_ACTIVE < eh.PUB_RATE_IDLE and eh.PUB_RETRY >= 300 and eh.PUB_HOLD_AUTH >= 3600
+
+
+@pytest.fixture
+def pubfast(monkeypatch):
+    monkeypatch.setattr(eh, "PUB_RATE_ACTIVE", 0.15)
+    monkeypatch.setattr(eh, "PUB_RATE_IDLE", 0.15)
+    monkeypatch.setattr(eh, "PUB_METER_EVERY", 0.3)
+    monkeypatch.setattr(eh, "PUB_RETRY", 0.2)
+    monkeypatch.setattr(eh, "PUB_MIN_GAP", 0.0)
+    monkeypatch.setattr(eh, "PUB_HOLD_RATE", 0.6)
+    monkeypatch.setattr(eh, "PUB_HOLD_MAINT", 0.6)
+
+
+def test_without_the_keys_there_are_no_points_and_not_one_request_to_the_official_api(tmp_path, monkeypatch, pubfast):
+    async def go():
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch)
+        await eventually(lambda: dids[0] in hub.online)
+        ids = {p["id"] for p in hub.devices[DID]["points"]}
+        assert "power" in ids and "meter" not in ids, "het verbruik is geschat uit de sessie; de teller heeft de API nodig voor zijn beginstand"
+        await asyncio.sleep(0.5)
+        assert fake.pub_calls == [] and hub.smappee_view()[0]["pub"] == {"on": False, "error": "", "auth": False, "used": 0, "limit": 0}
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_with_the_keys_the_block_gets_a_rate_in_watts_and_a_meter_in_kwh(tmp_path, monkeypatch, pubfast):
+    async def go():
+        fake = FakeSmappee()
+        fake.charging()  # aan het laden en nog geen sessie: dan geldt het blok van de API
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, fake, keys=True)
+        ref = lambda pid: r.engine.ref_value(f"e:{DID}:{pid}")  # noqa: E731
+        await eventually(lambda: ref("power") == 2400.0 and ref("meter") == 12.0), "200 Wh in een afgerond blok = 2400 W; de teller is 12 kWh"
+        p = {x["id"]: x for x in hub.devices[DID]["points"]}
+        assert (p["power"]["unit"], p["power"]["cls"], p["power"]["state"], p["meter"]["unit"], p["meter"]["cls"], p["meter"]["state"]) == ("W", "power", "measurement", "kWh", "energy", "total_increasing")
+        assert not p["power"]["writable"] and not p["meter"]["writable"]
+        assert fake.pub_calls.count("token") == 1, "een token wordt hergebruikt zolang hij geldig is"
+        fake.bucket_wh = [0.0, 0.0, 0.0]  # de laadpaal doet niets meer
+        fake.year_buckets = [[1000.0, 2000.0, 500.0], [4000.0, 3000.0, 2500.0]]
+        await eventually(lambda: ref("power") == 0.0 and ref("meter") == 13.0, 6)
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_the_budget_is_never_exceeded_and_a_restart_does_not_forget_it(tmp_path, monkeypatch, pubfast):
+    async def go():
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, keys=True, budget=5)
+        await asyncio.sleep(1.5)  # bij deze tijden zou er meer dan 5 keer gevraagd worden
+        assert len(fake.pub_calls) == 5, fake.pub_calls
+        assert hub.smappee_view()[0]["pub"]["used"] == 5 and hub.smappee_view()[0]["pub"]["limit"] == 5
+        assert r.engine.ref_value(f"e:{DID}:meter") == 12.0, "wat al gelezen is blijft bruikbaar"
+        hub.close()
+        hub2 = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)
+        hub2.start()
+        await asyncio.sleep(1.0)
+        assert len(fake.pub_calls) == 5, "na een herstart telt het verbruik van het afgelopen uur nog mee"
+        await shutdown(hub2, fake)
+    asyncio.run(go())
+
+
+def test_too_many_requests_makes_the_add_on_wait_and_say_so(tmp_path, monkeypatch, pubfast):
+    async def go():
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, keys=True)
+        await eventually(lambda: "rate" in fake.pub_calls and "meter" in fake.pub_calls)
+        fake.pub_retry_after = "1"
+        await eventually(lambda: "te veel verzoeken" in hub.smappee_view()[0]["pub"]["error"], 6)
+        n = len(fake.pub_calls)
+        await asyncio.sleep(0.4)
+        assert len(fake.pub_calls) <= n + 1, "niet doorvragen na een 429"
+        fake.pub_retry_after = ""
+        await eventually(lambda: hub.smappee_view()[0]["pub"]["error"] == "", 8)
+        assert DID in hub.online, "het dashboard ging gewoon door"
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_wrong_keys_are_refused_at_once_and_later_ones_are_not_retried(tmp_path, monkeypatch, pubfast):
+    async def go():
+        r = Rig(tmp_path)
+        hub = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)
+        fake = await FakeSmappee().start()
+        monkeypatch.setattr(smappee, "BASE", f"http://127.0.0.1:{fake.port}")
+        monkeypatch.setattr(smappee, "PUB", f"http://127.0.0.1:{fake.port}")
+        with pytest.raises(ModelError, match="zowel de client-id als het secret"):
+            await hub.add_smappee(USERNAME, PASSWORD, client_id="cid-123")
+        with pytest.raises(ModelError, match="budget"):
+            await hub.add_smappee(USERNAME, PASSWORD, client_id="cid-123", client_secret="sec-456", budget=21)
+        with pytest.raises(ModelError, match="verbruik en teller: .*client-id"):
+            await hub.add_smappee(USERNAME, PASSWORD, client_id="cid-123", client_secret="fout")
+        assert hub.smappee_accounts == {} and fake.pub_calls == ["token"], "een keer geprobeerd en niet bewaard"
+        aid = await hub.add_smappee(USERNAME, PASSWORD, client_id="cid-123", client_secret="sec-456")
+        await hub.claim_smappee(aid)
+        await eventually(lambda: "rate" in fake.pub_calls and "meter" in fake.pub_calls)
+        fake.client_secret = "veranderd"
+        fake.revoke_pub_tokens()
+        await eventually(lambda: hub.smappee_view()[0]["pub"]["auth"], 6)
+        n = fake.pub_calls.count("token")
+        await asyncio.sleep(0.8)
+        assert fake.pub_calls.count("token") == n, "onjuiste sleutels worden niet steeds opnieuw geprobeerd"
+        assert "weigert" in hub.smappee_view()[0]["pub"]["error"] and DID in hub.online, "het dashboard blijft werken"
+        hub.close()
+        await fake.stop()
+    asyncio.run(go())
+
+
+def test_a_token_that_expires_is_replaced_once(tmp_path, monkeypatch, pubfast):
+    async def go():
+        fake = FakeSmappee()
+        fake.charging()
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, fake, keys=True)
+        await eventually(lambda: r.engine.ref_value(f"e:{DID}:power") == 2400.0)
+        n = fake.pub_calls.count("token")
+        fake.revoke_pub_tokens()
+        await eventually(lambda: fake.pub_calls.count("token") > n, 6)
+        fake.bucket_wh = [10.0, 10.0, 10.0]
+        await eventually(lambda: r.engine.ref_value(f"e:{DID}:power") == 360.0, 6)
+        assert fake.pub_calls.count("token") == n + 1 and not hub.smappee_view()[0]["pub"]["error"]
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_with_two_connectors_the_rate_and_meter_stay_unknown(tmp_path, monkeypatch, pubfast):
+    async def go():
+        fake = FakeSmappee(connectors=2)
+        fake.charging(DEVICE)
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, fake, keys=True)
+        await eventually(lambda: len(fake.pub_calls) >= 3)
+        await asyncio.sleep(0.3)
+        by = {hub.devices[d]["cid"]: d for d in dids}
+        assert all(r.engine.ref_value(f"e:{d}:meter") is None for d in dids) and r.engine.ref_value(f"e:{by[str(DEVICE)]}:power") is None, "het verbruik van de API geldt voor het hele laadstation: niet aan een laadpunt toe te wijzen"
+        assert r.engine.ref_value(f"e:{by[str(DEVICE2)]}:power") == 0.0, "een laadpunt dat niet laadt gebruikt niets, ook naast een dat wel laadt"
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_a_rate_that_is_too_old_is_unknown(tmp_path, monkeypatch, pubfast):
+    async def go():
+        monkeypatch.setattr(eh, "PUB_STALE_RATE", 0.5)
+        fake = FakeSmappee()
+        fake.charging()
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, fake, keys=True, budget=3)  # token, tarief en teller; daarna geen budget meer
+        await eventually(lambda: r.engine.ref_value(f"e:{DID}:power") == 2400.0)
+        assert r.engine.ref_value(f"e:{DID}:meter") == 12.0
+        await eventually(lambda: r.engine.ref_value(f"e:{DID}:power") is None, 4)
+        assert r.engine.ref_value(f"e:{DID}:meter") == 12.0, "de teller mag ouder zijn"
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_the_meter_is_read_again_when_a_session_has_just_ended(tmp_path, monkeypatch, pubfast):
+    async def go():
+        monkeypatch.setattr(eh, "PUB_METER_EVERY", 3600.0)
+        monkeypatch.setattr(eh, "PUB_RATE_IDLE", 3600.0)
+        monkeypatch.setattr(eh, "PUB_RATE_ACTIVE", 3600.0)
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, keys=True)
+        fake.charging()
+        await eventually(lambda: r.engine.ref_value(f"e:{DID}:charging") is True)
+        await eventually(lambda: fake.pub_calls.count("meter") >= 1)
+        n = fake.pub_calls.count("meter")
+        fake.year_buckets = [[1000.0, 2000.0, 500.0], [4000.0, 3000.0, 3500.0]]
+        fake.set_state(state="IDLE", iec="B1")  # klaar met laden
+        await eventually(lambda: fake.pub_calls.count("meter") == n + 1, 6)
+        await eventually(lambda: r.engine.ref_value(f"e:{DID}:meter") == 14.0, 4)
+        await asyncio.sleep(0.4)
+        assert fake.pub_calls.count("meter") == n + 1, "een keer, niet steeds"
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_the_keys_never_leave_the_add_on_and_can_be_changed_or_removed(tmp_path, monkeypatch, pubfast):
+    async def go():
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, keys=True)
+        saved = json.loads((tmp_path / "espdev.json").read_text(encoding="utf-8"))["smappee"][aid]
+        assert (saved["client_id"], saved["client_secret"], saved["budget"]) == ("cid-123", "sec-456", eh.PUB_BUDGET)
+        shown = json.dumps([hub.smappee_view(), hub.status(), r.engine.snapshot()["smappee"]])
+        assert "sec-456" not in shown and "cid-123" not in shown and PASSWORD not in shown
+        with pytest.raises(ModelError, match="zowel de client-id"):
+            hub.update_smappee(aid, "", client_id="x", client_secret="")
+        with pytest.raises(ModelError, match="budget"):
+            hub.update_smappee(aid, "", budget=0)
+        with pytest.raises(ModelError, match="geef een nieuw"):
+            hub.update_smappee(aid, "")
+        hub.update_smappee(aid, "", budget=7)
+        assert hub.smappee_accounts[aid]["budget"] == 7 and hub.smappee_view()[0]["pub"]["limit"] == 7
+        hub.update_smappee(aid, "", client_id="", client_secret="")  # verbruik en teller weg
+        assert hub.smappee_accounts[aid]["client_id"] == "" and hub.smappee_view()[0]["pub"]["on"] is False
+        await eventually(lambda: "meter" not in {p["id"] for p in hub.devices[DID]["points"] if not p.get("gone")}, 4)
+        n = len(fake.pub_calls)
+        await asyncio.sleep(0.5)
+        assert len(fake.pub_calls) == n, "zonder sleutels geen verzoeken meer"
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_the_keys_and_the_budget_can_be_set_over_the_web_api(tmp_path, monkeypatch, pubfast):
+    from aiohttp.test_utils import TestClient, TestServer
+    from kkaddon import web
+    from kkaddon.settings import Settings
+
+    async def go():
+        r = Rig(tmp_path)
+        hub = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)
+        fake = await FakeSmappee().start()
+        monkeypatch.setattr(smappee, "BASE", f"http://127.0.0.1:{fake.port}")
+        monkeypatch.setattr(smappee, "PUB", f"http://127.0.0.1:{fake.port}")
+        ctx = web.Ctx(Settings(data_dir=tmp_path, key=KEY, key_generated=False, dev_mode=True), r.engine, espdev=hub)
+        c = TestClient(TestServer(web.make_app(ctx)))
+        await c.start_server()
+        try:
+            bad = await c.post("/api/espdev/smappee/account", json={"username": USERNAME, "password": PASSWORD, "client_id": "cid-123", "client_secret": "fout"})
+            assert bad.status == 400 and "client-id" in (await bad.json())["error"]
+            aid = (await (await c.post("/api/espdev/smappee/account", json={"username": USERNAME, "password": PASSWORD, "client_id": "cid-123", "client_secret": "sec-456", "budget": 10})).json())["id"]
+            assert hub.smappee_accounts[aid]["budget"] == 10 and hub.smappee_accounts[aid]["client_id"] == "cid-123"
+            st = await (await c.get("/api/state")).json()
+            assert st["smappee"][0]["pub"]["on"] is True and "sec-456" not in json.dumps(st)
+            assert (await c.put(f"/api/espdev/smappee/account/{aid}", json={"budget": 12})).status == 200 and hub.smappee_accounts[aid]["budget"] == 12
+            assert (await c.put(f"/api/espdev/smappee/account/{aid}", json={"budget": 25})).status == 400
+            assert (await c.put(f"/api/espdev/smappee/account/{aid}", json={"client_id": "nieuw", "client_secret": "geheim"})).status == 200 and hub.smappee_accounts[aid]["client_id"] == "nieuw"
+        finally:
+            await c.close()
+            await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+# ------------------------------------------------------------ verbruik en teller geschat uit de sessie, zonder verzoeken
+
+
+def test_the_power_is_estimated_from_how_the_session_energy_grows():
+    ev = []
+    for i in range(0, 600, 60):  # elke minuut een waarde, 11 kW: 0,1833 kWh per minuut
+        ev = smappee.note_energy(ev, 1000.0 + i, round(i / 3600 * 11, 4))
+    assert len(ev) == 8, "de laatste acht veranderingen"
+    p = smappee.virtual_power(ev, 1000.0 + 540)
+    assert p is not None and abs(p - 11000) < 50
+    assert smappee.virtual_power(ev, 1000.0 + 540 + 300) is None, "de laatste verandering is te oud: de energie groeit niet meer, dan weten we het vermogen niet"
+    assert smappee.virtual_power(ev[:1], 1000.0) is None and smappee.virtual_power([], 5.0) is None
+    assert smappee.virtual_power([(1000.0, 1.0), (1060.0, 1.2)], 1060.0) is None, "minder dan twee minuten tussen de veranderingen: te grof"
+    assert smappee.virtual_power([(1000.0, 1.0), (1200.0, 1.0)], 1200.0) is None and smappee.virtual_power([(1000.0, 1.2), (1200.0, 1.0)], 1200.0) is None, "geen groei: onbekend, niet 0"
+
+
+def test_a_value_that_does_not_change_adds_nothing_and_lumpy_updates_still_give_the_right_power():
+    ev = smappee.note_energy([], 0.0, 1.0)
+    assert smappee.note_energy(ev, 60.0, 1.0) == ev
+    ev = []
+    for i in range(0, 1200, 60):  # Smappee werkt de energie maar elke 5 minuten bij; wij zien het bij de eerstvolgende poll
+        k = round((i // 300) * 300 / 3600 * 7.4, 4)
+        ev = smappee.note_energy(ev, float(i), k)
+    p = smappee.virtual_power(ev, 1140.0)
+    assert p is not None and abs(p - 7400) < 200, "de tijdstippen waarop een waarde voor het eerst gezien is, vallen even ver uiteen als de waarden zelf"
+
+
+def test_the_meter_is_the_api_value_plus_what_the_sessions_added_since():
+    base = {"wall": 1000.0, "key": "k1", "kwh": 2.0}
+    s = lambda key, start, kwh: {"key": key, "start": start, "end": None, "kwh": kwh, "tag": ""}  # noqa: E731
+    assert smappee.virtual_meter(100.0, base, [s("k1", 500.0, 5.5)]) == 103.5, "de sessie die liep: alleen wat erbij kwam"
+    assert smappee.virtual_meter(100.0, base, [s("k2", 1500.0, 4.0), s("k1", 500.0, 2.0)]) == 104.0, "een sessie die na de lezing begon telt helemaal mee"
+    assert smappee.virtual_meter(100.0, base, [s("k0", 100.0, 9.0)]) == 100.0, "een sessie van voor de lezing zit al in de waarde"
+    assert smappee.virtual_meter(100.0, {"wall": 1000.0, "key": None, "kwh": 0.0}, [s("k2", 1500.0, 3.0)]) == 103.0
+    assert smappee.virtual_meter(100.0, base, [s("k1", 500.0, None)]) is None and smappee.virtual_meter(100.0, base, [s("k2", 1500.0, None)]) is None, "een sessie zonder kWh die meetelt: niet te weten"
+    assert smappee.virtual_meter(100.0, base, [s("k1", 500.0, 1.0)]) == 100.0, "daalt de energie, dan telt het niet negatief"
+    assert smappee.virtual_meter(None, base, []) is None and smappee.virtual_meter(100.0, None, []) is None
+
+
+def test_without_a_charge_the_power_is_zero_without_any_request(tmp_path, monkeypatch, pubfast):
+    async def go():
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch)  # geen sleutels
+        await eventually(lambda: r.engine.ref_value(f"e:{DID}:power") == 0.0)
+        for kw in (dict(state="PAUSED", mode="PAUSED"), dict(state="IDLE", mode="NORMAL"), dict(state="STOPPED", connection="DISCONNECTED", iec="A1")):
+            fake.set_state(**kw)
+            await eventually(lambda: r.engine.ref_value(f"e:{DID}:state") is not None)
+            await asyncio.sleep(0.25)
+            assert r.engine.ref_value(f"e:{DID}:power") == 0.0, kw
+        fake.set_state(state="IETS NIEUWS", connection="", iec="")
+        await eventually(lambda: r.engine.ref_value(f"e:{DID}:state") is None)
+        assert r.engine.ref_value(f"e:{DID}:power") is None, "een onbekende status en geen API: onbekend, geen 0"
+        assert fake.pub_calls == []
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_while_charging_the_power_follows_the_session_energy_without_the_api(tmp_path, monkeypatch, pubfast):
+    async def go():
+        monkeypatch.setattr(smappee, "VP_MIN_SPAN", 0.3)
+        monkeypatch.setattr(smappee, "VP_MAX_AGE", 2.0)
+        fake = FakeSmappee()
+        fake.charging()
+        fake.add_session(time.time() - 2, None, 0.0, tag="04AABBCC")
+        fake.live_kw = 11.0  # de energie van de lopende sessie groeit met 11 kW
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, fake)  # geen sleutels
+        await eventually(lambda: (r.engine.ref_value(f"e:{DID}:power") or 0) > 0, 8)
+        await asyncio.sleep(0.6)
+        p = r.engine.ref_value(f"e:{DID}:power")
+        assert p is not None and 8000 < p < 14000, p
+        assert fake.pub_calls == [], "geen verzoeken aan de officiele API nodig"
+        fake.live_kw = 0.0  # de energie groeit niet meer, maar de status zegt nog laden: dan weten we het niet
+        await eventually(lambda: r.engine.ref_value(f"e:{DID}:power") is None, 8)
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_while_charging_the_meter_grows_between_two_reads_of_the_api(tmp_path, monkeypatch, pubfast):
+    async def go():
+        monkeypatch.setattr(eh, "PUB_METER_EVERY", 3600.0)
+        monkeypatch.setattr(eh, "PUB_RATE_ACTIVE", 3600.0)
+        monkeypatch.setattr(eh, "PUB_RATE_IDLE", 3600.0)
+        fake = FakeSmappee()
+        fake.charging()
+        fake.add_session(time.time() - 2, None, 0.0, tag="04AABBCC")
+        fake.live_kw = 36.0  # 0,01 kWh per seconde
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, fake, keys=True)
+        await eventually(lambda: r.engine.ref_value(f"e:{DID}:meter") is not None)
+        first = r.engine.ref_value(f"e:{DID}:meter")
+        await asyncio.sleep(1.0)
+        later = r.engine.ref_value(f"e:{DID}:meter")
+        assert fake.pub_calls.count("meter") == 1, "de API is niet opnieuw gelezen"
+        assert later > first + 0.005, (first, later)  # ongeveer 0,01 kWh per seconde erbij
+        await shutdown(hub, fake)
     asyncio.run(go())

@@ -411,6 +411,8 @@ Smappee heeft geen officiële of lokale API voor de EV Wall: de add-on doet wat 
 | *Gepauzeerd* | **instelbaar**: aan pauzeert, uit hervat |
 | *Stroom* | ampère, **instelbaar** binnen het bereik van het laadpunt (bv. 6 tot 32 A) |
 | *Laatste sessie* | de kWh van de laatste sessie |
+| *Verbruik* | het huidige vermogen in W, **geschat** (zie hieronder) |
+| *Teller* | het totaal in kWh sinds 1 januari 2024, met de sleutels van de API van Smappee (zie hieronder) |
 | *Beschikbaar* | diagnose |
 
 * *Gepauzeerd* en *Stroom* zijn ook **ingangen** op het blok (bv. een module *Getal* voor de stroom). Een ingang doet pas iets als ze **verandert**.
@@ -420,6 +422,14 @@ Smappee heeft geen officiële of lokale API voor de EV Wall: de add-on doet wat 
 * De stand wordt elke **minuut** opgehaald, de sessies elke minuut zolang er geladen of gepauzeerd wordt en anders elke 10 minuten. De stand is die van de cloud: Smappee geeft de live waarden via MQTT, die de add-on niet gebruikt.
 * Het wachtwoord staat alleen in `/data/espdev.json` (0600), nooit in het model, de export of de pagina. Een **onjuist wachtwoord** probeert de add-on niet steeds opnieuw; kies dan *Wachtwoord wijzigen* in het menu.
 * **Let op:** Smappee documenteert deze API niet en kan hem zonder waarschuwing wijzigen. De add-on is getest tegen een nagebootste cloud, niet tegen een echte EV Wall (zie DESIGN.md §39).
+
+**Verbruik en teller** (zoals `getCurrentRate` en `getCurrentMeter` in JavaLox): *+ Module → Smappee (laadpaal) → Teller en verbruik koppelen*, met de **client-id en het secret van de API van Smappee** (dezelfde als in JavaLox; ze staan alleen in `/data/espdev.json`, nooit op de pagina).
+De add-on leest dan `app1pub.smappee.net/dev/v3/servicelocation/<id>/consumption`: de **teller** is de som van alle verbruik sinds 1 januari 2024 en het **verbruik** is het laatste afgeronde blok van 5 minuten × 12.
+* **Hoogstens 20 verzoeken per uur** laat Smappee toe. De add-on houdt een eigen telling bij van het afgelopen uur (ook het token telt mee, en de telling blijft bewaard over een herstart) en doet er standaard hoogstens **14**. Het verbruik wordt elke 6 minuten gevraagd tijdens laden en elke 15 minuten daarbuiten, de teller elke 30 minuten en na het einde van een sessie. Is het budget op, dan wacht hij; bij "te veel verzoeken" of onjuiste sleutels vraagt hij niet door (onjuiste sleutels een uur niet).
+  **Deelt JavaLox dezelfde client, dan delen jullie die 20**: laat de add-on dan minder doen (een lager budget bij *Sleutels wijzigen*) of zet het ophalen in JavaLox uit.
+* **Het verbruik is een schatting** die geen verzoeken kost. Terwijl de laadpaal laadt groeit de energie van de lopende sessie (elke minuut gelezen) en daaruit volgt het vermogen; de teller is de laatste waarde van de API plus wat de sessie sindsdien erbij kreeg. Pas na ongeveer twee minuten laden is er een schatting; zolang die er niet is, of als de energie niet meer verandert terwijl de status nog *Laadt* zegt, geldt het blok van de API of is het verbruik onbekend. Als hij niet laadt is het verbruik 0 (zonder verzoek).
+* De API zelf loopt enkele minuten achter. Het verbruik en de teller gelden voor de **hele servicelocatie** van het laadstation: bij een station met twee laadpunten blijven ze (behalve 0 bij niet laden) onbekend.
+* *Verbruik* is er ook zonder sleutels (geschat uit de sessie); *Teller* heeft de sleutels nodig voor zijn beginstand.
 
 **Sessies per badge en huis**: kies in de zijbalk van het laadpunt *Laadsessies en badges bijhouden*. Dat maakt een **laadpaal-blok** met een log. Elke badge (de tag van je laadpas) hoort bij een **huis**: dat huis krijgt de kWh en de kosten, en de factuur (tabblad *Laden*) splitst daarop.
 Een badge die nog bij geen huis hoort, staat onder *Nog te koppelen*: geef hem een naam en het log van die badge wordt opnieuw toegewezen. Een sessie zonder badge staat in het log als *Zonder badge*. Sessies tellen vanaf het koppelen (of de datum die je bij *Sessies boeken vanaf* zet, tot een week terug) en worden nooit dubbel geboekt.
