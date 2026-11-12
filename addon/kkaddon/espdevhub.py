@@ -45,6 +45,8 @@ SUPPORTED_MAJORS = (1,)
 MAX_DEVICES = 16
 MAX_POINTS, MAX_ACTIONS, MAX_ARGS = 64, 16, 8
 POLL = 3.0  # s
+MAX_BODY = 65536  # bytes; een descriptor is hoogstens 8 KB, een state 4 KB (HUISDEV.md §5)
+HTTP_TIMEOUT = 5  # s totaal per verzoek: een ESP over zwak wifi met een blokkerende webserver is traag
 FAILS = 3  # zo vaak achter elkaar mislukt = offline
 SCAN_EVERY = 60  # s: zolang een apparaat offline is of er niets gevonden is
 FOUND_KEEP = 3600  # s: wat zich zo lang niet meer meldde, verdwijnt uit de keuzelijst
@@ -169,6 +171,23 @@ def clean_descriptor(raw) -> dict | None:
         actions.append({"id": r["id"], "label": _text(r.get("label"), 60) or r["id"], "danger": danger, "confirm": _text(r.get("confirm"), 200) if danger else "", "args": args})
     return {"proto": raw["proto"], "rev": raw["rev"], "id": dev["id"], "type": _text(dev.get("type"), 40), "name": _text(dev.get("name"), 60), "fw": _text(dev.get("fw"), 40),
             "lib": _text(dev.get("lib"), 20), "points": points, "actions": actions}
+
+
+def descriptor_problem(raw) -> str:
+    """Waarom `clean_descriptor` een beschrijving afkeurt, voor de melding aan de gebruiker."""
+    if not isinstance(raw, dict):
+        return "het is geen JSON-object"
+    if not parse_proto(raw.get("proto")):
+        return f"proto ontbreekt of is ongeldig ({raw.get('proto')!r})"
+    rev = raw.get("rev")
+    if not isinstance(rev, str) or not 0 < len(rev) <= 16:
+        return f"rev ontbreekt of is ongeldig ({rev!r})"
+    dev = raw.get("device")
+    if not isinstance(dev, dict):
+        return "het veld device ontbreekt"
+    if not isinstance(dev.get("id"), str) or not ID_RE.match(dev["id"]):
+        return f"device.id is ongeldig ({dev.get('id')!r}; toegestaan: kleine letters, cijfers en streepjes, tot 32 tekens)"
+    return "onbekende reden"
 
 
 def check_value(p: dict, value) -> float | int | bool | str:
@@ -421,15 +440,15 @@ class EspDevHub:
             raise ModelError(f"protocol {f['proto']} wordt niet ondersteund (de add-on kent {CURRENT[0]}.x): werk de add-on of het apparaat bij")
         tmp = {"host": f["ip"], "port": f["port"], "token": ""}
         try:
-            status, raw = await self._call(tmp, "GET", "/huisdev/descriptor", token=False)
-            desc = clean_descriptor(raw) if status == 200 else None
-            if not desc or desc["id"] != hid:
-                raise ModelError("het apparaat geeft geen geldige beschrijving (HUISDEV)")
+            desc = await self._fetch_descriptor(tmp)
+            if desc["id"] != hid:
+                raise ModelError(f"op {f['ip']} meldt zich nu {desc['id']}, niet {hid}: zoek opnieuw")
             if proto_state(desc["proto"]) == "unsupported":
                 raise ModelError(f"protocol {desc['proto']} wordt niet ondersteund")
             token = secrets.token_hex(32)
             status, raw = await self._call(tmp, "POST", "/huisdev/claim", {"token": token}, token=False)
         except EspError as e:
+            log.warning("koppelen van %s (%s:%s) mislukt: %s", hid, f["ip"], f["port"], e)
             raise ModelError(str(e)) from None
         if status == 409:
             raise ModelError(ERRORS["already_claimed"])
@@ -472,23 +491,49 @@ class EspDevHub:
 
     def _session(self) -> aiohttp.ClientSession:
         if self._http is None or self._http.closed:
-            self._http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3))
+            self._http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT))
         return self._http
 
     async def _call(self, dev: dict, method: str, path: str, body=None, token: bool = True) -> tuple[int, dict]:
-        url = f"http://{dev['host']}:{dev['port']}{path}"
-        headers = {"X-Huisdev-Token": dev["token"]} if token and dev.get("token") else {}
-        try:
-            async with self._session().request(method, url, json=body, headers=headers) as r:
-                raw = await r.content.read(65536)
-                status = r.status
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
-            raise EspError(0, "net", f"geen verbinding met {dev['host']}: {e or 'time-out'}") from None
+        status, raw = await self._raw(dev, method, path, body, token)
         try:
             data = json.loads(raw.decode("utf-8")) if raw else {}
         except (ValueError, UnicodeDecodeError):
             data = {}
         return status, data if isinstance(data, dict) else {}
+
+    async def _fetch_descriptor(self, dev: dict) -> dict:
+        """`GET /huisdev/descriptor`, gecontroleerd. Bij een mislukking zegt de fout waarom (HTTP-status, geen JSON, of wat er in de beschrijving mist)."""
+        status, raw = await self._raw(dev, "GET", "/huisdev/descriptor", None, False)
+        if status != 200:
+            raise EspError(status, "descriptor", f"het apparaat antwoordt op /huisdev/descriptor met HTTP {status}")
+        try:
+            j = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise EspError(status, "descriptor", f"het apparaat geeft geen leesbare JSON ({len(raw)} bytes, begint met {raw[:40]!r})") from None
+        desc = clean_descriptor(j)
+        if desc is None:
+            raise EspError(status, "descriptor", f"het apparaat geeft geen geldige beschrijving (HUISDEV): {descriptor_problem(j)}")
+        return desc
+
+    async def _raw(self, dev: dict, method: str, path: str, body=None, token: bool = True) -> tuple[int, bytes]:
+        url = f"http://{dev['host']}:{dev['port']}{path}"
+        headers = {"X-Huisdev-Token": dev["token"]} if token and dev.get("token") else {}
+        try:
+            async with self._session().request(method, url, json=body, headers=headers) as r:
+                # De hele body lezen: `content.read(n)` geeft maar terug wat er op dat moment binnen is, en een ESP stuurt zijn antwoord over
+                # wifi in meerdere TCP-segmenten (een halve descriptor werd "geen geldige beschrijving").
+                parts, size = [], 0
+                async for chunk in r.content.iter_chunked(8192):
+                    size += len(chunk)
+                    if size > MAX_BODY:
+                        raise EspError(0, "net", "antwoord te groot")
+                    parts.append(chunk)
+                raw = b"".join(parts)
+                status = r.status
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+            raise EspError(0, "net", f"geen verbinding met {dev['host']}: {e or 'time-out'}") from None
+        return status, raw
 
     def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -669,10 +714,7 @@ class EspDevHub:
 
     async def _refetch(self, did: str) -> None:
         dev = self.devices[did]
-        status, raw = await self._call(dev, "GET", "/huisdev/descriptor", token=False)
-        desc = clean_descriptor(raw) if status == 200 else None
-        if not desc:
-            raise EspError(status, "descriptor", "het apparaat geeft geen geldige beschrijving")
+        desc = await self._fetch_descriptor(dev)
         if desc["id"] != dev["hid"]:
             raise EspError(0, "descriptor", f"op dit adres zit nu {desc['id']}, niet {dev['hid']}")
         if proto_state(desc["proto"]) == "unsupported":

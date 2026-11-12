@@ -159,7 +159,7 @@ Een verzoek dat het apparaat wel begreep maar inhoudelijk weigert is **geen** pr
   "rev": "1f3a9c02",
   "device": {"id":"poolcontroller-a1b2c3","type":"poolcontroller","name":"Zwembad","fw":"0.3.1","mac":"AA:BB:CC:A1:B2:C3","lib":"1.0.0"},
   "points": [
-    {"id":"ph","label":"pH","kind":"float","decimals":2,"class":"ph","state":"measurement","stale":120000},
+    {"id":"ph","label":"pH","kind":"float","decimals":2,"class":"ph","state":"measurement"},
     {"id":"mode_electro","label":"Elektrolyse","kind":"enum","writable":true,
      "options":[{"v":0,"l":"Uit"},{"v":1,"l":"Handmatig"},{"v":2,"l":"Auto"}]},
     {"id":"alarm_no_flow","label":"Alarm: geen doorstroming","kind":"bool","group":"alarmen"}
@@ -189,7 +189,7 @@ Een verzoek dat het apparaat wel begreep maar inhoudelijk weigert is **geen** pr
 | `group` | string | nee | groepering in het zijpaneel (`alarmen`, `instellingen`, ...) |
 | `class` | string | nee | hint voor Home Assistant (`temperature`, `power`, `energy`, `voltage`, `current`, `ph`, `battery`, ...) |
 | `state` | `measurement` `total_increasing` | nee | hint voor HA-statistieken (kWh-tellers: `total_increasing`) |
-| `stale` | int (ms) | nee | na zoveel ms zonder update geldt de waarde als verouderd. Zet dit op ~2x het verwachte interval |
+| `stale` | int (ms) | nee | na zoveel ms zonder update geldt de waarde als verouderd (de add-on toont hem dan als onbekend). Alleen voor waarden die het apparaat **periodiek** ververst, op ~2x dat interval. Een waarde die alleen bij wijziging komt, krijgt geen `stale` (zie §10) |
 
 Er is **geen** bitveld-type. Een statusbyte of alarmmasker publiceert u als losse `bool`-punten met een `group`.
 
@@ -349,7 +349,9 @@ Vaste volgorde voor Claude:
 4. **Zet eenheden en bereiken** zoals ze op dat moment gelden. Een eenheid die kan wisselen hoort in een dynamisch punt (§9).
 5. **Bepaal wat `danger` is** (§7) en wat voorlopig alleen lezen blijft.
 6. **Kies ids** in snake_case, kort en stabiel: `ph`, `cell_voltage`, `alarm_no_flow`. Niet het label of een volgnummer.
-7. **Zet `stale`** op de waarden die niet continu binnenkomen (de poolcontroller krijgt zijn volledige set ongeveer 1x per minuut).
+7. **Zet `stale` alleen op waarden die periodiek ververst worden.** Stuurt de bron een waarde alleen bij wijziging (de poolcontroller deed dat: pH
+   bleef minstens 14 minuten ongewijzigd en dus onverstuurd), dan zegt de leeftijd niets over of de waarde nog klopt en maakt `stale` hem ten onrechte
+   onbekend. Geen `stale` dan, en meld zelf `null` (`setUnknown`) als de bron wegvalt, bijvoorbeeld na een tijd zonder verbinding met de hardware.
 8. **Zet `diag`** op RSSI, uptime, firmwareversie en andere diagnose.
 
 Wat dit protocol in 1.0 **niet** dekt (zie ook §14): lijsten of tijdreeksen (historie), korte gebeurtenissen die tussen twee
@@ -503,6 +505,7 @@ een bestaand veld anders interpreteren.
 | Versie | Datum | Wijziging |
 |---|---|---|
 | 1.0 | 2026-11-12 | eerste versie |
+| 1.0 (verduidelijking) | 2026-11-12 | Richtlijn voor `stale` aangepast (§5, §10): alleen voor periodiek ververste waarden. Bevinding op echte hardware: de poolcontroller stuurt waarden alleen bij wijziging. Geen protocolwijziging, geen upgrade nodig. |
 
 ### Wijzigingslogboek van de header (`huisdev.h`)
 

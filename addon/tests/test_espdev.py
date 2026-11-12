@@ -197,7 +197,7 @@ def test_claim_refuses_a_device_that_answers_as_another(tmp_path, monkeypatch):
         r, hub, esp, _ = await rig(tmp_path, claim=False, monkeypatch=monkeypatch)
         try:
             esp.hid = "andere-123456"  # op dit adres zit een ander apparaat dan het gevonden is
-            with pytest.raises(ModelError, match="geldige beschrijving"):
+            with pytest.raises(ModelError, match="meldt zich nu andere-123456, niet pool-a1b2c3"):
                 await hub.claim("pool-a1b2c3")
             assert not hub.devices
         finally:
