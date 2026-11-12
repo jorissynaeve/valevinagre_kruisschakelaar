@@ -127,7 +127,7 @@ body.linking .sctab:not(.add) { color: var(--ink); outline: 1px dashed var(--acc
 .bks, .bkbadge { font-size: 11.5px; fill: var(--mute); pointer-events: none; }
 .bkbadge.ok { fill: var(--ok); font-weight: 600; } .bkbadge.bad { fill: var(--bad); font-weight: 600; }
 .bkt { font-size: 12.5px; fill: var(--ink); }
-.lampb .bkt { cursor: pointer; } .bkt.away { fill: var(--accent); font-style: italic; }
+.lampb .bkt { cursor: pointer; } .bkt.away { fill: var(--accent); font-style: italic; } .bkt.act-danger { fill: var(--bad); } /* een actie die een deur opent */
 .ptl { font-size: 11px; fill: var(--mute); pointer-events: none; }
 .stub { font-size: 11.5px; fill: var(--accent); cursor: pointer; }
 .stub:hover { text-decoration: underline; }

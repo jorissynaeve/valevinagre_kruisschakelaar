@@ -352,12 +352,21 @@ moet dus via wifi (of een Nuki Bridge) bij Nuki bereikbaar zijn. Een lokale kopp
 | *Deur open* | alleen met een deursensor |
 | *Batterij* en *Batterij kritiek* | het percentage (als het slot het meldt) en of Nuki de batterij kritiek vindt |
 
-**Bedienen** doe je in de zijbalk van het blok:
+**Bedienen** kan op twee manieren:
 
-* **Vergrendelen** is een gewone knop (en komt als knop in Home Assistant als je het vinkje *ook als entiteiten in Home Assistant* aanzet).
-* **Ontgrendelen**, **Deur vrijgeven (unlatch)**, **Lock 'n' go** en **Unlatch met lock 'n' go** openen de deur en zijn daarom *gevaarlijk*: alleen met de hand, hier, na een bevestiging.
-  Ze staan niet in Home Assistant, een MQTT-opdracht ervoor wordt geweigerd en geen timer, module of routine kan ze starten: een slot heeft in het schema geen ingangen.
+* **Met de hand**, in de zijbalk van het blok. *Vergrendelen* is een gewone knop (en komt als knop in Home Assistant als je het vinkje *ook als entiteiten in Home Assistant* aanzet).
+  *Ontgrendelen*, *Deur vrijgeven (unlatch)*, *Lock 'n' go* en *Unlatch met lock 'n' go* openen de deur: die vragen een bevestiging. Ze staan niet in Home Assistant en een MQTT-opdracht ervoor wordt geweigerd.
+* **Met een ingang op het blok**: onder de punten staat een rij (▶) per actie, de vier die de deur openen in rood. Sluit er een timer, module of ander signaal op aan
+  (in het schema of onder *Ingangen* in de zijbalk) en de actie start als dat signaal van **0 naar 1** gaat. De aansluiting is dan de bevestiging.
   *Unlatch* kent niet elk slot of elke regio (in de VS geeft Nuki daar een fout op): gebruik dan *Ontgrendelen*.
+
+Omdat het een deur is, is een ingang die een actie start **strenger** dan de ingangen van andere apparaten:
+
+* Alleen de overgang **0 naar 1** start. De eerste stand na het aansluiten, na een herstart van de add-on of nadat de bron onbekend was, onthoudt de add-on alleen: een bron die al 1 is, opent niets.
+* Een actie **wacht nooit**. Is er op dat moment geen verbinding met Nuki, dan vervalt hij (een deur die tien minuten later opengaat is erger dan een deur die dicht blijft).
+* Een mislukte actie wordt **niet opnieuw geprobeerd**; de melding staat bij de ingang in de zijbalk.
+* Dezelfde actie start hoogstens eens per **5 seconden**, zodat een bron die flappert de deur niet drie keer opent.
+* Elke actie die een ingang start staat in het logboek van de add-on (*… gestart door …*).
 
 Goed om te weten:
 

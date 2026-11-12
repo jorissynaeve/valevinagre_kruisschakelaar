@@ -539,13 +539,14 @@ function scEspdev(b) {
       <circle class="pt v-${o.type} ${users.length ? '' : 'free'} ${o.value === true ? 'on' : ''}" cx="${b.x + w}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="acout" data-i="${i}"><title>Uitgang ${esc(o.label)}: sleep naar een ingang van een module${o.type === 'bool' ? ' (En, Of), een routine of een ander apparaat' : ' (Groter dan, Kleiner dan)'}</title></circle>
       ${users.map((u, n) => `<text class="stub" x="${b.x + w + 11}" y="${y + 4 + n * 13}" data-sc="go" data-k="${esc(u.key)}">→ ${esc(scCut(u.text, 24))}<title>${esc(u.text)}</title></text>`).join('')}`;
   }).join('');
+  const lone = b.ports.filter((p) => !b.outs.some((o) => o.row === p.row)).map((p) => `<text class="bkt ${p.danger ? 'act-danger' : ''}" x="${b.x + w - 11}" y="${rowY(b, p.row) + 4}" text-anchor="end">${p.action ? '▶ ' : ''}${esc(scCut(p.label, 26))}<title>${p.action ? `Actie ${esc(p.label)}: wordt gestart als de aangesloten bron van 0 naar 1 gaat${p.danger ? ' (dit opent de deur)' : ''}` : esc(p.label)}</title></text>`).join('');
   const note = b.proto_state === 'unsupported' ? 'niet ondersteund' : b.proto_state === 'upgrade' ? 'upgrade' : scHueOut(b) ? 'onbereikbaar' : '';
   return `<g class="bk ac t-espdev ${SC.sel === b.key ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${w}" height="${scH(b)}" rx="8"/>
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${w}" height="${SC_HEAD}" rx="8"/>
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 34))}</text>
     <text class="bkbadge ${b.online ? 'ok' : ''}" x="${b.x + w - 12}" y="${b.y + 18}" text-anchor="end">${b.online ? (note || 'verbonden') : 'offline'}</text>
-    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">${esc(b.tech)}</text>${ins}${outs}</g>`;
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">${esc(b.tech)}</text>${ins}${outs}${lone}</g>`;
 }
 
 function scHueOut(b) { // een Hue-apparaat dat de bridge niet bereikt (een lamp zonder netspanning, een lege batterij): de bridge zelf is wel verbonden
@@ -626,10 +627,12 @@ function scEspdevPanel(b, props) {
   const values = groups.map((g) => `<div class="sub"><b>${esc(g)}</b></div>${pts.filter((p) => (p.group || 'Waarden') === g).map(row).join('')}`).join('');
   const sources = (p) => [...scBlocks().filter((x) => (x.kind === 'timer' && p.kind === 'bool') || (x.kind === 'module' && x.out === (p.kind === 'bool' ? 'bool' : 'number'))).map((x) => ({ key: x.key, name: x.name, out: scOut(x) })),
     ...scAcOuts(p.kind === 'bool' ? 'bool' : 'number').filter((o) => o.block !== b.key)];
-  const ins = b.points.filter((p) => p.writable && !p.danger && p.kind !== 'text' && !p.gone).map((p) => {
+  const inRows = [...b.points.filter((p) => p.writable && !p.danger && p.kind !== 'text' && !p.gone).map((p) => ({ id: p.id, label: p.label, kind: p.kind, input: p.input })),
+    ...b.ports.filter((p) => p.action).map((p) => ({ id: p.name, label: p.label, kind: 'bool', input: p.ref, action: true, danger: p.danger }))]; // een actie start als de bron van 0 naar 1 gaat
+  const ins = inRows.map((p) => {
     const list = sources(p), cur = p.input && !list.some((x) => x.key === p.input) ? scSrc(p.input) : null;
     const all = cur ? [{ ...cur, key: p.input }, ...list] : list;
-    return `<label>${esc(p.label)}</label><select data-esin="${esc(p.id)}"><option value="">niet aangesloten</option>${all.map((x) => `<option value="${esc(x.key)}" ${x.key === p.input ? 'selected' : ''}>${esc(x.name)} (nu ${esc(x.out)})</option>`).join('')}</select>
+    return `<label>${p.action ? '▶ ' : ''}${esc(p.label)}${p.danger ? ' <span class="sub">(opent de deur)</span>' : ''}</label><select data-esin="${esc(p.id)}"><option value="">niet aangesloten</option>${all.map((x) => `<option value="${esc(x.key)}" ${x.key === p.input ? 'selected' : ''}>${esc(x.name)} (nu ${esc(x.out)})</option>`).join('')}</select>
       ${b.last[p.id] ? `<div class="sub">${esc(b.last[p.id])}</div>` : ''}`;
   }).join('');
   const argInput = (a, arg) => {
@@ -643,7 +646,7 @@ function scEspdevPanel(b, props) {
   const users = b.outs.flatMap((o) => scAcUsers(o.ref).map((u) => ({ ...u, label: o.label })));
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scEspState(b))}</span></div>
     <div class="sub">${b.driver === 'nuki'
-    ? `Een Nuki-slot, gelezen en bediend via de Nuki-cloud. <b>Vergrendelen</b> kan hier en vanuit Home Assistant; wat de deur opent (<b>ontgrendelen</b>, <b>deur vrijgeven</b>, <b>lock 'n' go</b>) alleen met de hand, hier, na een bevestiging. Geen timer of module kan een slot openen: er is geen ingang.${b.ha ? ` In Home Assistant staat de stand (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
+    ? `Een Nuki-slot, gelezen en bediend via de Nuki-cloud. <b>Vergrendelen</b> kan hier en vanuit Home Assistant; wat de deur opent (<b>ontgrendelen</b>, <b>deur vrijgeven</b>, <b>lock 'n' go</b>) met de hand, hier, na een bevestiging, of via een <b>ingang</b> op het blok (▶): sluit er een timer of module op aan, dan opent het slot als die van 0 naar 1 gaat. In Home Assistant staan alleen de stand en Vergrendelen.${b.ha ? ` In Home Assistant staat de stand (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
     : b.driver === 'hue'
     ? `Een Philips Hue-apparaat, gelezen en bediend via de bridge. De stand hier komt altijd uit wat de bridge meldt; een lamp die uit de netspanning is, heeft geen bekende stand.${b.ha ? ` In Home Assistant staat het (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
     : b.driver === 'esphome'
@@ -653,7 +656,7 @@ function scEspdevPanel(b, props) {
     ${b.online ? '<div class="sub">Een wijziging gaat meteen naar het apparaat; de stand hier komt altijd uit zijn antwoord.</div>' : ''}
     ${actions ? `<h2>Acties</h2>${actions}` : ''}
     <h2>Ingangen</h2>${ins || '<div class="sub">Geen instelbare punten.</div>'}
-    <div class="sub">Een ingang doet pas iets als ze <b>verandert</b>: na een herstart of als de bron weer bekend wordt, onthoudt ze alleen de stand. Gevaarlijke punten (reset, kalibratie) kun je alleen hier met de hand bedienen.</div>
+    <div class="sub">Een ingang doet pas iets als ze <b>verandert</b>: na een herstart of als de bron weer bekend wordt, onthoudt ze alleen de stand. Gevaarlijke punten (reset, kalibratie) kun je alleen hier met de hand bedienen.${b.driver === 'nuki' ? ' Een <b>actie</b> (▶) start alleen als de bron van <b>0 naar 1</b> gaat, wacht nooit (is er geen verbinding, dan vervalt hij), wordt niet opnieuw geprobeerd en komt hoogstens eens per 5 seconden. Wat een actie startte staat in het logboek van de add-on.' : ''}</div>
     <h2>Uitgangen gaan naar</h2>${users.map((u) => `<div class="sub">${esc(u.label)} → <a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.text)}</a></div>`).join('') || '<div class="sub">Nog nergens. Sleep een uitgang (rechts) naar Groter dan, Kleiner dan, En, Of of een routine.</div>'}
     ${diag.length ? `<h2>Diagnose</h2>${diag.map((p) => `<div class="sub">${esc(p.label)}: ${esc(scEspText(p))}</div>`).join('')}` : ''}
     <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="esdel" data-id="${esc(b.id)}">${b.driver === 'hue' || b.driver === 'nuki' ? 'Van de pagina halen' : 'Loskoppelen'}</button></div>`;

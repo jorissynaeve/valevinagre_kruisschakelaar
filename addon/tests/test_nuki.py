@@ -31,6 +31,7 @@ def fast(monkeypatch):
     monkeypatch.setattr(eh, "NUKI_POLL", 0.1)
     monkeypatch.setattr(eh, "NUKI_BURST", (0.05, 0.1))
     monkeypatch.setattr(eh, "NUKI_BACKOFF", 0.3)
+    monkeypatch.setattr(eh, "ACTION_GAP", 0.1)
     monkeypatch.setattr(eh, "TICK", 3600)
 
 
@@ -365,7 +366,7 @@ def test_a_lock_that_does_not_obey_keeps_its_state(tmp_path, monkeypatch):
     asyncio.run(go())
 
 
-def test_a_slot_has_no_point_to_set_and_nothing_to_wire_into(tmp_path, monkeypatch):
+def test_a_slot_has_no_point_to_set_but_its_actions_are_inputs(tmp_path, monkeypatch):
     async def go():
         r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch)
         await eventually(lambda: A in hub.online)
@@ -376,7 +377,148 @@ def test_a_slot_has_no_point_to_set_and_nothing_to_wire_into(tmp_path, monkeypat
                 hub.update(A, {"inputs": {pid: "t:1"}})
         assert fake.calls == []
         b = next(x for x in schema.view(r.model, r.engine.snapshot())["blocks"] if x["key"] == f"e:{A}")
-        assert b["ports"] == [], "een slot heeft geen ingangen: geen timer of module kan een deur openen"
+        assert [p["name"] for p in b["ports"]] == ["do_lock", "do_unlock", "do_unlatch", "do_lockngo", "do_unlatch_lockngo"], "elke actie is een ingang, alleen die"
+        assert [(p["row"], p["action"], p["danger"], p["type"]) for p in b["ports"]] == [(4, True, False, "bool"), (5, True, True, "bool"), (6, True, True, "bool"), (7, True, True, "bool"), (8, True, True, "bool")]
+        assert b["rows"] == 9 and len(b["outs"]) == 4, "vier punten en daaronder een rij per actie"
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+async def wired(tmp_path, monkeypatch, action="unlock", **kw):
+    """Een slot (A) met een actie aangesloten op een module die we zelf sturen: `flag["v"]` is wat de bron nu zegt (True, False of None)."""
+    r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, **kw)
+    await eventually(lambda: A in hub.online)
+    mod = r.model.add_module("above", "Bron", 20)
+    flag = {"v": False}
+    real = r.engine.ref_value
+    monkeypatch.setattr(r.engine, "ref_value", lambda ref: flag["v"] if ref == f"m:{mod}" else real(ref))
+    hub.update(A, {"inputs": {f"do_{action}": f"m:{mod}"}})
+    return r, hub, fake, flag, mod
+
+
+def posts(fake):
+    return [c[2]["action"] for c in fake.calls if c[0] == "POST"]
+
+
+def test_an_action_input_starts_only_on_a_rise_from_0_to_1(tmp_path, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="kk.espdev")
+
+    async def go():
+        r, hub, fake, flag, mod = await wired(tmp_path, monkeypatch)
+        hub.tick()
+        await asyncio.sleep(0.1)
+        assert posts(fake) == [], "de eerste stand wordt alleen onthouden"
+        flag["v"] = True
+        hub.tick()
+        await eventually(lambda: posts(fake) == [1])
+        for _ in range(3):
+            hub.tick()  # 1 blijft 1: niets opnieuw
+        flag["v"] = False
+        hub.tick()  # 1 naar 0: niets
+        await asyncio.sleep(0.15)
+        assert posts(fake) == [1]
+        assert "verstuurd" in status(hub, A)["last"]["do_unlock"] and "gestart door" in caplog.text, "wat een deur opende staat in het logboek van de add-on"
+        await asyncio.sleep(0.15)  # voorbij ACTION_GAP: een nieuwe stijging doet het opnieuw
+        flag["v"] = True
+        hub.tick()
+        await eventually(lambda: posts(fake) == [1, 1])
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_a_source_that_is_already_1_when_wired_or_after_a_restart_opens_nothing(tmp_path, monkeypatch):
+    async def go():
+        r, hub, fake, flag, mod = await wired(tmp_path, monkeypatch)
+        flag["v"] = True
+        hub.update(A, {"inputs": {"do_unlock": f"m:{mod}", "do_lock": f"m:{mod}"}})  # opnieuw aansluiten: de eerste stand is weer alleen een stand
+        hub.tick()
+        await asyncio.sleep(0.15)
+        assert posts(fake) == [], "een bron die al 1 is bij het aansluiten, opent niets"
+        flag["v"] = None  # onbekend, en daarna weer 1: dat is geen stijging maar een eerste stand
+        hub.tick()
+        flag["v"] = True
+        hub.tick()
+        await asyncio.sleep(0.15)
+        assert posts(fake) == []
+        hub.close()
+        hub2 = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)  # een herstart met de bron op 1
+        hub2.start()
+        await eventually(lambda: A in hub2.online)
+        hub2.tick()
+        await asyncio.sleep(0.15)
+        assert posts(fake) == [] and hub2.devices[A]["inputs"] == {"do_unlock": f"m:{mod}", "do_lock": f"m:{mod}"}, "de aansluiting blijft, maar een herstart opent geen deur"
+        await shutdown(hub2, fake)
+    asyncio.run(go())
+
+
+def test_an_action_never_waits_for_a_connection_and_never_retries(tmp_path, monkeypatch):
+    async def go():
+        r, hub, fake, flag, mod = await wired(tmp_path, monkeypatch, action="unlatch")
+        hub.tick()
+        port = fake.port
+        await fake.stop()
+        await eventually(lambda: A not in hub.online)
+        flag["v"] = True
+        hub.tick()
+        assert "vervalt" in status(hub, A)["last"]["do_unlatch"] and posts(fake) == []
+        await fake.start(port)
+        await eventually(lambda: A in hub.online, 8)
+        for _ in range(5):
+            hub.tick()
+            await asyncio.sleep(0.05)
+        assert posts(fake) == [], "een deur die tien minuten later opengaat is erger dan een deur die dicht blijft: de opdracht is vervallen"
+        # een mislukking wordt niet opnieuw geprobeerd
+        flag["v"] = False
+        hub.tick()
+        await asyncio.sleep(0.15)
+        fake.status_next, fake.status_code = 1, 400
+        flag["v"] = True
+        hub.tick()
+        await eventually(lambda: "niet opnieuw geprobeerd" in status(hub, A)["last"].get("do_unlatch", ""))
+        for _ in range(5):
+            hub.tick()
+            await asyncio.sleep(0.05)
+        assert posts(fake) == [3], "precies een poging (de mislukte): geen herhaling"
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_a_source_that_flaps_does_not_open_the_door_three_times(tmp_path, monkeypatch):
+    async def go():
+        monkeypatch.setattr(eh, "ACTION_GAP", 5.0)
+        r, hub, fake, flag, mod = await wired(tmp_path, monkeypatch, action="unlock")
+        hub.tick()
+        for v in (True, False, True, False, True):
+            flag["v"] = v
+            hub.tick()
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.2)
+        assert posts(fake) == [1] and "minder dan 5 s" in status(hub, A)["last"]["do_unlock"]
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_an_action_input_checks_what_is_connected(tmp_path, monkeypatch):
+    async def go():
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch)
+        await eventually(lambda: A in hub.online and B in hub.online)
+        number = r.model.add_module("above", "Getal", 20)
+        r.model.set_module(number, inputs={"a": f"e:{B}:battery"})
+        with pytest.raises(ModelError, match="0 of 1"):
+            hub.update(A, {"inputs": {"do_unlock": f"e:{B}:battery"}})  # een getal start geen actie
+        with pytest.raises(ModelError, match="niet te koppelen"):
+            hub.update(A, {"inputs": {"do_reboot": f"m:{number}"}})  # een actie die er niet is
+        with pytest.raises(ModelError, match="niet bestaat"):
+            hub.update(A, {"inputs": {"do_unlock": "m:nergens"}})
+        with pytest.raises(ModelError, match="zichzelf"):
+            hub.update(A, {"inputs": {"do_unlock": f"e:{A}:locked"}})
+        hub.update(A, {"inputs": {"do_unlock": f"e:{B}:door_open", "do_lock": f"m:{number}"}})
+        assert set(hub.devices[A]["inputs"]) == {"do_unlock", "do_lock"}
+        hub.update(A, {"inputs": {"do_unlock": None}})
+        assert set(hub.devices[A]["inputs"]) == {"do_lock"}, "weghalen kan"
+        b = next(x for x in schema.view(r.model, r.engine.snapshot())["blocks"] if x["key"] == f"e:{A}")
+        assert {p["name"]: p["ref"] for p in b["ports"]}["do_lock"] == f"m:{number}" and fake.calls == []
         await shutdown(hub, fake)
     asyncio.run(go())
 
@@ -485,6 +627,8 @@ def test_web_api_adds_claims_confirms_and_removes(tmp_path, monkeypatch):
             assert (await c.post(f"/api/espdev/{A}/do", json={"action": "unlock", "confirm": True})).status == 200
             assert [c_[2]["action"] for c_ in fake.calls] == [1]
             assert (await c.put(f"/api/espdev/{A}", json={"host": "1.2.3.4"})).status == 400
+            assert (await c.put(f"/api/espdev/{A}", json={"inputs": {"do_unlock": f"e:{B}:door_open"}})).status == 200 and hub.devices[A]["inputs"] == {"do_unlock": f"e:{B}:door_open"}
+            assert (await c.put(f"/api/espdev/{A}", json={"inputs": {"do_unlock": f"e:{B}:battery"}})).status == 400
             assert (await c.delete(f"/api/espdev/nuki/account/{aid}")).status == 200 and hub.accounts == {} and hub.devices == {}
             assert all(k not in r.model.schema["blocks"] for k in res["keys"]) and (await c.delete(f"/api/espdev/nuki/account/{aid}")).status == 404
         finally:

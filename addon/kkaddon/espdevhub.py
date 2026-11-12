@@ -73,6 +73,8 @@ NUKI_POLL = 30.0  # s: Nuki laat 100 verzoeken per minuut en 1000 per uur toe pe
 NUKI_BURST = (2.0, 6.0, 15.0)  # s: na een opdracht (die Nuki asynchroon uitvoert) snel nog een paar keer kijken
 NUKI_BACKOFF = 90.0  # s wachten na "te veel verzoeken"
 LID_RE = re.compile(r"^[0-9]{1,20}$")
+ACT_PREFIX = "do_"  # in `dev["inputs"]`: een ingang die een actie start (do_unlock), naast de ingangen die een punt instellen
+ACTION_GAP = 5.0  # s: een actie die een ingang start, hoogstens zo vaak (een bron die flappert opent geen deur drie keer)
 
 KINDS = ("bool", "int", "float", "enum", "text")
 ID_RE = re.compile(r"^[a-z0-9-]{1,32}$")
@@ -283,6 +285,7 @@ class EspDevHub:
         self.seen: dict[str, dict] = {}  # did -> {punt: laatst gevolgde stand van de ingang}
         self._failed: dict[tuple[str, str], float] = {}
         self._inflight: set[tuple[str, str]] = set()
+        self._act_last: dict[tuple[str, str], float] = {}  # (did, actie) -> wanneer een ingang hem het laatst startte
         self.last: dict[str, dict] = {}  # did -> {punt: wat er laatst gebeurde}, voor de zijbalk
         self.es: dict[str, dict] = {}  # did -> wat de eventstroom van een ESPHome-toestel tot nu bracht (esphome.py)
         self.bridges: dict[str, dict] = {}  # Hue-bridges: id -> {name, host, port, key, fp, bridge_id}; de sleutel staat alleen in dit bestand (hue.py)
@@ -480,7 +483,8 @@ class EspDevHub:
         new = dict(dev["inputs"])
         m = self.engine.model
         for pid, ref in b.items():
-            p = self._by_id(dev, pid) if isinstance(pid, str) else None
+            act = self._wired_action(dev, pid) if isinstance(pid, str) else None
+            p = {"id": pid, "label": act["label"], "kind": "bool", "writable": True, "danger": False} if act else self._by_id(dev, pid) if isinstance(pid, str) else None
             if ref in (None, ""):
                 new.pop(pid, None)
                 continue
@@ -1612,6 +1616,10 @@ class EspDevHub:
         for did, dev in self.devices.items():
             mem = self.seen.setdefault(did, {})
             for pid, ref in list(dev["inputs"].items()):
+                act = self._wired_action(dev, pid)
+                if act is not None:
+                    self._tick_action(did, dev, pid, act, ref, mem, now)
+                    continue
                 p = self._by_id(dev, pid)
                 if not p or not p["writable"] or p["danger"] or p["kind"] == "text" or p.get("gone"):
                     continue
@@ -1633,6 +1641,53 @@ class EspDevHub:
                     continue
                 self._inflight.add((did, pid))
                 asyncio.get_running_loop().create_task(self._send_input(did, pid, p, v))
+
+    @staticmethod
+    def _wired_action(dev: dict, key: str) -> dict | None:
+        """De actie achter een ingang `do_<actie>`: alleen bij een Nuki-slot en zonder argumenten (een actie met een argument kent geen 0/1)."""
+        if dev["driver"] != "nuki" or not key.startswith(ACT_PREFIX):
+            return None
+        a = next((x for x in dev["actions"] if x["id"] == key[len(ACT_PREFIX):]), None)
+        return a if a and not a["args"] else None
+
+    def _tick_action(self, did: str, dev: dict, key: str, act: dict, ref: str, mem: dict, now: float) -> None:
+        """Een ingang die een actie start. Strenger dan een ingang die een punt instelt, want het kan een deur zijn:
+        - alleen bij de overgang van 0 naar 1; de eerste stand (na een herstart, of na onbekend) en 1 naar 0 doen niets;
+        - een actie wacht nooit: is het apparaat niet bereikbaar, dan vervalt hij (een deur die tien minuten later opengaat is erger dan een deur die dicht blijft);
+        - nooit opnieuw proberen na een mislukking, en hoogstens eens per `ACTION_GAP`."""
+        raw = self.engine.ref_value(ref)
+        v = raw if isinstance(raw, bool) else None
+        if v is None:
+            mem.pop(key, None)
+            return
+        was = mem.get(key)
+        mem[key] = v
+        if was is not False or v is not True:
+            return
+        label, last = act["label"], self.last.setdefault(did, {})
+        if now - self._act_last.get((did, act["id"]), -1e9) < ACTION_GAP:
+            last[key] = f"{label}: niet verstuurd (de vorige keer was minder dan {int(ACTION_GAP)} s geleden)"
+            self._poke()
+            return
+        if did not in self.online:
+            last[key] = f"{label}: niet verstuurd, want er is geen verbinding; de opdracht vervalt"
+            self._poke()
+            return
+        self._act_last[(did, act["id"])] = now
+        asyncio.get_running_loop().create_task(self._send_action_input(did, dev, key, act, ref))
+
+    async def _send_action_input(self, did: str, dev: dict, key: str, act: dict, ref: str) -> None:
+        label = act["label"]
+        try:
+            await self.do(did, act["id"], confirm=True)  # de aansluiting is de bevestiging
+            self.last.setdefault(did, {})[key] = f"{label}: verstuurd"
+            log.info("%s: %s gestart door %s", dev["name"], label, ref)  # een spoor van elke deur die een ingang opent
+            self.engine._emit("espdev", what="action", device=did, action=act["id"], log=False)
+        except ModelError as e:
+            self.last.setdefault(did, {})[key] = f"{label}: niet verstuurd ({e}); niet opnieuw geprobeerd"
+            log.warning("%s: %s door %s mislukte: %s", dev["name"], label, ref, e)
+        finally:
+            self._poke()
 
     async def _send_input(self, did: str, pid: str, p: dict, v) -> None:
         label = p["label"]
