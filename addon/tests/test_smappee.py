@@ -859,7 +859,7 @@ def test_without_the_keys_there_are_no_points_and_not_one_request_to_the_officia
         ids = {p["id"] for p in hub.devices[DID]["points"]}
         assert "power" in ids and "meter" not in ids, "het verbruik is geschat uit de sessie; de teller heeft de API nodig voor zijn beginstand"
         await asyncio.sleep(0.5)
-        assert fake.pub_calls == [] and hub.smappee_view()[0]["pub"] == {"on": False, "error": "", "auth": False, "used": 0, "limit": 0}
+        assert fake.pub_calls == [] and hub.smappee_view()[0]["pub"] == {"on": False, "error": "", "auth": False, "used": 0, "limit": 0, "detail": {}}
         await shutdown(hub, fake)
     asyncio.run(go())
 
@@ -1154,5 +1154,45 @@ def test_while_charging_the_meter_grows_between_two_reads_of_the_api(tmp_path, m
         later = r.engine.ref_value(f"e:{DID}:meter")
         assert fake.pub_calls.count("meter") == 1, "de API is niet opnieuw gelezen"
         assert later > first + 0.005, (first, later)  # ongeveer 0,01 kWh per seconde erbij
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_the_meter_counts_only_the_first_three_values_of_active_like_javalox():
+    """JavaLox telt per blok `active.get(0..2)`; wat daarna in de lijst staat telt niet mee."""
+    data = {"consumptions": [{"active": [1000, 2000, 500, 9_000_000, 9_000_000]}, {"active": [4000, 3000, 1500, 7_000_000]}]}
+    assert smappee.meter_kwh(data) == 12.0
+    sh = smappee.shape_of(data, 1_700_000_000_000)
+    assert sh["buckets"] == 2 and sh["active_len"] == 5 and sh["kwh_first3"] == 12.0 and sh["kwh_all"] == 25012.0, "de diagnose laat het verschil zien"
+    assert sh["newest_age_s"] is None
+    assert smappee.shape_of({"consumptions": [{"timestamp": 1_699_999_940_000, "active": [1, 2, 3]}]}, 1_700_000_000_000)["newest_age_s"] == 60
+    assert smappee.shape_of(None, 0) == {"buckets": None} and smappee.shape_of({"consumptions": [5, {}]}, 0)["active_len"] == 0
+
+
+def test_the_diagnosis_gives_raw_words_and_numbers_but_no_ids_names_or_badges():
+    u = unit_of(state="CHARGING", iec="C1", pct=40)
+    d = smappee.diagnose(u, [{"key": "1", "start": 1000.0, "end": None, "kwh": 2.5, "tag": "04AABBCC"}, {"key": "0", "start": 100.0, "end": 900.0, "kwh": None, "tag": ""}], [(10.0, 1.0), (70.0, 1.2)], 100.0, 1600.0)
+    assert d == {"chargingState": "CHARGING", "connection": "CONNECTED", "iec": "C1", "mode": "NORMAL", "strategy": "NONE", "pct": 40, "state": smappee.S_CHARGING,
+                 "sessions": [{"ago_min": 10, "running": True, "kwh": 2.5, "badge": True}, {"ago_min": 25, "running": False, "kwh": None, "badge": False}], "events": [{"ago_s": 90, "kwh": 1.0}, {"ago_s": 30, "kwh": 1.2}]}
+    assert "04AABBCC" not in json.dumps(d) and str(DEVICE) not in json.dumps(d) and "Laadpunt" not in json.dumps(d)
+    assert smappee.diagnose({"dev": {}}, [], [], 0.0, 0.0)["state"] is None
+
+
+def test_the_view_shows_what_smappee_said_and_where_the_meter_comes_from(tmp_path, monkeypatch, pubfast):
+    async def go():
+        fake = FakeSmappee()
+        fake.charging()
+        fake.add_session(time.time() - 120, None, 1.5, tag="04AABBCC")
+        fake.year_buckets = [[1000.0, 2000.0, 500.0, 99999.0], [4000.0, 3000.0, 1500.0, 99999.0]]
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, fake, keys=True)
+        await eventually(lambda: hub.smappee_view()[0]["pub"]["detail"].get("meter_api") == 12.0 and hub.smappee_view()[0]["pub"]["detail"].get("rate_api") is not None)
+        v = hub.smappee_view()[0]
+        d = v["pub"]["detail"]
+        assert d["meter"]["active_len"] == 4 and d["meter"]["kwh_first3"] == 12.0 and d["meter"]["kwh_all"] == 211.998 and d["rate"]["buckets"] == 4
+        assert d["meter_shown"] >= 12.0 and d["rate_api"] == 2400.0
+        u = v["units"][0]["diag"]
+        assert u["chargingState"] == "CHARGING" and u["sessions"][0]["running"] is True and u["sessions"][0]["badge"] is True
+        shown = json.dumps([v, r.engine.snapshot()["smappee"]])
+        assert "04AABBCC" not in shown and "sec-456" not in shown and "cid-123" not in shown and PASSWORD not in shown
         await shutdown(hub, fake)
     asyncio.run(go())

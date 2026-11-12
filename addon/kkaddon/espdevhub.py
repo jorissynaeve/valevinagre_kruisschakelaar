@@ -2050,6 +2050,19 @@ class EspDevHub:
             meter = est if est is not None else p["meter"]
         return power, meter
 
+    def _smappee_detail(self, st: dict, pub: dict | None) -> dict:
+        """Wat de officiele API gaf (getallen), en waar de teller van nu uit bestaat: de waarde van de API en wat de sessies sindsdien erbij kregen."""
+        if not pub:
+            return {}
+        out = {}
+        for loc, p in pub["loc"].items():
+            u = next((x for x in st["units"].values() if x["loc"] == loc and x.get("only")), None)
+            _power, meter = self._smappee_pubvals(st, u) if u else (None, None)
+            out = {"rate": p.get("diag_rate"), "meter": p.get("diag_meter"), "meter_api": p["meter"], "meter_shown": meter, "rate_api": p["rate"],
+                   "meter_age_s": int(time.monotonic() - p["meter_at"]) if p["meter_at"] is not None else None, "rate_age_s": int(time.monotonic() - p["rate_at"]) if p["rate_at"] is not None else None}
+            break
+        return out
+
     async def _smappee_pub_read(self, pub: dict, acc: dict, budget: smappee.Budget, loc: str, aggregation: int, frm_ms: int) -> object | None:
         """Een keer lezen bij de officiele API, binnen het budget (het token en het verzoek tellen allebei). Geeft de JSON, of None als er geen budget is."""
         for attempt in (0, 1):
@@ -2118,6 +2131,7 @@ class EspDevHub:
                 if data is None:  # geen budget meer dit uur: straks opnieuw
                     break
                 at = time.monotonic()
+                p[f"diag_{kind}"] = smappee.shape_of(data, time.time() * 1000)
                 if kind == "rate":
                     p["rate"], p["rate_at"], p["next_rate"] = smappee.rate_w(data, time.time() * 1000), at, at + (PUB_RATE_ACTIVE if active else PUB_RATE_IDLE)
                 else:
@@ -2215,11 +2229,13 @@ class EspDevHub:
             have = {f"{v['sid']}:{v['cid']}": k for k, v in self.devices.items() if v["driver"] == "smappee" and v["account"] == aid}
             units = []
             for key, u in st["units"].items():
-                units.append({"key": key, "serial": u["serial"], "cid": u["id"], "hid": smappee.hid_of(u["serial"], u["id"]), "name": smappee.describe(u)["name"], "id": have.get(key), "claimed": key in have})
+                units.append({"key": key, "serial": u["serial"], "cid": u["id"], "hid": smappee.hid_of(u["serial"], u["id"]), "name": smappee.describe(u)["name"], "id": have.get(key), "claimed": key in have,
+                              "diag": smappee.diagnose(u, st["sessions"].get(key) or [], ((st.get("energy") or {}).get(key) or {}).get("events") or [], time.monotonic(), time.time())})
             pub = st.get("pub")
             b = self._smappee_budget(acc) if acc.get("client_id") else None
             out.append({"id": aid, "name": acc["name"], "online": st["online"], "error": st["error"], "auth": st["auth"], "units": sorted(units, key=lambda x: (x["name"].lower(), x["key"])),
-                        "pub": {"on": bool(acc.get("client_id")), "error": pub["error"] if pub else "", "auth": bool(pub and pub["auth"]), "used": b.used() if b else 0, "limit": b.limit if b else 0}})
+                        "pub": {"on": bool(acc.get("client_id")), "error": pub["error"] if pub else "", "auth": bool(pub and pub["auth"]), "used": b.used() if b else 0, "limit": b.limit if b else 0,
+                                "detail": self._smappee_detail(st, pub)}})
         return out
 
     async def _refetch(self, did: str) -> None:

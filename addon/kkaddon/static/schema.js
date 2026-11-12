@@ -559,12 +559,23 @@ function scEspState(b) {
   return b.error || 'verbinden…';
 }
 
+function scSmappeeDiag(ac, b) { // wat de lader en de API nu zeggen, voor wie een waarde niet vertrouwt (geen id's, namen of badges)
+  const u = ac && (ac.units || []).find((x) => x.id === b.id), d = u && u.diag, det = ac && ac.pub && ac.pub.on ? ac.pub.detail || {} : null;
+  if (!d) return '';
+  const n = (v, u2 = '') => (v == null ? '—' : `${v}${u2}`);
+  const sess = d.sessions.map((s) => `${s.running ? 'loopt' : 'klaar'} sinds ${s.ago_min} min · ${n(s.kwh, ' kWh')}${s.badge ? ' · badge' : ' · geen badge'}`).join('<br>') || 'geen';
+  const ev = d.events.map((e) => `${e.ago_s} s geleden ${e.kwh} kWh`).join('<br>') || 'geen veranderingen gezien (zonder lopende sessie of zonder groei kan het verbruik niet geschat worden)';
+  const api = det ? `<br><b>API</b>: teller ${n(det.meter_api, ' kWh')} (gelezen ${n(det.meter_age_s, ' s')} geleden), getoond ${n(det.meter_shown, ' kWh')}; blokken van 5 min: ${n(det.rate && det.rate.buckets)}, nieuwste ${n(det.rate && det.rate.newest_age_s, ' s')} oud, verbruik van de API ${n(det.rate_api, ' W')}; teller: ${n(det.meter && det.meter.buckets)} blokken, ${n(det.meter && det.meter.active_len)} waarden per blok, som van de eerste drie ${n(det.meter && det.meter.kwh_first3, ' kWh')} tegenover alle ${n(det.meter && det.meter.kwh_all, ' kWh')}` : '';
+  return `<details class="sub"><summary>Diagnose: wat Smappee zegt</summary><b>Lader</b>: chargingState <code>${esc(d.chargingState || '—')}</code>, verbinding <code>${esc(d.connection || '—')}</code>, IEC <code>${esc(d.iec || '—')}</code>, modus <code>${esc(d.mode || '—')}</code>, strategie <code>${esc(d.strategy || '—')}</code>, limiet ${n(d.pct, ' %')}<br><b>Sessies</b>:<br>${sess}<br><b>Sessie-energie</b>:<br>${ev}${api}</details>`;
+}
+
 function scEspProto(b) {
   if (b.driver === 'smappee') {
     const ac = (S.smappee || []).find((x) => x.id === b.account);
     return `<div class="sub">Account <b>${esc(ac ? ac.name : b.account)}</b> bij Smappee (cloud, <code>dashboard.smappee.net</code>).${ac && ac.error ? ` ${esc(ac.error)}.` : ''} De stand wordt elke minuut opgehaald en na een opdracht snel nog een paar keer; Smappee heeft geen officiële API en kan dit zonder waarschuwing veranderen.</div>
       ${ac && ac.auth ? `<div class="row"><button class="btn small danger" type="button" data-sc="smappeepw" data-account="${esc(b.account)}">Nieuw wachtwoord invoeren</button><span class="sub">de add-on probeert een onjuist wachtwoord niet steeds opnieuw</span></div>` : ''}
       <div class="sub">${ac && ac.pub && ac.pub.on ? `<b>Teller</b> (kWh, totaal sinds 1 januari 2024) en <b>Verbruik</b> komen van de officiële API van Smappee, binnen ${ac.pub.limit} verzoeken per uur (nu ${ac.pub.used} gebruikt)${ac.pub.error ? `: ${esc(ac.pub.error)}` : ''}. Terwijl hij laadt wordt het verbruik geschat uit de groei van de sessie en de teller loopt mee; zonder laden is het verbruik 0. Het zijn schattingen; de API zelf loopt enkele minuten achter.` : 'Het <b>Verbruik</b> wordt geschat uit de groei van de laadsessie (0 als hij niet laadt). Voor de <b>Teller</b> (totaal) is de API van Smappee nodig: kies in het menu (+ Module → Smappee) <i>Teller en verbruik koppelen</i>.'}</div>
+      ${scSmappeeDiag(ac, b)}
       <div class="row"><button class="btn small" type="button" data-sc="smappeecharge" data-id="${esc(b.id)}" ${scBlocks().some((x) => x.kind === 'charge' && x.espdev === b.id) ? 'disabled' : ''}>Laadsessies en badges bijhouden</button><span class="sub">maakt er een laadpaal-blok van met een log per badge en huis</span></div>
       <div class="row"><label class="chk" title="Zet dit alleen aan als je de waarden ook via deze add-on in Home Assistant wilt."><input type="checkbox" data-esha ${b.ha ? 'checked' : ''}> ook als entiteiten in Home Assistant</label></div>`;
   }

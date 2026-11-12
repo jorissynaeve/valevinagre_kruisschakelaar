@@ -634,14 +634,14 @@ def virtual_meter(meter: float | None, base: dict | None, sessions: list) -> flo
 
 
 def meter_kwh(data: Any) -> float | None:
-    """De teller: de som van `active` (de drie fasen, Wh) over alle blokken van `consumption`, als kWh. Onbekend (None) als het antwoord niet de vorm heeft die we kennen."""
+    """De teller: de som van de eerste drie waarden van `active` (de drie fasen, Wh, zoals JavaLox) over alle blokken van `consumption`, als kWh. Onbekend (None) als het antwoord niet de vorm heeft die we kennen."""
     cons = data.get("consumptions") if isinstance(data, dict) else None
     if not isinstance(cons, list):
         return None
     total, seen = 0.0, False
     for c in cons:
         act = c.get("active") if isinstance(c, dict) else None
-        for v in act if isinstance(act, list) else []:
+        for v in act[:3] if isinstance(act, list) else []:
             x = _num(v)
             if x is not None:
                 total, seen = total + x, True
@@ -712,3 +712,37 @@ async def pub_consumption(session: aiohttp.ClientSession, token: str, loc: str, 
     except (ValueError, UnicodeDecodeError):
         data = {}
     return status, data
+
+
+# ------------------------------------------------------------ wat Smappee gaf, voor wie een waarde niet vertrouwt (geen id's, namen of badges)
+
+def shape_of(data: Any, now_ms: float) -> dict:
+    """Een antwoord van `consumption` in getallen: hoeveel blokken, hoeveel waarden per blok in `active`, hoe oud het nieuwste blok is, en de som van alleen de eerste drie waarden tegenover de som van alle (kWh).
+    Zo is te zien of de lijst meer dan de drie fasen bevat, en of de data achterloopt."""
+    cons = data.get("consumptions") if isinstance(data, dict) else None
+    if not isinstance(cons, list):
+        return {"buckets": None}
+    lens, ts, s3, sall = [], [], 0.0, 0.0
+    for c in cons:
+        if not isinstance(c, dict):
+            continue
+        act = c.get("active") if isinstance(c.get("active"), list) else []
+        lens.append(len(act))
+        t = _num(c.get("timestamp"))
+        if t is not None:
+            ts.append(t)
+        s3 += sum(x for x in (_num(v) for v in act[:3]) if x is not None)
+        sall += sum(x for x in (_num(v) for v in act) if x is not None)
+    return {"buckets": len(cons), "active_len": max(lens) if lens else 0, "newest_age_s": int((now_ms - max(ts)) / 1000) if ts else None,
+            "kwh_first3": round(s3 / 1000.0, 3), "kwh_all": round(sall / 1000.0, 3)}
+
+
+def diagnose(unit: dict, sess: list, events: list, now_mono: float, now_wall: float) -> dict:
+    """Wat de lader en de sessielijst nu zeggen, in woorden en getallen: de ruwe statuswoorden, de laatste sessies (hoe lang geleden, of ze lopen, kWh, of er een badge was) en de veranderingen van de sessie-energie
+    waaruit het verbruik geschat wordt. Zonder id's, namen of badges."""
+    dev = unit["dev"]
+    car = dev.get("carCharger") if isinstance(dev.get("carCharger"), dict) else {}
+    return {"chargingState": str(prop_named(dev.get("properties"), "chargingState") or "")[:30], "connection": str(car.get("connectionStatus") or "")[:20], "iec": str(car.get("iecStatus") or "")[:10],
+            "mode": str(car.get("chargingMode") or "")[:20], "strategy": strategy(dev), "pct": percentage_of(dev), "state": state_of(dev),
+            "sessions": [{"ago_min": round((now_wall - s["start"]) / 60), "running": s["end"] is None, "kwh": s["kwh"], "badge": bool(s["tag"])} for s in sess[:3]],
+            "events": [{"ago_s": round(now_mono - t), "kwh": k} for t, k in events[-4:]]}
