@@ -566,7 +566,9 @@ function scSmappeeDiag(ac, b) { // wat de lader en de API nu zeggen, voor wie ee
   const sess = d.sessions.map((s) => `${s.running ? 'loopt' : 'klaar'} sinds ${s.ago_min} min · ${n(s.kwh, ' kWh')}${s.badge ? ' · badge' : ' · geen badge'}`).join('<br>') || 'geen';
   const ev = d.events.map((e) => `${e.ago_s} s geleden ${e.kwh} kWh`).join('<br>') || 'geen veranderingen gezien (zonder lopende sessie of zonder groei kan het verbruik niet geschat worden)';
   const api = det ? `<br><b>API</b>: teller ${n(det.meter_api, ' kWh')} (gelezen ${n(det.meter_age_s, ' s')} geleden), getoond ${n(det.meter_shown, ' kWh')}; blokken van 5 min: ${n(det.rate && det.rate.buckets)}, nieuwste ${n(det.rate && det.rate.newest_age_s, ' s')} oud, verbruik van de API ${n(det.rate_api, ' W')}; teller: ${n(det.meter && det.meter.buckets)} blokken, ${n(det.meter && det.meter.active_len)} waarden per blok, som van de eerste drie ${n(det.meter && det.meter.kwh_first3, ' kWh')} tegenover alle ${n(det.meter && det.meter.kwh_all, ' kWh')}` : '';
-  return `<details class="sub"><summary>Diagnose: wat Smappee zegt</summary><b>Lader</b>: chargingState <code>${esc(d.chargingState || '—')}</code>, verbinding <code>${esc(d.connection || '—')}</code>, IEC <code>${esc(d.iec || '—')}</code>, modus <code>${esc(d.mode || '—')}</code>, strategie <code>${esc(d.strategy || '—')}</code>, limiet ${n(d.pct, ' %')}<br><b>Sessies</b>:<br>${sess}<br><b>Sessie-energie</b>:<br>${ev}${api}</details>`;
+  const head = `<div class="row"><button class="btn small" type="button" data-sc="smdiag">${SC.smDiag ? 'Diagnose verbergen' : 'Diagnose: wat Smappee zegt'}</button></div>`;
+  if (!SC.smDiag) return head; // de stand blijft bewaard: de zijbalk wordt bij elke verversing opnieuw opgebouwd en een <details> ging dan weer dicht
+  return `${head}<div class="sub"><b>Lader</b>: chargingState <code>${esc(d.chargingState || '—')}</code>, verbinding <code>${esc(d.connection || '—')}</code>, IEC <code>${esc(d.iec || '—')}</code>, modus <code>${esc(d.mode || '—')}</code>, strategie <code>${esc(d.strategy || '—')}</code>, limiet ${n(d.pct, ' %')}<br><b>Sessies</b>:<br>${sess}<br><b>Sessie-energie</b>:<br>${ev}${api}</div>`;
 }
 
 function scEspProto(b) {
@@ -2096,6 +2098,7 @@ const SC_ACTIONS = {
     await refresh();
     toast('Gekoppeld. Kies in het menu (+ Module → Smappee) welk laadpunt je wilt toevoegen.', 6000);
   },
+  smdiag: () => { SC.smDiag = !SC.smDiag; render(); },
   smappeeclaim: async (d) => {
     const menu = $('#scmenu');
     if (menu) menu.open = false;
