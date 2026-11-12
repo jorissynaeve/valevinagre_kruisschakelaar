@@ -338,15 +338,28 @@ class TestActions(Base):
 class TestWebServerAdapter(Base):
     def test_routes_and_headers(self):
         routes, headers = self.d.cmd("ws_info")
-        self.assertEqual(set(r for r in routes.split(",") if r), {
-            "GET /huisdev/descriptor", "GET /huisdev/state", "POST /huisdev/set", "POST /huisdev/do",
-            "POST /huisdev/claim", "POST /huisdev/unclaim"})
+        # een enkele route voor alle methoden (HTTP_ANY = 0) en alle paden onder /huisdev/: handle() beslist
+        self.assertEqual([r for r in routes.split(",") if r], ["glob 0 /huisdev/*"])
         self.assertEqual(headers, "X-Huisdev-Token,")
 
     def call(self, method, path, token="", body=""):
         r = self.d.cmd("ws_call", method, path, token, body)
-        self.assertNotEqual(r[0], "NOROUTE", path)
+        self.assertEqual(r[4], "routed", "%s %s kwam bij de onNotFound van de sketch uit" % (method, path))
         return int(r[0]), r[1], r[2], r[3]
+
+    def test_wrong_method_and_unknown_path_give_the_json_errors_of_the_spec(self):
+        # Regressie van 1.0.2 (gevonden op echte hardware): met aparte routes per methode viel dit door naar onNotFound
+        for method, path, status, code in (("DELETE", "/huisdev/unclaim", 405, "method"), ("GET", "/huisdev/set", 405, "method"),
+                                            ("PUT", "/huisdev/claim", 405, "method"), ("POST", "/huisdev/descriptor", 405, "method"),
+                                            ("GET", "/huisdev/nope", 404, "unknown_path"), ("POST", "/huisdev/nope", 404, "unknown_path")):
+            got, ctype, cache, body = self.call(method, path)
+            self.assertEqual((got, ctype, cache), (status, "application/json", "no-store"), (method, path))
+            j = json.loads(body)
+            self.assertEqual((j["ok"], j["error"]), (False, code), (method, path))
+
+    def test_paths_outside_huisdev_still_reach_the_sketch(self):
+        r = self.d.cmd("ws_call", "GET", "/api/state", "", "")
+        self.assertEqual((r[0], r[4]), ("404", "notfound"))
 
     def test_responses_pass_through(self):
         code, ctype, cache, body = self.call("GET", "/huisdev/descriptor")

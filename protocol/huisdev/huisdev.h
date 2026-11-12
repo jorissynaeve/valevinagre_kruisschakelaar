@@ -22,6 +22,7 @@
 #include <WiFiUdp.h>
 #ifndef HUISDEV_NO_WEBSERVER
 #include <WebServer.h>
+#include <uri/UriGlob.h>
 #endif
 #include <Preferences.h>
 #include <list>
@@ -30,7 +31,7 @@
 #include <math.h>
 
 #define HUISDEV_PROTO "1.0"
-#define HUISDEV_HEADER_VERSION "1.0.1"
+#define HUISDEV_HEADER_VERSION "1.0.2"
 #define HUISDEV_UDP_PORT 47500
 #define HUISDEV_MAX_POINTS 64
 #define HUISDEV_MAX_ACTIONS 16
@@ -455,12 +456,9 @@ class HuisDev {
     _srv = &srv;
     static const char* hdrs[] = {"X-Huisdev-Token"};
     srv.collectHeaders(hdrs, 1);
-    srv.on("/huisdev/descriptor", HTTP_GET, [this]() { serve("GET", "/huisdev/descriptor"); });
-    srv.on("/huisdev/state", HTTP_GET, [this]() { serve("GET", "/huisdev/state"); });
-    srv.on("/huisdev/set", HTTP_POST, [this]() { serve("POST", "/huisdev/set"); });
-    srv.on("/huisdev/do", HTTP_POST, [this]() { serve("POST", "/huisdev/do"); });
-    srv.on("/huisdev/claim", HTTP_POST, [this]() { serve("POST", "/huisdev/claim"); });
-    srv.on("/huisdev/unclaim", HTTP_POST, [this]() { serve("POST", "/huisdev/unclaim"); });
+    // Een route voor alle methoden en alle paden onder /huisdev/: handle() beslist. Met aparte routes per methode valt een verkeerde
+    // methode of een onbekend pad door naar de onNotFound van de sketch (platte tekst) in plaats van het JSON-antwoord uit de spec.
+    srv.on(UriGlob("/huisdev/*"), HTTP_ANY, [this]() { serve(); });
   }
 #endif
 
@@ -775,9 +773,21 @@ class HuisDev {
     return 200;
   }
 #ifndef HUISDEV_NO_WEBSERVER
-  void serve(const char* method, const char* path) {
+  static const char* methodName(HTTPMethod m) {
+    switch (m) {
+      case HTTP_GET: return "GET";
+      case HTTP_POST: return "POST";
+      case HTTP_PUT: return "PUT";
+      case HTTP_DELETE: return "DELETE";
+      case HTTP_PATCH: return "PATCH";
+      case HTTP_HEAD: return "HEAD";
+      case HTTP_OPTIONS: return "OPTIONS";
+      default: return "OTHER";
+    }
+  }
+  void serve() {
     String out;
-    int code = handle(method, path, _srv->arg("plain"), _srv->header("X-Huisdev-Token"), out);
+    int code = handle(methodName(_srv->method()), _srv->uri(), _srv->arg("plain"), _srv->header("X-Huisdev-Token"), out);
     _srv->sendHeader("Cache-Control", "no-store");
     _srv->send(code ? code : 404, "application/json", out);
   }

@@ -178,18 +178,20 @@ static std::string run(const std::vector<std::string>& a) {
     return ok({std::to_string(st), out.c_str()});
   }
   if (c == "ws_call") {
-    auto it = ws.routes.find(arg(1) + " " + arg(2));
-    if (it == ws.routes.end()) return ok({"NOROUTE"});
+    static const char* names[] = {"ANY", "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"};
+    HTTPMethod m = HTTP_GET;
+    for (int i = 0; i < 8; i++)
+      if (arg(1) == names[i]) m = (HTTPMethod)i;
     ws.plain = arg(4).c_str();
     ws.tok = arg(3).c_str();
     ws.code = 0;
     ws.cache = "";
-    it->second();
-    return ok({std::to_string(ws.code), ws.ctype.c_str(), ws.cache.c_str(), ws.content.c_str()});
+    bool routed = ws.dispatch(m, arg(2));  // false = onNotFound van de sketch
+    return ok({std::to_string(ws.code), ws.ctype.c_str(), ws.cache.c_str(), ws.content.c_str(), routed ? "routed" : "notfound"});
   }
   if (c == "ws_info") {
     std::string r, h;
-    for (auto& kv : ws.routes) r += kv.first + ",";
+    for (auto& rt : ws.routes) r += std::string(rt.glob ? "glob " : "exact ") + std::to_string((int)rt.method) + " " + rt.pattern + ",";
     for (auto& x : ws.collected) h += x + ",";
     return ok({r, h});
   }

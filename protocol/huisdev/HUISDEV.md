@@ -2,7 +2,7 @@
 
 ```yaml
 huisdev-protocol: "1.0"      # MAJOR.MINOR, zie "Versiebeheer"
-huisdev-header:   "1.0.1"    # versie van huisdev.h (referentie-implementatie)
+huisdev-header:   "1.0.2"    # versie van huisdev.h (referentie-implementatie)
 status: voorstel             # nog niet geimplementeerd in de add-on
 ```
 
@@ -513,6 +513,14 @@ Een device hoeft pas te upgraden als een header-bugfix het device raakt; vervang
 |---|---|---|
 | 1.0.0 | 1.0 | eerste versie |
 | 1.0.1 | 1.0 | Bugfixes, gevonden door de host-tests in `tests/` (zie `tests/README.md`). Zie de lijst direct hieronder. |
+
+| 1.0.2 | 1.0 | Gevonden bij de eerste test op echte hardware (poolcontroller): zie hieronder. Vervang alleen `huisdev.h`. |
+
+Header 1.0.2 repareert: op de echte `WebServer` registreerde `attach()` zes aparte routes (een per pad en methode). Een verkeerde methode
+(`DELETE /huisdev/unclaim`, `GET /huisdev/set`) of een onbekend pad onder `/huisdev/` viel daardoor door naar de `onNotFound` van de sketch
+(platte tekst, 404) in plaats van het JSON-antwoord uit §4 (405 `method`, 404 `unknown_path`). De host-test-stub kende dat gedrag niet, dus de
+fix in 1.0.1 (punt 1 en 2 hieronder) werkte alleen in de test. Nu een route `UriGlob("/huisdev/*")` voor alle methoden en een
+host-test-stub die de echte matching nabootst (met regressietests). Sketches met `HUISDEV_NO_WEBSERVER` zijn niet geraakt.
 
 Header 1.0.1 repareert:
 
