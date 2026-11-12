@@ -1851,7 +1851,7 @@ class EspDevHub:
         d = st.get("diag") or {}
         parts = [f"{d.get('locations', '?')} locaties" + (f" (velden: {', '.join(d['keys'])})" if d.get("keys") else ""), f"{len(st.get('stations') or {})} met een laadstation"]
         for s, x in (d.get("stations") or {}).items():
-            parts.append(f"station …{s}: {x['modules']} modules, {x['laadpunten']} laadpunten")
+            parts.append(f"station …{s}: {x['modules']}, {x['laadpunten']} laadpunten")
         for loc, x in (d.get("devices") or {}).items():
             parts.append(f"locatie …{loc}: {x['n']} smart devices (categorieën: {', '.join(x['categorieen']) or 'geen'})")
         return "; ".join(parts)
@@ -1890,7 +1890,7 @@ class EspDevHub:
             if status != 200:
                 raise smappee.SmappeeError("net", f"Smappee antwoordt met HTTP {status} over laadstation {serial}", status)
             stn["connectors"] = smappee.connectors(det)
-            st["diag"]["stations"][serial[-4:]] = {"modules": len(det.get("modules") or []) if isinstance(det, dict) and isinstance(det.get("modules"), list) else "geen", "laadpunten": len(stn["connectors"])}
+            st["diag"]["stations"][serial[-4:]] = {"modules": smappee.module_shape(det), "laadpunten": len(stn["connectors"])}
             stn["available"] = det.get("available") if isinstance(det, dict) and isinstance(det.get("available"), bool) else None
         st["stations"], st["struct_at"] = stations, time.monotonic()
 
@@ -1901,13 +1901,19 @@ class EspDevHub:
             await self._smappee_structure(st, acc)
         units: dict[str, dict] = {}
         by_loc: dict[str, dict] = {}
+        raw_by_loc: dict[str, object] = {}
         for serial, stn in st["stations"].items():
             if stn["loc"] not in by_loc:
                 status, data = await self._smappee_call(st, acc, "GET", f"{smappee.API}/v10/servicelocation/{stn['loc']}/homecontrol/smart/devices", params={"excludedCategories": ""})
                 if status != 200:
                     raise smappee.SmappeeError("net", f"Smappee antwoordt met HTTP {status}", status)
                 by_loc[stn["loc"]] = smappee.device_map(data)
+                raw_by_loc[stn["loc"]] = data
                 st.setdefault("diag", {}).setdefault("devices", {})[stn["loc"][-4:]] = {"n": len(data) if isinstance(data, list) else f"geen lijst ({type(data).__name__})", "categorieen": smappee.categories(data)}
+            if not stn["connectors"]:  # de modules van het station wezen er geen aan: dan de lijst met smart devices zelf (categorie CARCHARGER)
+                stn["connectors"] = smappee.connectors_from_devices(raw_by_loc.get(stn["loc"]))
+                if stn["connectors"]:
+                    log.info("Smappee %s: de modules van het laadstation wezen geen laadpunt aan; %d uit de lijst met smart devices", serial[-4:], len(stn["connectors"]))
             for c in stn["connectors"]:
                 dev = by_loc[stn["loc"]].get(c["id"]) or (by_loc[stn["loc"]].get(c["uuid"]) if c["uuid"] else None)
                 if dev is not None:

@@ -12,7 +12,7 @@ import time
 from aiohttp import web
 
 USERNAME, PASSWORD = "jan@example.org", "geheim-wachtwoord"
-SITE, LOC, SERIAL, DEVICE, DEVICE2, LED = 7000, 7001, "5001000042", 8101, 8102, 8109
+SITE, LOC, SERIAL, DEVICE, DEVICE2, LED, STATION_DEV = 7000, 7001, "5001000042", 8101, 8102, 8109, 8100
 PROP_MIN = "etc.smart.device.type.car.charger.config.min.current"
 PROP_MAX = "etc.smart.device.type.car.charger.config.max.current"
 NOW_MS = lambda: int(time.time() * 1000)  # noqa: E731
@@ -41,6 +41,7 @@ class FakeSmappee:
         self.maintenance = False
         self.available = True
         self.no_stations = False
+        self.bare_modules = False  # de modules van het laadstation wijzen geen smart device aan (zoals bij een echt account bleek)
         self.runner = None
         self.port = 0
 
@@ -123,6 +124,8 @@ class FakeSmappee:
             return web.Response(status=404)
         mods = [{"position": c["pos"], "smartDevice": {"id": c["id"], "uuid": c["uuid"], "name": c["name"], "type": {"category": "CARCHARGER"}}} for c in self.conn.values()]
         mods.append({"position": 0, "smartDevice": {"id": LED, "name": "Led", "type": {"category": "LED"}}})
+        if self.bare_modules:
+            mods = [{"position": i, "label": f"module {i}"} for i in range(6)]
         return web.json_response({"serialNumber": SERIAL, "available": self.available, "modules": mods})
 
     async def _devices(self, r: web.Request) -> web.Response:
@@ -131,7 +134,7 @@ class FakeSmappee:
         self.lists += 1
         if self.api_status:
             return web.Response(status=self.api_status)
-        return web.json_response([self.device(c) for c in self.conn.values()] + [{"id": LED, "name": "Led", "type": {"category": "LED"}}])
+        return web.json_response([{"id": STATION_DEV, "name": "Laadstation", "type": {"category": "CHARGINGSTATION"}}] + [self.device(c) for c in self.conn.values()] + [{"id": LED, "name": "Led", "type": {"category": "LED"}}])
 
     async def _sessions(self, r: web.Request) -> web.Response:
         if (g := self._gate(r)) is not None:

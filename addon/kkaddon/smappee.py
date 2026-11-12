@@ -171,6 +171,32 @@ def connectors(details: Any) -> list[dict]:
     return out
 
 
+def connectors_from_devices(devices: Any) -> list[dict]:
+    """De laadpunten volgens de lijst met smart devices zelf (categorie CARCHARGER), voor als de modules van het laadstation er geen aanwijzen: {id, uuid, name, pos}, met `pos` de volgorde in de lijst.
+    Het laadstation zelf (CHARGINGSTATION) en de led zijn geen laadpunt."""
+    out = []
+    for d in devices if isinstance(devices, list) else []:
+        if not isinstance(d, dict):
+            continue
+        t = d.get("type")
+        cat = t.get("category") if isinstance(t, dict) else t
+        did = _int(d.get("id"))
+        if str(cat or "").upper() == CAT_CHARGER and did is not None and did > 0:
+            out.append({"id": str(did), "uuid": _text(d.get("uuid"), 80), "name": _text(d.get("name")), "pos": len(out) + 1})
+    return out
+
+
+def module_shape(details: Any) -> str:
+    """Hoe de modules van een laadstation eruitzien, in woorden (alleen veldnamen en categorieen, geen waarden): voor de melding als er geen laadpunt uit komt."""
+    mods = details.get("modules") if isinstance(details, dict) else None
+    if not isinstance(mods, list):
+        return "geen lijst modules"
+    keys = sorted({k for m in mods if isinstance(m, dict) for k in m})[:12]
+    sd = [m.get("smartDevice") for m in mods if isinstance(m, dict) and isinstance(m.get("smartDevice"), dict)]
+    cats = sorted({str((x.get("type") or {}).get("category") if isinstance(x.get("type"), dict) else x.get("type") or "zonder categorie")[:30] for x in sd})[:8]
+    return f"{len(mods)} modules (velden: {', '.join(keys) or 'geen'}; {len(sd)} met smartDevice, categorieën: {', '.join(cats) or 'geen'})"
+
+
 def device_map(devices: Any) -> dict[str, dict]:
     """`GET smart/devices` als {sleutel: apparaat}, met elk apparaat onder zijn `id`, `uuid`, `smartDeviceId` en `smartDeviceUuid` (de HA-integratie zoekt op al die vier). Er wordt **niet** op categorie
     gefilterd: welke apparaten laadpunten zijn, zegt het laadstation (`connectors`); de lijst hoeft zijn categorie niet te geven."""

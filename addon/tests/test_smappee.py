@@ -721,7 +721,30 @@ def test_when_nothing_is_found_the_message_says_where_the_search_stopped(tmp_pat
         fake.conn.clear()  # het station meldt geen laadpunten
         with pytest.raises(ModelError) as e:
             await hub.add_smappee(USERNAME, PASSWORD)
-        assert "1 met een laadstation" in str(e.value) and f"station …{SERIAL[-4:]}: 1 modules, 0 laadpunten" in str(e.value) and SERIAL not in str(e.value)
+        assert "1 met een laadstation" in str(e.value) and f"station …{SERIAL[-4:]}: 1 modules" in str(e.value) and "0 laadpunten" in str(e.value) and SERIAL not in str(e.value)
         hub.close()
         await fake.stop()
     asyncio.run(go())
+
+
+def test_the_connector_comes_from_the_device_list_when_the_station_modules_name_none(tmp_path, monkeypatch):
+    """Bij een echt account meldde het laadstation 6 modules waar geen laadpunt uit kwam, terwijl de lijst met smart devices een CARCHARGER had."""
+    async def go():
+        fake = FakeSmappee()
+        fake.bare_modules = True
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, fake)
+        assert [u["key"] for u in hub.smappee_view()[0]["units"]] == [KEYS], "alleen de CARCHARGER, niet het laadstation (CHARGINGSTATION) of de led"
+        await eventually(lambda: DID in hub.online)
+        assert r.engine.ref_value(f"e:{DID}:current") == 19 and hub.devices[DID]["sid"] == SERIAL
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_the_fallback_picks_chargers_only_and_the_shape_message_has_no_values():
+    f = FakeSmappee(connectors=2)
+    devs = [{"id": 1, "type": {"category": "CHARGINGSTATION"}}] + [f.device(c) for c in f.conn.values()] + [{"id": LED, "type": {"category": "LED"}}, {"id": 0, "type": {"category": "CARCHARGER"}}, 5]
+    assert [(c["id"], c["pos"], c["name"]) for c in smappee.connectors_from_devices(devs)] == [(str(DEVICE), 1, "Laadpunt 1"), (str(DEVICE2), 2, "Laadpunt 2")]
+    assert smappee.connectors_from_devices(None) == []
+    shape = smappee.module_shape({"modules": [{"position": 0, "label": "geheim"}, {"smartDevice": {"id": 5, "name": "geheim", "type": {"category": "LED"}}}]})
+    assert shape == "2 modules (velden: label, position, smartDevice; 1 met smartDevice, categorieën: LED)" and "geheim" not in shape
+    assert smappee.module_shape(None) == "geen lijst modules"
