@@ -34,6 +34,7 @@ import aiohttp
 
 from . import discovery as d
 from . import esphome as esp
+from . import hue
 from . import model as _model
 from .engine import Engine
 from .logic import BOOL, NUMBER
@@ -44,7 +45,8 @@ log = logging.getLogger("kk.espdev")
 UDP_PORT = 47500
 CURRENT = (1, 0)  # het protocol zoals de add-on het kent (protocol/huisdev/HUISDEV.md); een lagere minor van een apparaat toont "upgrade beschikbaar"
 SUPPORTED_MAJORS = (1,)
-MAX_DEVICES = 16
+MAX_DEVICES = 80  # een Hue-installatie alleen al heeft gauw dertig lampen
+MAX_BRIDGES = 4
 MAX_POINTS, MAX_ACTIONS, MAX_ARGS = 64, 16, 8
 POLL = 3.0  # s
 MAX_BODY = 65536  # bytes; een descriptor is hoogstens 8 KB, een state 4 KB (HUISDEV.md §5)
@@ -60,6 +62,11 @@ ES_FLUSH = 1.0  # s: ESPHome pusht elke wijziging (een vermogensmeting twee keer
 ES_SETTLE = 1.0  # s na het verbinden: wacht tot de eerste stroom volledige regels binnen is, anders groeit de descriptor in stukjes
 ES_PROBE = 6.0  # s: zolang wacht "toevoegen" op de eerste regels van een ESPHome-toestel
 ES_READ = 35  # s zonder een byte (ESPHome stuurt elke ~10 s een ping) is de verbinding weg
+HUE_FLUSH = 0.5  # s: hoogstens zo vaak verwerken we wat de eventstroom van de bridge bracht
+HUE_PING = 30.0  # s: de eventstroom van een bridge zwijgt als er niets verandert (gemeten: geen hartslag in 3 minuten), dus vragen we zelf of hij er nog is
+HUE_RESYNC = 600.0  # s: de hele lijst opnieuw ophalen, voor wat een gemiste gebeurtenis scheef zette
+HUE_GAP = 0.1  # s tussen twee opdrachten aan een bridge: Hue verdraagt ongeveer 10 per seconde voor lampen
+BRIDGE_RE = re.compile(r"^[a-z0-9_]{1,24}$")
 
 KINDS = ("bool", "int", "float", "enum", "text")
 ID_RE = re.compile(r"^[a-z0-9-]{1,32}$")
@@ -272,6 +279,11 @@ class EspDevHub:
         self._inflight: set[tuple[str, str]] = set()
         self.last: dict[str, dict] = {}  # did -> {punt: wat er laatst gebeurde}, voor de zijbalk
         self.es: dict[str, dict] = {}  # did -> wat de eventstroom van een ESPHome-toestel tot nu bracht (esphome.py)
+        self.bridges: dict[str, dict] = {}  # Hue-bridges: id -> {name, host, port, key, fp, bridge_id}; de sleutel staat alleen in dit bestand (hue.py)
+        self.hue: dict[str, dict] = {}  # bridge -> wat de bridge tot nu meldde: {store: {id: resource}, open, online, error, ...}
+        self.hue_desc: dict[str, dict] = {}  # did -> de descriptor van een Hue-apparaat volgens de laatste lijst van de bridge
+        self._hue_locks: dict[str, asyncio.Lock] = {}
+        self._hue_sent: dict[str, float] = {}
         self._listen = None
         self._ask = None
         self._http: aiohttp.ClientSession | None = None
@@ -281,6 +293,7 @@ class EspDevHub:
         engine.espdev_view = self.status
         engine.espdev_found = self.found_view
         engine.espdev_value = self.output
+        engine.hue_view = self.hue_view
         _model.esp_type = self.point_type
 
     # ------------------------------------------------------------ opslag
@@ -295,11 +308,24 @@ class EspDevHub:
             return
         if not isinstance(raw, dict):
             return
+        for k, v in (raw.get("bridges") or {}).items() if isinstance(raw.get("bridges"), dict) else []:
+            br = self._bridge_defaults(v) if isinstance(v, dict) and BRIDGE_RE.match(k) else None
+            if br:
+                self.bridges[k] = br
         for k, v in (raw.get("devices") or {}).items():
             if isinstance(v, dict) and re.fullmatch(r"[a-z0-9_]{1,40}", k) and isinstance(v.get("hid"), str) and ID_RE.match(v["hid"]):
                 self.devices[k] = self._defaults(v)
         if isinstance(raw.get("retired"), dict):
             self.retired = {t: float(ts) for t, ts in raw["retired"].items() if isinstance(t, str) and isinstance(ts, (int, float))}
+
+    @staticmethod
+    def _bridge_defaults(v: dict) -> dict | None:
+        """Een bewaarde Hue-bridge, gecontroleerd. Zonder adres, sleutel of vingerafdruk is hij niet te gebruiken."""
+        port = v.get("port")
+        br = {"name": _text(v.get("name"), 60) or "Hue Bridge", "host": _text(v.get("host"), 253), "port": port if isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535 else hue.API_PORT,
+              "key": _text(v.get("key"), 128), "fp": _text(v.get("fp"), 64).lower(), "bridge_id": _text(v.get("bridge_id"), 16).upper(),
+              "own": v.get("own") is True}  # de sleutel is door deze add-on gemaakt (koppelen) en wordt bij loskoppelen ingetrokken; een sleutel die je zelf meegaf, is van iemand anders
+        return br if HOST_RE.match(br["host"]) and br["key"] and hue.FP_RE.match(br["fp"]) and hue.BRIDGE_ID_RE.match(br["bridge_id"]) else None
 
     @staticmethod
     def _defaults(v: dict) -> dict:
@@ -314,24 +340,27 @@ class EspDevHub:
         ins = v.get("inputs") if isinstance(v.get("inputs"), dict) else {}
         shown = v.get("shown")
         port = v.get("port")
-        driver = "esphome" if v.get("driver") == "esphome" else "huisdev"
+        driver = v["driver"] if v.get("driver") in ("esphome", "hue") else "huisdev"
         emap, skipped = v.get("emap"), v.get("skipped")
+        rid = v.get("rid")
         return {"name": _text(v.get("name"), 60) or "Apparaat", "hid": v["hid"], "host": _text(v.get("host"), 253), "port": port if isinstance(port, int) and 1 <= port <= 65535 else 80,
                 "type": _text(v.get("type"), 40), "fw": _text(v.get("fw"), 40), "proto": v.get("proto") if parse_proto(v.get("proto")) else "1.0", "rev": _text(v.get("rev"), 16),
                 "token": _text(v.get("token"), 128), "points": pts, "actions": acts, "shown": [x for x in shown if isinstance(x, str)] if isinstance(shown, list) else None,
                 "inputs": {k: r for k, r in ins.items() if isinstance(k, str) and isinstance(r, str)},
-                "driver": driver,  # huisdev: het protocol van huisdev.h; esphome: de webserver van een ESPHome-toestel (esphome.py)
+                "driver": driver,  # huisdev: het protocol van huisdev.h; esphome: de webserver van een ESPHome-toestel (esphome.py); hue: een apparaat van een Hue-bridge (hue.py)
+                "bridge": v["bridge"] if driver == "hue" and isinstance(v.get("bridge"), str) and BRIDGE_RE.match(v["bridge"]) else "",  # hue: welke bridge
+                "rid": rid if driver == "hue" and isinstance(rid, str) and hue.UUID_RE.match(rid) else "",  # hue: de UUID van het apparaat bij de bridge
                 "auth": _text(v.get("auth"), 200) if driver == "esphome" else "",  # gebruiker:wachtwoord van web_server: auth, alleen in dit bestand
                 "emap": {k: x for k, x in emap.items() if isinstance(k, str) and isinstance(x, str)} if isinstance(emap, dict) else {},  # punt-id -> ESPHome-id, voor altijd vast
                 "skipped": [x for x in skipped if isinstance(x, str)][:100] if isinstance(skipped, list) else [],
-                # een ESPHome-toestel staat meestal al via zijn eigen integratie in HA: dubbele entiteiten alleen als de gebruiker dat wil
-                "ha": v["ha"] if isinstance(v.get("ha"), bool) else driver != "esphome"}
+                # een ESPHome-toestel of Hue-lamp staat meestal al via zijn eigen integratie in HA: dubbele entiteiten alleen als de gebruiker dat wil
+                "ha": v["ha"] if isinstance(v.get("ha"), bool) else driver == "huisdev"}
 
     def _save(self) -> None:
         tmp = self.path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"devices": self.devices, "retired": self.retired}, f, ensure_ascii=False, indent=1)
+            json.dump({"devices": self.devices, "retired": self.retired, "bridges": self.bridges}, f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.path)
 
     # ------------------------------------------------------------ de punten van een apparaat
@@ -404,6 +433,8 @@ class EspDevHub:
             new["shown"] = [p["id"] for p in dev["points"] if p["id"] in b["shown"]]
         if "inputs" in b:
             new["inputs"] = self._inputs(did, dev, b["inputs"])
+        if "host" in b and dev["driver"] == "hue":
+            raise ModelError("het adres van een Hue-apparaat staat bij de bridge")
         if "host" in b:
             host = _text(b["host"], 253)
             if not HOST_RE.match(host):
@@ -536,7 +567,7 @@ class EspDevHub:
         if not dev:
             return False
         self._stop(did)
-        if unclaim and dev["token"]:  # het apparaat meteen vrijgeven; lukt dat niet, dan wist u de claim op het apparaat zelf
+        if unclaim and dev["token"] and dev["driver"] == "huisdev":  # het apparaat meteen vrijgeven; lukt dat niet, dan wist u de claim op het apparaat zelf
             try:
                 await self._call(dev, "POST", "/huisdev/unclaim", {})
             except EspError as e:
@@ -546,7 +577,7 @@ class EspDevHub:
         for a in dev["actions"]:
             self._retire(did, dev, action=a["id"])
         del self.devices[did]
-        for x in (self.values, self.off, self.seen, self.last, self.fails, self.errors, self.es):
+        for x in (self.values, self.off, self.seen, self.last, self.fails, self.errors, self.es, self.hue_desc):
             x.pop(did, None)
         self.online.discard(did)
         self._save()
@@ -607,6 +638,8 @@ class EspDevHub:
         loop = asyncio.get_running_loop()
         for did in self.devices:
             self._start(did)
+        for bid in self.bridges:
+            self._start_bridge(bid)
         self.tasks["_tick"] = loop.create_task(self._ticker())
         self.tasks["_scan"] = loop.create_task(self._scanner())
 
@@ -672,7 +705,7 @@ class EspDevHub:
             ev.set()
 
     def _start(self, did: str) -> None:
-        if did in self.tasks:
+        if did in self.tasks or self.devices[did]["driver"] == "hue":  # een Hue-apparaat heeft geen eigen taak: zijn bridge volgt ze allemaal
             return
         self.wake[did] = asyncio.Event()
         run = self._run_esphome if self.devices[did]["driver"] == "esphome" else self._run
@@ -912,10 +945,298 @@ class EspDevHub:
             raise ModelError(f"het toestel antwoordt met HTTP {status}")
         return {"ok": True, "result": "applied"}  # de nieuwe stand komt vanzelf over de eventstroom
 
+    # ------------------------------------------------------------ Hue: een bridge met een eventstroom, en een blok per apparaat
+
+    async def add_hue_bridge(self, host: str, port=hue.API_PORT, key: str = "", name: str = "") -> str:
+        """Een Hue-bridge koppelen. Zonder `key` moet de ronde knop op de bridge net zijn ingedrukt (30 s); met `key` (een bestaande applicatiesleutel) niet.
+        Het certificaat dat de bridge nu toont wordt vastgezet: het is van Signify en door geen publieke autoriteit getekend. Geeft het id van de bridge."""
+        host = _text(host, 253)
+        if not HOST_RE.match(host):
+            raise ModelError("ongeldig adres: geef het IP van de bridge, zonder https://")
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ModelError("ongeldige poort")
+        if len(self.bridges) >= MAX_BRIDGES:
+            raise ModelError(f"maximaal {MAX_BRIDGES} bridges")
+        if any(b["host"] == host and b["port"] == port for b in self.bridges.values()):
+            raise ModelError("deze bridge staat er al")
+        key = _text(key, 128)
+        try:
+            fp = await hue.fetch_fingerprint(host, port)
+            cfg = await hue.config(self._session(), host, port, fp)
+            bridge_id = str(cfg["bridgeid"]).upper()
+            if any(b["bridge_id"] == bridge_id for b in self.bridges.values()):
+                raise ModelError("deze bridge staat er al (onder een ander adres)")
+            br = {"name": _text(name, 60) or _text(cfg.get("name"), 60) or "Hue Bridge", "host": host, "port": port, "key": key, "fp": fp, "bridge_id": bridge_id, "own": not key}
+            if not key:
+                br["key"] = await hue.pair(self._session(), host, port, fp)
+            else:
+                status, data = await hue.request(self._session(), br, "GET", f"{hue.RESOURCE}/bridge")
+                if status != 200 or not isinstance(data, dict) or not data.get("data"):
+                    raise ModelError("de bridge accepteert deze sleutel niet")
+        except hue.HueError as e:
+            log.warning("Hue-bridge %s koppelen mislukt: %s", host, e)
+            raise ModelError(e.reason) from None
+        bid = "b_" + bridge_id[-6:].lower()
+        self.bridges[bid] = br
+        self._save()
+        self._start_bridge(bid)
+        self._poke()
+        return bid
+
+    async def verify_hue_bridge(self, bid: str, host: str | None = None, name: str | None = None) -> None:
+        """Het adres of het certificaat van een bridge opnieuw vastleggen, nadat is vastgesteld dat het dezelfde bridge is (zijn `bridgeid`).
+        Een bridge die een nieuw adres krijgt (DHCP) of na een reset een nieuw certificaat, gaat zo weer aan zonder opnieuw te koppelen."""
+        br = self.bridges.get(bid)
+        if not br:
+            raise ModelError("onbekende bridge")
+        if name is not None:
+            br = {**br, "name": _text(name, 60) or br["name"]}
+        host = _text(host, 253) if host is not None else br["host"]
+        if not HOST_RE.match(host):
+            raise ModelError("ongeldig adres: geef het IP van de bridge, zonder https://")
+        try:
+            fp = await hue.fetch_fingerprint(host, br["port"])
+            cfg = await hue.config(self._session(), host, br["port"], fp)
+        except hue.HueError as e:
+            raise ModelError(e.reason) from None
+        if str(cfg["bridgeid"]).upper() != br["bridge_id"]:
+            raise ModelError(f"op {host} zit een andere bridge ({cfg['bridgeid']}), niet {br['bridge_id']}")
+        self.bridges[bid] = {**br, "host": host, "fp": fp}
+        self._save()
+        self._hue_kick(bid)
+        self._poke()
+
+    async def remove_hue_bridge(self, bid: str) -> bool:
+        """De bridge en al zijn blokken weghalen. Een sleutel die de add-on bij het koppelen maakte, wordt, als het kan, ook op de bridge ingetrokken (v1-API)."""
+        br = self.bridges.get(bid)
+        if not br:
+            return False
+        for did in [k for k, v in self.devices.items() if v["driver"] == "hue" and v["bridge"] == bid]:
+            await self.remove(did)
+        t = self.tasks.pop(f"hue:{bid}", None)
+        if t:
+            t.cancel()
+        self.wake.pop(f"hue:{bid}", None)
+        if br["own"]:  # een sleutel die je zelf meegaf, kan ook ergens anders in gebruik zijn (een ander programma): die blijft
+            try:
+                await hue.request(self._session(), br, "DELETE", f"/api/{br['key']}/config/whitelist/{br['key']}", key=False)
+            except hue.HueError as e:
+                log.warning("Hue-bridge %s: de sleutel intrekken mislukte (%s); haal hem weg in de Hue-app", br["host"], e)
+        del self.bridges[bid]
+        for x in (self.hue, self._hue_locks, self._hue_sent):
+            x.pop(bid, None)
+        self._save()
+        self._poke()
+        return True
+
+    async def claim_hue(self, bid: str, rids: list[str] | None = None) -> list[str]:
+        """Apparaten van een bridge als blok toevoegen (`rids` leeg: alles wat er nog niet staat). Geeft de ids van de nieuwe apparaten, in de volgorde van de lijst."""
+        st = self.hue.get(bid)
+        if bid not in self.bridges or not st or not st["store"]:
+            raise ModelError("de bridge is niet bereikbaar: er is nog geen lijst van apparaten")
+        offered = hue.devices(st["store"])
+        have = {v["rid"] for v in self.devices.values() if v["driver"] == "hue" and v["bridge"] == bid}
+        if rids:
+            unknown = [r for r in rids if r not in {o["rid"] for o in offered}]
+            if unknown:
+                raise ModelError("de bridge kent dit apparaat niet (meer)")
+            take = [o for o in offered if o["rid"] in rids and o["rid"] not in have]
+        else:
+            take = [o for o in offered if o["rid"] not in have]
+        if not take:
+            raise ModelError("alles wat de bridge aanbiedt staat er al")
+        if len(self.devices) + len(take) > MAX_DEVICES:
+            raise ModelError(f"maximaal {MAX_DEVICES} apparaten")
+        new = []
+        for o in take:
+            desc = hue.describe(st["store"][o["rid"]], st["store"])
+            did = _slug(o["hid"])
+            if did in self.devices:
+                continue
+            self.devices[did] = self._defaults({"hid": o["hid"], "name": o["name"], "driver": "hue", "bridge": bid, "rid": o["rid"], "type": desc["type"], "fw": desc["fw"]})
+            self.hue_desc[did] = desc
+            self._apply_desc(did, desc)
+            new.append(did)
+        self._save()
+        if st["online"]:
+            await self._hue_flush(bid)
+        self._poke()
+        return new
+
+    def _start_bridge(self, bid: str) -> None:
+        if f"hue:{bid}" not in self.tasks:
+            self.hue.setdefault(bid, self._hue_new())
+            self.wake[f"hue:{bid}"] = asyncio.Event()
+            self.tasks[f"hue:{bid}"] = asyncio.get_running_loop().create_task(self._run_hue(bid))
+
+    def _hue_kick(self, bid: str) -> None:
+        self._kick(f"hue:{bid}")
+
+    def _hue_children(self, bid: str) -> list[str]:
+        return [did for did, dev in self.devices.items() if dev["driver"] == "hue" and dev["bridge"] == bid]
+
+    @staticmethod
+    def _hue_new() -> dict:
+        return {"store": {}, "open": False, "online": False, "need_sync": True, "syncing": False, "pending": [], "dirty": False, "synced": 0.0, "alive": 0.0, "error": "", "cert": False}
+
+    async def _hue_read(self, bid: str, st: dict) -> None:
+        """Eén verbinding met de eventstroom van de bridge: wijzigingen komen in `st['store']`. Eindigt altijd met een HueError."""
+        br = self.bridges[bid]
+        url = f"https://{br['host']}:{br['port']}{hue.STREAM}"
+        sse = esp.Sse()
+        st.update(open=False, need_sync=True)
+        try:
+            async with self._es_session().get(url, headers={"hue-application-key": br["key"], "Accept": "text/event-stream"}, ssl=hue.ssl_for(br["fp"]),
+                                              timeout=aiohttp.ClientTimeout(total=None, sock_connect=hue.TIMEOUT, sock_read=None)) as r:  # geen leestime-out: de stroom zwijgt als er niets verandert
+                if r.status in (401, 403):
+                    raise hue.HueError("key", "de bridge weigert de sleutel: koppel de bridge opnieuw", r.status)
+                if r.status != 200:
+                    raise hue.HueError("net", f"{br['host']} antwoordt op de eventstroom met HTTP {r.status}", r.status)
+                st["open"] = True
+                async for chunk in r.content.iter_any():
+                    try:
+                        got = sse.feed(chunk)
+                    except ValueError:
+                        raise hue.HueError("net", f"{br['host']} geeft geen eventstroom van een Hue-bridge") from None
+                    for _ev, data in got:
+                        for kind, res in hue.events(data):
+                            if st["syncing"]:
+                                st["pending"].append((kind, res))  # de lijst wordt net opgehaald: dit hoort er na
+                            else:
+                                hue.apply(st["store"], kind, res)
+                                st["dirty"] = True
+        except aiohttp.ServerFingerprintMismatch:
+            raise hue.HueError("cert", f"het certificaat van de bridge op {br['host']} is veranderd (bridge vervangen of teruggezet?): vertrouw hem opnieuw") from None
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+            raise hue.HueError("net", f"geen verbinding met {br['host']}: {e or 'time-out'}") from None
+        raise hue.HueError("net", "de bridge sloot de eventstroom")
+
+    async def _hue_sync(self, bid: str, st: dict) -> None:
+        """De hele lijst ophalen. Wat de eventstroom tijdens het ophalen bracht, komt er daarna overheen."""
+        st["syncing"], st["pending"] = True, []
+        try:
+            status, data = await hue.request(self._session(), self.bridges[bid], "GET", hue.RESOURCE)
+            if status != 200 or not isinstance(data, dict) or not isinstance(data.get("data"), list):
+                raise hue.HueError("net", f"de bridge antwoordt met HTTP {status}", status)
+            st["store"] = hue.index(data["data"])
+            for kind, res in st["pending"]:
+                hue.apply(st["store"], kind, res)
+        finally:
+            st["syncing"], st["pending"] = False, []
+        st.update(need_sync=False, dirty=True, synced=time.monotonic(), alive=time.monotonic())
+
+    async def _hue_ping(self, bid: str, st: dict) -> None:
+        """Leeft de bridge nog? De eventstroom zegt dat niet: bij een stroomuitval of een weggevallen kabel komt er geen sluiting."""
+        status, _ = await hue.request(self._session(), self.bridges[bid], "GET", f"{hue.RESOURCE}/bridge")
+        if status != 200:
+            raise hue.HueError("net", f"de bridge antwoordt met HTTP {status}", status)
+        st["alive"] = time.monotonic()
+
+    async def _hue_flush(self, bid: str) -> None:
+        """De lijst van de bridge als HUISDEV-state naar elk apparaat. Een andere set diensten is een andere `rev`: `_on_state` past het blok dan aan."""
+        st = self.hue[bid]
+        st.update(dirty=False, online=True, error="", cert=False)
+        store = st["store"]
+        for did in self._hue_children(bid):
+            dev = self.devices[did]
+            d = store.get(dev["rid"])
+            desc = hue.describe(d, store, dev["name"]) if d else None
+            if desc is None:
+                self._miss(did, "dit apparaat bestaat niet meer op de bridge (of is geen lamp, stopcontact of melder meer)", hard=True)
+                continue
+            self.hue_desc[did] = desc
+            vals = hue.values(d, store)
+            pts = {p["id"]: ({"v": vals[p["id"]], "age": 0} if vals.get(p["id"]) is not None else {"v": None}) for p in desc["points"]}
+            await self._on_state(did, {"proto": "1.0", "rev": desc["rev"], "points": pts, "actions": {}})
+        self._poke()
+
+    def _hue_down(self, bid: str, st: dict, e: hue.HueError) -> None:
+        st.update(open=False, online=False, error=str(e), cert=e.code == "cert", need_sync=True)
+        for did in self._hue_children(bid):
+            self._miss(did, str(e), hard=True)  # een bridge die we niet meer horen, laat geen waarde meer vers: meteen offline
+        self._poke()
+
+    async def _run_hue(self, bid: str) -> None:
+        while True:
+            if bid not in self.bridges:
+                return
+            st = self.hue.setdefault(bid, self._hue_new())
+            rd = asyncio.ensure_future(self._hue_read(bid, st))
+            try:
+                while not rd.done():
+                    await asyncio.wait({rd}, timeout=HUE_FLUSH)
+                    if rd.done() or not st["open"]:
+                        continue
+                    now = time.monotonic()
+                    if st["need_sync"] or now - st["synced"] > HUE_RESYNC:
+                        await self._hue_sync(bid, st)
+                    elif now - st["alive"] > HUE_PING:
+                        await self._hue_ping(bid, st)
+                    if st["dirty"] and not st["need_sync"]:
+                        await self._hue_flush(bid)
+                rd.result()
+            except hue.HueError as e:
+                self._hue_down(bid, st, e)
+            except asyncio.CancelledError:
+                rd.cancel()
+                raise
+            except Exception:  # noqa: BLE001 - een rare gebeurtenis mag het volgen van deze bridge niet voorgoed stilleggen
+                log.exception("Hue-bridge %s: eventstroom niet te verwerken", bid)
+                self._hue_down(bid, st, hue.HueError("net", "onbegrijpelijk antwoord"))
+            finally:
+                rd.cancel()
+            wait = max(self.poll, min(self.poll * 3, 10.0))
+            ev = self.wake.get(f"hue:{bid}")
+            try:
+                await asyncio.wait_for(ev.wait(), wait) if ev else await asyncio.sleep(wait)
+            except asyncio.TimeoutError:
+                pass
+            if ev:
+                ev.clear()
+
+    async def _hue_send(self, did: str, dev: dict, pid: str, v) -> dict:
+        bid = dev["bridge"]
+        br, st = self.bridges.get(bid), self.hue.get(bid)
+        if not br or not st or did not in self.online:
+            raise ModelError("niet verstuurd: geen verbinding met de bridge")
+        d = st["store"].get(dev["rid"])
+        if not d:
+            raise ModelError("dit apparaat bestaat niet meer op de bridge")
+        try:
+            path, body = hue.point_request(d, st["store"], pid, v)
+        except ValueError as e:
+            raise ModelError(str(e)) from None
+        async with self._hue_locks.setdefault(bid, asyncio.Lock()):  # een bridge verdraagt maar ~10 opdrachten per seconde
+            wait = HUE_GAP - (time.monotonic() - self._hue_sent.get(bid, 0.0))
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                status, data = await hue.request(self._session(), br, "PUT", path, body)
+            except hue.HueError as e:
+                if e.code == "key":  # de eventstroom blijft open na een ingetrokken sleutel: laat de lijst opnieuw ophalen, die weigert dan en zet alles offline
+                    st["need_sync"] = True
+                raise ModelError(e.reason) from None
+            finally:
+                self._hue_sent[bid] = time.monotonic()
+        why = hue.problems(data)
+        if status != 200 or why:
+            raise ModelError(f"de bridge weigert dit: {why or f'HTTP {status}'}")
+        return {"ok": True, "result": "applied"}  # de nieuwe stand komt vanzelf over de eventstroom
+
+    def hue_view(self) -> list[dict]:
+        """De bridges voor de pagina, met wat ze aanbieden. Nooit de sleutel of de vingerafdruk."""
+        out = []
+        for bid, br in self.bridges.items():
+            st = self.hue.get(bid) or self._hue_new()
+            have = {v["rid"]: k for k, v in self.devices.items() if v["driver"] == "hue" and v["bridge"] == bid}
+            out.append({"id": bid, "name": br["name"], "host": br["host"], "port": br["port"], "bridge_id": br["bridge_id"], "online": st["online"], "error": st["error"], "cert": st["cert"],
+                        "devices": [{**o, "id": have.get(o["rid"]), "claimed": o["rid"] in have} for o in hue.devices(st["store"])], "skipped": hue.skipped(st["store"])})
+        return out
+
     async def _refetch(self, did: str) -> None:
         dev = self.devices[did]
-        if dev["driver"] == "esphome":
-            self._apply_desc(did, self.es[did]["desc"])
+        if dev["driver"] in ("esphome", "hue"):  # de beschrijving komt uit de eventstroom en is al in `_es_flush` of `_hue_flush` gemaakt
+            self._apply_desc(did, self.es[did]["desc"] if dev["driver"] == "esphome" else self.hue_desc[did])
             self._save()
             self._poke()
             return
@@ -1034,6 +1355,8 @@ class EspDevHub:
         if p["danger"] and not confirm:
             raise ModelError(p["confirm"] or "bevestiging nodig")
         v = check_value(p, value)
+        if dev["driver"] == "hue":
+            return await self._hue_send(did, dev, pid, v)
         if dev["driver"] == "esphome":
             eid = dev["emap"].get(pid)
             if not eid:
@@ -1144,7 +1467,8 @@ class EspDevHub:
         out = []
         for did, dev in self.devices.items():
             pts = [self._point_view(did, dev, p) for p in dev["points"]]
-            out.append({"id": did, "hid": dev["hid"], "name": dev["name"], "host": dev["host"], "port": dev["port"], "type": dev["type"], "fw": dev["fw"], "proto": dev["proto"],
+            out.append({"id": did, "hid": dev["hid"], "name": dev["name"], "host": self.bridges[dev["bridge"]]["host"] if dev["driver"] == "hue" and dev["bridge"] in self.bridges else dev["host"],
+                        "bridge": dev["bridge"], "port": dev["port"], "type": dev["type"], "fw": dev["fw"], "proto": dev["proto"],
                         "proto_state": self.proto_state_of(dev), "current": f"{CURRENT[0]}.{CURRENT[1]}", "rev": dev["rev"], "online": did in self.online, "error": self.errors.get(did, ""),
                         "configured": True, "driver": dev["driver"], "ha": dev["ha"], "skipped": list(dev["skipped"]), "shown": self.shown(dev), "points": pts,
                         "actions": [{**a, "disabled": a["id"] in self.off.get(did, {}), "reason": self.off.get(did, {}).get(a["id"], "")} for a in dev["actions"]],
@@ -1212,9 +1536,9 @@ class EspDevHub:
         for did, dev in self.devices.items():
             if not dev["ha"]:
                 continue
-            esphome = dev["driver"] == "esphome"
-            device = {"identifiers": [f"kk_esp_{did}"], "name": dev["name"], "manufacturer": "ESPHome" if esphome else "Zelfbouw",
-                      "model": "ESPHome (webserver)" if esphome else f"{dev['type'] or 'apparaat'} (HUISDEV)", "sw_version": dev["fw"] or None}
+            drv = dev["driver"]
+            device = {"identifiers": [f"kk_esp_{did}"], "name": dev["name"], "manufacturer": {"esphome": "ESPHome", "hue": "Signify"}.get(drv, "Zelfbouw"),
+                      "model": {"esphome": "ESPHome (webserver)", "hue": dev["type"] or "Hue"}.get(drv) or f"{dev['type'] or 'apparaat'} (HUISDEV)", "sw_version": dev["fw"] or None}
             device = {k: v for k, v in device.items() if v}
             for p in dev["points"]:
                 domain, extra = self._entity(did, p)

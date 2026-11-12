@@ -539,7 +539,7 @@ function scEspdev(b) {
       <circle class="pt v-${o.type} ${users.length ? '' : 'free'} ${o.value === true ? 'on' : ''}" cx="${b.x + w}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="acout" data-i="${i}"><title>Uitgang ${esc(o.label)}: sleep naar een ingang van een module${o.type === 'bool' ? ' (En, Of), een routine of een ander apparaat' : ' (Groter dan, Kleiner dan)'}</title></circle>
       ${users.map((u, n) => `<text class="stub" x="${b.x + w + 11}" y="${y + 4 + n * 13}" data-sc="go" data-k="${esc(u.key)}">→ ${esc(scCut(u.text, 24))}<title>${esc(u.text)}</title></text>`).join('')}`;
   }).join('');
-  const note = b.proto_state === 'unsupported' ? 'niet ondersteund' : b.proto_state === 'upgrade' ? 'upgrade' : '';
+  const note = b.proto_state === 'unsupported' ? 'niet ondersteund' : b.proto_state === 'upgrade' ? 'upgrade' : scHueOut(b) ? 'onbereikbaar' : '';
   return `<g class="bk ac t-espdev ${SC.sel === b.key ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${w}" height="${scH(b)}" rx="8"/>
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${w}" height="${SC_HEAD}" rx="8"/>
@@ -548,12 +548,23 @@ function scEspdev(b) {
     <text class="bks" x="${b.x + 12}" y="${b.y + 34}">${esc(b.tech)}</text>${ins}${outs}</g>`;
 }
 
+function scHueOut(b) { // een Hue-apparaat dat de bridge niet bereikt (een lamp zonder netspanning, een lege batterij): de bridge zelf is wel verbonden
+  return b.driver === 'hue' && b.online && (b.points.find((p) => p.id === 'reach') || {}).value === false;
+}
+
 function scEspState(b) {
+  if (scHueOut(b)) return 'onbereikbaar';
   if (b.online) return 'verbonden';
   return b.error || 'verbinden…';
 }
 
 function scEspProto(b) {
+  if (b.driver === 'hue') {
+    const br = (S.hue || []).find((x) => x.id === b.bridge);
+    return `<div class="sub">Bridge <b>${esc(br ? br.name : b.bridge)}</b> (<code>${esc(b.host)}</code>)${b.fw ? ` · firmware ${esc(b.fw)}` : ''}.${br && br.error ? ` ${esc(br.error)}.` : ''} Geef de bridge een vast IP in je router.</div>
+      ${br && br.cert ? `<div class="row"><button class="btn small danger" type="button" data-sc="huetrust" data-bridge="${esc(b.bridge)}">Certificaat opnieuw vertrouwen</button></div>` : ''}
+      <div class="row"><label class="chk" title="Hue staat in Home Assistant al via zijn eigen integratie. Zet dit alleen aan als je dit apparaat ook via deze add-on wilt, dan staat het dubbel."><input type="checkbox" data-esha ${b.ha ? 'checked' : ''}> ook als entiteiten in Home Assistant (dubbel als de Hue-integratie daar al draait)</label></div>`;
+  }
   if (b.driver === 'esphome') {
     const skipped = (b.skipped || []).length ? `<div class="sub">Niet ondersteund en dus overgeslagen: ${esc(b.skipped.join(', '))}.</div>` : '';
     return `<div class="sub">Adres <code>${esc(b.host)}</code>${b.port !== 80 ? `:${esc(b.port)}` : ''}. Het toestel moet een vast IP hebben (reserveer het in je router).</div>${skipped}
@@ -590,7 +601,10 @@ function scEspControl(b, p) { // het bedieningselement van een instelbaar punt
   const key = p.danger ? `data-esctl="${esc(p.id)}"` : `data-esset="${esc(p.id)}"`;
   const unknown = p.value === null || p.value === undefined;
   let ctl;
-  if (p.kind === 'bool') ctl = `<select ${key}>${unknown ? '<option value="" selected>?</option>' : ''}${opt('ON', p.value === true ? 'ON' : 'OFF', 'aan')}${opt('OFF', p.value === true ? 'ON' : 'OFF', 'uit')}</select>`;
+  if (p.kind === 'bool') { // een onbekende stand is geen "uit": dan staat alleen het vraagteken geselecteerd
+    const cur = unknown ? '' : p.value === true ? 'ON' : 'OFF';
+    ctl = `<select ${key}>${unknown ? '<option value="" selected>?</option>' : ''}${opt('ON', cur, 'aan')}${opt('OFF', cur, 'uit')}</select>`;
+  }
   else if (p.kind === 'enum') ctl = `<select ${key}>${unknown ? '<option value="" selected>?</option>' : ''}${p.options.map((o) => opt(o.v, p.value, o.l)).join('')}</select>`;
   else if (p.kind === 'text') ctl = `<input type="text" maxlength="200" ${key} value="${esc(unknown ? '' : p.value)}">`;
   else ctl = `<input type="number" ${key} ${p.min !== null ? `min="${p.min}"` : ''} ${p.max !== null ? `max="${p.max}"` : ''} step="${p.step || (p.kind === 'int' ? 1 : 'any')}" value="${esc(unknown ? '' : p.value)}">`;
@@ -623,7 +637,9 @@ function scEspdevPanel(b, props) {
     <button class="btn small ${a.danger ? 'danger' : ''}" type="button" data-sc="esdo" data-id="${esc(b.id)}" data-a="${esc(a.id)}" ${a.disabled || !b.online ? 'disabled' : ''} title="${esc(a.reason || '')}">${esc(a.label)}${a.danger ? '…' : ''}</button>${a.disabled && a.reason ? `<span class="sub">${esc(a.reason)}</span>` : ''}</div>`).join('');
   const users = b.outs.flatMap((o) => scAcUsers(o.ref).map((u) => ({ ...u, label: o.label })));
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scEspState(b))}</span></div>
-    <div class="sub">${b.driver === 'esphome'
+    <div class="sub">${b.driver === 'hue'
+    ? `Een Philips Hue-apparaat, gelezen en bediend via de bridge. De stand hier komt altijd uit wat de bridge meldt; een lamp die uit de netspanning is, heeft geen bekende stand.${b.ha ? ` In Home Assistant staat het (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
+    : b.driver === 'esphome'
     ? `Een ESPHome-toestel, gelezen via zijn eigen webserver. De entiteiten van het toestel zijn hier punten en acties; komt er een entiteit bij of valt er een weg, dan past dit blok zich aan.${b.ha ? ` In Home Assistant staan ze (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
     : `Een zelfbouwapparaat met het HUISDEV-protocol. Het beschrijft zichzelf: komt er een punt bij of valt er een weg, dan past dit blok zich aan. In Home Assistant staan de punten als entiteiten <code>kk_esp_${esc(b.id)}_…</code>.`}</div>${scEspProto(b)}${props}
     <h2>Waarden en instellingen</h2>${values || '<div class="sub">Nog geen punten.</div>'}
@@ -633,7 +649,7 @@ function scEspdevPanel(b, props) {
     <div class="sub">Een ingang doet pas iets als ze <b>verandert</b>: na een herstart of als de bron weer bekend wordt, onthoudt ze alleen de stand. Gevaarlijke punten (reset, kalibratie) kun je alleen hier met de hand bedienen.</div>
     <h2>Uitgangen gaan naar</h2>${users.map((u) => `<div class="sub">${esc(u.label)} → <a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.text)}</a></div>`).join('') || '<div class="sub">Nog nergens. Sleep een uitgang (rechts) naar Groter dan, Kleiner dan, En, Of of een routine.</div>'}
     ${diag.length ? `<h2>Diagnose</h2>${diag.map((p) => `<div class="sub">${esc(p.label)}: ${esc(scEspText(p))}</div>`).join('')}` : ''}
-    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="esdel" data-id="${esc(b.id)}">Loskoppelen</button></div>`;
+    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="esdel" data-id="${esc(b.id)}">${b.driver === 'hue' ? 'Van de pagina halen' : 'Loskoppelen'}</button></div>`;
 }
 
 // ---------------------------------------------------------------- tijd- en logicamodules
@@ -1212,8 +1228,23 @@ function scEspFound() { // zelfbouwapparaten die zich meldden maar nog niet geko
   return `<div class="scmenugroup"><h2>Zelfbouw (HUISDEV) en ESPHome</h2>${found.map(item).join('') || '<div class="sub">Nog niets gevonden.</div>'}<button class="scmenuitem" type="button" data-sc="esscan"><b>Zoeken op het netwerk</b><span class="sub">ESP's met huisdev.h melden zich vanzelf</span></button><button class="scmenuitem" type="button" data-sc="esadd"><b>ESPHome-toestel toevoegen</b><span class="sub">met het IP-adres; de YAML hoeft niet te veranderen, wel <code>web_server:</code></span></button></div>`;
 }
 
+function scHueMenu() { // Hue-bridges: wat ze aanbieden en nog niet op een pagina staat
+  const bridge = (b) => {
+    const left = b.devices.filter((d) => !d.claimed);
+    const state = b.online ? `verbonden · ${b.devices.length} apparaten` : (b.error || 'verbinden…');
+    return `<div class="scmenuwide"><div class="sub"><b>${esc(b.name)}</b> · <code>${esc(b.host)}</code> · ${esc(state)}</div>
+      <div class="scmenulist">${b.cert ? `<button class="scmenuitem" type="button" data-sc="huetrust" data-bridge="${esc(b.id)}"><b>Certificaat opnieuw vertrouwen</b><span class="sub">de bridge toont een ander certificaat dan bij het koppelen</span></button>` : ''}
+      ${left.length > 1 ? `<button class="scmenuitem" type="button" data-sc="hueall" data-bridge="${esc(b.id)}" data-n="${left.length}"><b>Alles toevoegen (${left.length})</b><span class="sub">in een raster op deze pagina</span></button>` : ''}
+      ${left.map((d) => `<button class="scmenuitem" type="button" data-sc="hueclaim" data-bridge="${esc(b.id)}" data-rid="${esc(d.rid)}"><b>${esc(d.name)}</b><span class="sub">${esc(d.kindname)}${d.model ? ` · ${esc(d.model)}` : ''}</span></button>`).join('')}
+      <button class="scmenuitem" type="button" data-sc="huedel" data-bridge="${esc(b.id)}"><b>Bridge loskoppelen</b><span class="sub">haalt al zijn blokken weg</span></button></div>
+      ${b.online && !left.length ? '<div class="sub">Alles wat de bridge aanbiedt staat al op een pagina.</div>' : ''}
+      ${b.skipped && b.skipped.length ? `<div class="sub">Niet aangeboden (knoppen en dimmers): ${esc(b.skipped.join(', '))}.</div>` : ''}</div>`;
+  };
+  return `<div class="scmenugroup scmenuwide"><h2>Philips Hue</h2>${(S.hue || []).map(bridge).join('')}<button class="scmenuitem" type="button" data-sc="hueadd"><b>Hue-bridge koppelen</b><span class="sub">met het IP-adres; daarna druk je op de ronde knop op de bridge</span></button></div>`;
+}
+
 function scMenu() {
-  return `<details class="scmenu" id="scmenu"><summary class="btn small primary">+ Module</summary><div class="scmenupop">${SC_MENU.map(([title, items]) => `<div class="scmenugroup"><h2>${title}</h2>${items.map(([type, name, sub]) => `<button class="scmenuitem" type="button" data-sc="add" data-type="${type}"><b>${name}</b><span class="sub">${sub}</span></button>`).join('')}</div>`).join('')}${scEspFound()}</div></details>`;
+  return `<details class="scmenu" id="scmenu"><summary class="btn small primary">+ Module</summary><div class="scmenupop">${SC_MENU.map(([title, items]) => `<div class="scmenugroup"><h2>${title}</h2>${items.map(([type, name, sub]) => `<button class="scmenuitem" type="button" data-sc="add" data-type="${type}"><b>${name}</b><span class="sub">${sub}</span></button>`).join('')}</div>`).join('')}${scEspFound()}${scHueMenu()}</div></details>`;
 }
 
 const SC_DAYS = [['mon', 'Maandag'], ['tue', 'Dinsdag'], ['wed', 'Woensdag'], ['thu', 'Donderdag'], ['fri', 'Vrijdag'], ['sat', 'Zaterdag'], ['sun', 'Zondag']];
@@ -1310,7 +1341,7 @@ function scTray() {
     return `<h2>${title}</h2>${all.map(item).join('') || '<div class="sub">Geen.</div>'}`;
   };
   return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Tuya instellen', 'action') + part('Panelen', 'panel')
-    + part('Kaarten', 'card') + part('Schermen', 'screen') + part('Tuya', 'tuya') + part('Airco', 'airco') + part('Laadpaal', 'charge') + part('Omvormer', 'solar') + part('Zelfbouw (HUISDEV)', 'espdev') + part('Andere installaties', 'remote');
+    + part('Kaarten', 'card') + part('Schermen', 'screen') + part('Tuya', 'tuya') + part('Airco', 'airco') + part('Laadpaal', 'charge') + part('Omvormer', 'solar') + part('Zelfbouw, ESPHome en Hue', 'espdev') + part('Andere installaties', 'remote');
 }
 
 function scPanel() {
@@ -1878,6 +1909,53 @@ const SC_ACTIONS = {
     await refresh();
     toast('Toegevoegd. De entiteiten staan in de zijbalk; kies welke als rij op het blok staan.', 5000);
   },
+  hueadd: async () => {
+    const menu = $('#scmenu');
+    if (menu) menu.open = false;
+    const host = (prompt('IP-adres van de Hue-bridge (geef hem een vast IP in je router):') || '').trim();
+    if (!host) return;
+    if (!confirm('Druk nu op de ronde knop bovenop de bridge en klik daarna binnen 30 seconden op OK.')) return;
+    await api('POST', 'espdev/hue/bridge', { host });
+    toast('Gekoppeld. Kies in het menu (+ Module → Philips Hue) welke apparaten je wilt toevoegen.', 6000);
+    setTimeout(() => { SC.force = true; refresh(); }, 1500); // de bridge moet zijn lijst nog ophalen
+    SC.force = true;
+    await refresh();
+  },
+  hueclaim: async (d) => {
+    const menu = $('#scmenu');
+    if (menu) menu.open = false;
+    if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
+    const r = await api('POST', 'espdev/hue/claim', { bridge: d.bridge, rids: [d.rid], page: SC.page, ...scFreeSpot('module') });
+    SC.sel = SC.reveal = r.keys[0];
+    SC.force = true;
+    await refresh();
+    toast('Toegevoegd. Kies in de zijbalk welke punten als rij op het blok staan.', 5000);
+  },
+  hueall: async (d) => {
+    const menu = $('#scmenu');
+    if (menu) menu.open = false;
+    if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
+    if (!confirm(`${d.n} apparaten als blok op deze pagina zetten, in een raster?`)) return;
+    const r = await api('POST', 'espdev/hue/claim', { bridge: d.bridge, page: SC.page, ...scFreeSpot('module') });
+    SC.sel = SC.reveal = r.keys[0];
+    SC.force = true;
+    await refresh();
+    toast(`${r.keys.length} apparaten toegevoegd. Sleep ze naar de ruimte waar ze horen.`, 5000);
+  },
+  huetrust: async (d) => {
+    if (!confirm('Het certificaat dat de bridge nu toont opnieuw vertrouwen? Doe dit alleen als je weet dat de bridge is vervangen of teruggezet.')) return;
+    await api('PUT', `espdev/hue/bridge/${d.bridge}`, { trust: true });
+    SC.force = true;
+    await refresh();
+    toast('Vertrouwd; de verbinding wordt hersteld.', 4000);
+  },
+  huedel: async (d) => {
+    if (!confirm("Deze Hue-bridge loskoppelen? Al zijn blokken verdwijnen van de pagina's en de sleutel wordt op de bridge ingetrokken. De lampen zelf veranderen niet.")) return;
+    await api('DELETE', `espdev/hue/bridge/${d.bridge}`);
+    SC.sel = null;
+    SC.force = true;
+    await refresh();
+  },
   esscan: async () => {
     await api('POST', 'espdev/scan', {});
     toast('Gevraagd wie er is; een apparaat dat antwoordt, staat binnen enkele seconden in het menu.', 5000);
@@ -1885,7 +1963,8 @@ const SC_ACTIONS = {
   },
   esdel: async (d) => {
     const es = scBlock(`e:${d.id}`);
-    if (!confirm(es && es.driver === 'esphome' ? 'Dit ESPHome-toestel uit de Huisconfig halen? Het toestel zelf verandert niet; entiteiten die de add-on in Home Assistant maakte verdwijnen.'
+    if (!confirm(es && es.driver === 'hue' ? 'Dit Hue-apparaat van de pagina halen? Op de bridge verandert niets; je vindt het weer terug in het menu (+ Module → Philips Hue).'
+      : es && es.driver === 'esphome' ? 'Dit ESPHome-toestel uit de Huisconfig halen? Het toestel zelf verandert niet; entiteiten die de add-on in Home Assistant maakte verdwijnen.'
       : 'Dit apparaat loskoppelen? De claim op het apparaat wordt gewist en zijn entiteiten verdwijnen uit Home Assistant.')) return;
     await api('DELETE', `espdev/${d.id}`);
     SC.sel = null;

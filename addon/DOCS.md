@@ -318,6 +318,27 @@ met bevestiging. Wat de add-on niet kent (rolluik, klimaat, slot) staat in de zi
 * In Home Assistant staan de entiteiten **niet** nog eens via de add-on, want het toestel staat daar meestal al via ESPHome. Wil je ze toch, zet dan in de zijbalk het vinkje *ook als entiteiten in Home Assistant* aan (ze staan dan dubbel).
 * Heeft de webserver een wachtwoord (`web_server: auth:`), geef dan gebruiker en wachtwoord bij het toevoegen (API: `POST /api/espdev/esphome` met `user` en `password`).
 
+### Philips Hue: lampen, stopcontacten en bewegingsmelders
+
+*+ Module → Philips Hue → Hue-bridge koppelen*: tik het IP-adres van de bridge in, druk op de ronde knop bovenop de bridge en klik binnen 30 seconden op OK.
+Daarna staan de apparaten van de bridge in hetzelfde menu: één voor één, of *Alles toevoegen* in een raster op de pagina. Elk apparaat is een blok:
+
+| Apparaat | Rijen op het blok |
+|---|---|
+| Lamp | *Aan* en *Helderheid* (1–100 %): beide zijn uitgang en ingang |
+| Stopcontact (een lamp zonder dimmen) | *Aan* |
+| Bewegingsmelder | *Beweging*, *Temperatuur*, *Lichtniveau* (lux), *Batterij*: alleen uitgangen |
+
+*Bereikbaar* staat in de zijbalk als diagnose. Knoppen en dimmers (de Hue dimmer switch, Friends of Hue) worden niet aangeboden; ze staan in het menu onder *Niet aangeboden*.
+
+* Een **lamp die de bridge niet bereikt** (zonder netspanning, lege batterij) heeft geen bekende stand: de bridge onthoudt de laatste, maar dat is een gok. Het blok zegt dan *onbereikbaar* en de waarden zijn `?`. Wat de bridge doet met een opdracht aan zo'n lamp is niet geprobeerd; meldt hij een fout, dan staat die bij de ingang in de zijbalk.
+* Een **stopcontact herken je niet aan zijn type** (dat kies je zelf in de Hue-app: `plug`, `string_light`, `classic_bulb`) maar aan het ontbreken van dimmen.
+* Hue-apparaten staan **niet** in Home Assistant via deze add-on; ze staan daar al via de Hue-integratie. Wil je ze toch, zet dan in de zijbalk het vinkje *ook als entiteiten in Home Assistant* aan.
+* De add-on praat alleen met de bridge, met de nieuwe API (CLIP v2) over HTTPS. Het certificaat van de bridge is van Signify en wordt bij het koppelen **vastgezet**. Toont de bridge later een ander certificaat (hij is vervangen of teruggezet), dan staat er *Certificaat opnieuw vertrouwen* in het menu en de zijbalk; dat kan alleen voor dezelfde bridge (zijn bridge-id).
+* Geef de bridge een **vast IP** in je router. Het adres of het certificaat wijzigen kan via `PUT /api/espdev/hue/bridge/<id>` met `host` en/of `trust`.
+* Een bestaande applicatiesleutel gebruiken in plaats van koppelen: `POST /api/espdev/hue/bridge` met `host` en `key`. Die sleutel trekt de add-on bij *Bridge loskoppelen* **niet** in (hij kan ergens anders in gebruik zijn); een sleutel die de add-on zelf maakte wel.
+* Een ingang handelt op een **wijziging** en stuurt absolute opdrachten, zoals bij de overige apparaten. De add-on laat tussen twee opdrachten aan een bridge 0,1 s: Hue verdraagt ongeveer 10 opdrachten per seconde.
+
 ## Energie (alle huisjes op één pagina, met prijzen)
 
 Home Assistant heeft al een energiedashboard (**Energie** in de zijbalk van HA). Het tabblad *Energie* vult het in, zodat je niet in HA

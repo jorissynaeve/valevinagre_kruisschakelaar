@@ -25,6 +25,7 @@ from .proto import is_virtual
 NO_ROOM = "Centraal"
 # Hoogte en kolommen van de automatische indeling; de hoogtes zijn dezelfde als in static/schema.js
 HEAD, ROW, FOOT, GAP = 42, 24, 10, 24
+AC_W = 340  # de breedte van een apparaatblok (airco, omvormer, HUISDEV): SC_AC_W in static/schema.js, gelijk aan LAMP_W
 COL_IN, COL_LAMP, COL_OUT = 40, 460, 920
 GRID_X, GRID_STEP, GRID_COLS = 20, 600, 2  # een pagina zonder lampen (Centraal): een raster, met naast elk blok plaats voor de verwijzingen
 NOT_A_GANG = re.compile(r"(^|_)(led|leds|all|all_relays|status|backlight|buzzer)(_|$)")  # zoals in de import van app.js
@@ -372,7 +373,7 @@ def _espdev_blocks(snap: dict) -> list[dict]:
         every = [out(p) for p in a["points"] if p["kind"] != "text" and not p["diag"]]
         ports = [{"name": p["id"], "type": kind(p), "label": p["label"], "ref": p["input"], "row": i} for i, p in enumerate(rows) if p["writable"] and not p["danger"] and not p["gone"]]
         res.append({**{k: v for k, v in a.items() if k not in ("inputs", "points", "shown")}, "points": a["points"], "shown": a["shown"], "key": f"e:{a['id']}", "kind": "espdev",
-                    "source": "espdev", "tech": "ESPHome · webserver" if a.get("driver") == "esphome" else f"{a['type'] or 'Apparaat'} · HUISDEV", "alias": "", "room": "", "rows": max(len(rows), 1), "ports": ports,
+                    "source": "espdev", "tech": {"esphome": "ESPHome · webserver", "hue": f"{a['type'] or 'Apparaat'} · Philips Hue"}.get(a.get("driver"), f"{a['type'] or 'Apparaat'} · HUISDEV"), "alias": "", "room": "", "rows": max(len(rows), 1), "ports": ports,
                     "outs": [out(p, i) for i, p in enumerate(rows)], "all": every})
     return res
 
@@ -484,6 +485,24 @@ def place(model: Model, snap: dict, key: str, page, x=0, y=0) -> None:
         s["blocks"].pop(key, None)
     else:
         s["blocks"][key] = {"page": page, "x": x, "y": y}
+    model.set_schema(s)
+
+
+def place_grid(model: Model, snap: dict, keys: list[str], page, x: int = 0, y: int = 0, cols: int = 4) -> None:
+    """Meer blokken tegelijk op een pagina, in een raster vanaf (x, y): een rij van `cols` blokken, daaronder de volgende rij. Voor een Hue-bridge met dertig lampen."""
+    view_blocks = {b["key"]: b for b in view(model, snap)["blocks"]}
+    for k in keys:
+        if k not in view_blocks:
+            raise ModelError(f"onbekend blok {k}")
+    s = copy.deepcopy(model.schema)
+    s["blocks"] = {k: v for k, v in s["blocks"].items() if k in view_blocks}
+    cx, cy, row_h = x, y, 0
+    for i, k in enumerate(keys):
+        if i and i % cols == 0:
+            cx, cy, row_h = x, cy + row_h + GAP, 0
+        s["blocks"][k] = {"page": page, "x": cx, "y": cy}
+        row_h = max(row_h, HEAD + max(view_blocks[k].get("rows", 1), 1) * ROW + FOOT)
+        cx += AC_W + GAP + 16  # een blok en wat lucht voor de verwijzingen rechts ervan
     model.set_schema(s)
 
 

@@ -714,6 +714,43 @@ async def espdev_esphome(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "id": did, "key": f"e:{did}"})
 
 
+async def hue_bridge_add(request: web.Request) -> web.Response:
+    """Een Hue-bridge koppelen: zonder `key` na het indrukken van de ronde knop op de bridge, met `key` met een bestaande applicatiesleutel."""
+    b = await _body(request)
+    port = b.get("port")
+    bid = await _espdev(request).add_hue_bridge(str(b.get("host") or ""), 443 if port in (None, "") else port, str(b.get("key") or ""), str(b.get("name") or ""))
+    return web.json_response({"ok": True, "id": bid})
+
+
+async def hue_bridge_put(request: web.Request) -> web.Response:
+    """Naam, adres of vertrouwen van een bridge: `trust` legt het certificaat dat de bridge nu toont opnieuw vast (na een controle op zijn bridge-id)."""
+    b = await _body(request)
+    hub = _espdev(request)
+    bid = request.match_info["bid"]
+    if "host" in b or "name" in b or b.get("trust") is True:
+        await hub.verify_hue_bridge(bid, str(b["host"]) if "host" in b else None, str(b["name"]) if "name" in b else None)
+    return web.json_response({"ok": True})
+
+
+async def hue_bridge_delete(request: web.Request) -> web.Response:
+    ok = await _espdev(request).remove_hue_bridge(request.match_info["bid"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
+async def hue_claim(request: web.Request) -> web.Response:
+    """Apparaten van een bridge als blok toevoegen (`rids` leeg: alles wat er nog niet staat) en in een raster op een pagina zetten."""
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    rids = b.get("rids")
+    if rids is not None and (not isinstance(rids, list) or any(not isinstance(r, str) for r in rids)):
+        raise ModelError("rids: een lijst met apparaten")
+    dids = await _espdev(request).claim_hue(str(b.get("bridge") or ""), rids or None)
+    keys = [f"e:{d}" for d in dids]
+    if b.get("page") and keys:
+        schema.place_grid(ctx.model, ctx.engine.snapshot(), keys, b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "ids": dids, "keys": keys})
+
+
 async def espdev_put(request: web.Request) -> web.Response:
     _espdev(request).update(request.match_info["did"], await _body(request))
     return web.json_response({"ok": True})
@@ -1024,6 +1061,10 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/espdev/claim", espdev_claim)
     r.add_post("/api/espdev/scan", espdev_scan)
     r.add_post("/api/espdev/esphome", espdev_esphome)
+    r.add_post("/api/espdev/hue/bridge", hue_bridge_add)
+    r.add_put("/api/espdev/hue/bridge/{bid}", hue_bridge_put)
+    r.add_delete("/api/espdev/hue/bridge/{bid}", hue_bridge_delete)
+    r.add_post("/api/espdev/hue/claim", hue_claim)
     r.add_put("/api/espdev/{did}", espdev_put)
     r.add_post("/api/espdev/{did}/set", espdev_set)
     r.add_post("/api/espdev/{did}/do", espdev_do)
