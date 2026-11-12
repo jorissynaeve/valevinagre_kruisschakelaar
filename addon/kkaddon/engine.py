@@ -185,6 +185,7 @@ class Engine:
         self.espdev_value: Callable[[str], Any] | None = None  # een uitgang van een HUISDEV-apparaat: e:<id>:<punt>
         self.hue_view: Callable[[], list[dict]] | None = None  # de Hue-bridges met wat ze aanbieden, zonder sleutel (espdevhub.py)
         self.nuki_view: Callable[[], list[dict]] | None = None  # de Nuki-accounts met hun sloten, zonder token (espdevhub.py)
+        self.brink_view: Callable[[], list[dict]] | None = None  # de Brink Home-accounts met hun units, zonder wachtwoord (espdevhub.py)
         self.link_view: Callable[[], dict] | None = None  # koppelingen met andere installaties, zonder sleutel (linkhub.py)
         self._at(SPRINKLER_TICK, self._sprinkler_tick)
 
@@ -861,6 +862,7 @@ class Engine:
             "espdev_found": self.espdev_found() if self.espdev_found else [],
             "hue": self.hue_view() if self.hue_view else [],
             "nuki": self.nuki_view() if self.nuki_view else [],
+            "brink": self.brink_view() if self.brink_view else [],
             "charge": self.charge_view() if self.charge_view else [],
             "links": self.link_view() if self.link_view else {"me": {"id": "", "name": "", "port": 0, "has_key": False, "listening": False, "error": ""}, "peers": [], "remote": {}},
             "screens": self.screen_view() if self.screen_view else [{"id": k, **s, "online": False, "phase": "idle", "error": "", "missing": [], "uptime": None, "received": 0, "plates": []}

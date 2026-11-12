@@ -35,6 +35,7 @@ import aiohttp
 from . import discovery as d
 from . import esphome as esp
 from . import hue
+from . import brink
 from . import model as _model
 from . import nuki
 from .engine import Engine
@@ -73,6 +74,12 @@ NUKI_POLL = 30.0  # s: Nuki laat 100 verzoeken per minuut en 1000 per uur toe pe
 NUKI_BURST = (2.0, 6.0, 15.0)  # s: na een opdracht (die Nuki asynchroon uitvoert) snel nog een paar keer kijken
 NUKI_BACKOFF = 90.0  # s wachten na "te veel verzoeken"
 LID_RE = re.compile(r"^[0-9]{1,20}$")
+MAX_BRINK = 3
+BRINK_POLL = 30.0  # s: de module meldt zich ongeveer elke 8 s bij Brink; de API heeft geen gepubliceerde limiet, en dit is zuinig
+BRINK_BURST = (2.0, 6.0, 15.0)  # s: na een opdracht (die Brink asynchroon uitvoert) snel nog een paar keer kijken
+BRINK_BACKOFF = 90.0  # s na "te veel verzoeken"
+BRINK_AUTH_WAIT = 900.0  # s: een onjuist wachtwoord proberen we niet steeds opnieuw (een account kan geblokkeerd raken); wijzig het wachtwoord om meteen opnieuw te proberen
+BRINK_REAUTH = 60  # s: een toegangstoken dat nog zo lang geldig is, vernieuwen we al
 ACT_PREFIX = "do_"  # in `dev["inputs"]`: een ingang die een actie start (do_unlock), naast de ingangen die een punt instellen
 ACTION_GAP = 5.0  # s: een actie die een ingang start, hoogstens zo vaak (een bron die flappert opent geen deur drie keer)
 
@@ -294,6 +301,9 @@ class EspDevHub:
         self.accounts: dict[str, dict] = {}  # Nuki-accounts: id -> {name, token}; de token staat alleen in dit bestand (nuki.py)
         self.nk: dict[str, dict] = {}  # account -> wat Nuki tot nu meldde: {locks: {id: slot}, online, error, burst}
         self.nuki_desc: dict[str, dict] = {}  # did -> de descriptor van een slot volgens de laatste lijst van Nuki
+        self.brink_accounts: dict[str, dict] = {}  # Brink Home-accounts: id -> {name, email, password}; alleen in dit bestand (brink.py)
+        self.bk: dict[str, dict] = {}  # account -> wat Brink tot nu meldde: {units, systems, token, online, error, auth, burst}
+        self.brink_desc: dict[str, dict] = {}  # did -> de descriptor van een ventilatie-unit volgens de laatste lijst van Brink
         self._hue_locks: dict[str, asyncio.Lock] = {}
         self._hue_sent: dict[str, float] = {}
         self._listen = None
@@ -307,6 +317,7 @@ class EspDevHub:
         engine.espdev_value = self.output
         engine.hue_view = self.hue_view
         engine.nuki_view = self.nuki_view
+        engine.brink_view = self.brink_view
         _model.esp_type = self.point_type
 
     # ------------------------------------------------------------ opslag
@@ -328,6 +339,9 @@ class EspDevHub:
         for k, v in (raw.get("nuki") or {}).items() if isinstance(raw.get("nuki"), dict) else []:
             if isinstance(v, dict) and BRIDGE_RE.match(k) and isinstance(v.get("token"), str) and v["token"].strip():
                 self.accounts[k] = {"name": _text(v.get("name"), 60) or "Nuki", "token": v["token"].strip()[:200]}
+        for k, v in (raw.get("brink") or {}).items() if isinstance(raw.get("brink"), dict) else []:
+            if isinstance(v, dict) and BRIDGE_RE.match(k) and isinstance(v.get("email"), str) and v["email"].strip() and isinstance(v.get("password"), str) and v["password"]:
+                self.brink_accounts[k] = {"name": _text(v.get("name"), 60) or "Brink Home", "email": v["email"].strip()[:200], "password": v["password"][:200]}
         for k, v in (raw.get("devices") or {}).items():
             if isinstance(v, dict) and re.fullmatch(r"[a-z0-9_]{1,40}", k) and isinstance(v.get("hid"), str) and ID_RE.match(v["hid"]):
                 self.devices[k] = self._defaults(v)
@@ -356,7 +370,7 @@ class EspDevHub:
         ins = v.get("inputs") if isinstance(v.get("inputs"), dict) else {}
         shown = v.get("shown")
         port = v.get("port")
-        driver = v["driver"] if v.get("driver") in ("esphome", "hue", "nuki") else "huisdev"
+        driver = v["driver"] if v.get("driver") in ("esphome", "hue", "nuki", "brink") else "huisdev"
         emap, skipped = v.get("emap"), v.get("skipped")
         rid = v.get("rid")
         return {"name": _text(v.get("name"), 60) or "Apparaat", "hid": v["hid"], "host": _text(v.get("host"), 253), "port": port if isinstance(port, int) and 1 <= port <= 65535 else 80,
@@ -366,8 +380,10 @@ class EspDevHub:
                 "driver": driver,  # huisdev: het protocol van huisdev.h; esphome: de webserver van een ESPHome-toestel (esphome.py); hue: een apparaat van een Hue-bridge (hue.py)
                 "bridge": v["bridge"] if driver == "hue" and isinstance(v.get("bridge"), str) and BRIDGE_RE.match(v["bridge"]) else "",  # hue: welke bridge
                 "rid": rid if driver == "hue" and isinstance(rid, str) and hue.UUID_RE.match(rid) else "",  # hue: de UUID van het apparaat bij de bridge
-                "account": v["account"] if driver == "nuki" and isinstance(v.get("account"), str) and BRIDGE_RE.match(v["account"]) else "",  # nuki: welk account (token)
+                "account": v["account"] if driver in ("nuki", "brink") and isinstance(v.get("account"), str) and BRIDGE_RE.match(v["account"]) else "",  # nuki: welk account (token)
                 "lid": str(v["lid"]) if driver == "nuki" and LID_RE.match(str(v.get("lid") or "")) else "",  # nuki: het smartlockId
+                "sid": str(v["sid"]) if driver == "brink" and LID_RE.match(str(v.get("sid") or "")) else "",  # brink: het systemShareId
+                "cid": str(v["cid"]) if driver == "brink" and LID_RE.match(str(v.get("cid") or "")) else "",  # brink: het componentId van de unit
                 "auth": _text(v.get("auth"), 200) if driver == "esphome" else "",  # gebruiker:wachtwoord van web_server: auth, alleen in dit bestand
                 "emap": {k: x for k, x in emap.items() if isinstance(k, str) and isinstance(x, str)} if isinstance(emap, dict) else {},  # punt-id -> ESPHome-id, voor altijd vast
                 "skipped": [x for x in skipped if isinstance(x, str)][:100] if isinstance(skipped, list) else [],
@@ -378,7 +394,7 @@ class EspDevHub:
         tmp = self.path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"devices": self.devices, "retired": self.retired, "bridges": self.bridges, "nuki": self.accounts}, f, ensure_ascii=False, indent=1)
+            json.dump({"devices": self.devices, "retired": self.retired, "bridges": self.bridges, "nuki": self.accounts, "brink": self.brink_accounts}, f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.path)
 
     # ------------------------------------------------------------ de punten van een apparaat
@@ -453,6 +469,8 @@ class EspDevHub:
             new["inputs"] = self._inputs(did, dev, b["inputs"])
         if "host" in b and dev["driver"] == "hue":
             raise ModelError("het adres van een Hue-apparaat staat bij de bridge")
+        if "host" in b and dev["driver"] == "brink":
+            raise ModelError("een Brink-unit heeft geen adres: het loopt via de cloud van Brink Home")
         if "host" in b and dev["driver"] == "nuki":
             raise ModelError("een Nuki-slot heeft geen adres: het loopt via de cloud van Nuki")
         if "host" in b:
@@ -598,7 +616,7 @@ class EspDevHub:
         for a in dev["actions"]:
             self._retire(did, dev, action=a["id"])
         del self.devices[did]
-        for x in (self.values, self.off, self.seen, self.last, self.fails, self.errors, self.es, self.hue_desc, self.nuki_desc):
+        for x in (self.values, self.off, self.seen, self.last, self.fails, self.errors, self.es, self.hue_desc, self.nuki_desc, self.brink_desc):
             x.pop(did, None)
         self.online.discard(did)
         self._save()
@@ -663,6 +681,8 @@ class EspDevHub:
             self._start_bridge(bid)
         for aid in self.accounts:
             self._start_nuki(aid)
+        for aid in self.brink_accounts:
+            self._start_brink(aid)
         self.tasks["_tick"] = loop.create_task(self._ticker())
         self.tasks["_scan"] = loop.create_task(self._scanner())
 
@@ -728,7 +748,7 @@ class EspDevHub:
             ev.set()
 
     def _start(self, did: str) -> None:
-        if did in self.tasks or self.devices[did]["driver"] in ("hue", "nuki"):  # een Hue-apparaat of Nuki-slot heeft geen eigen taak: zijn bridge of account volgt ze allemaal
+        if did in self.tasks or self.devices[did]["driver"] in ("hue", "nuki", "brink"):  # een Hue-apparaat, Nuki-slot of Brink-unit heeft geen eigen taak: zijn bridge of account volgt ze allemaal
             return
         self.wake[did] = asyncio.Event()
         run = self._run_esphome if self.devices[did]["driver"] == "esphome" else self._run
@@ -1440,10 +1460,253 @@ class EspDevHub:
                         "locks": [{**o, "id": have.get(o["lid"]), "claimed": o["lid"] in have} for o in nuki.listing(st["locks"])]})
         return out
 
+    # ------------------------------------------------------------ Brink Home: een account (e-mail en wachtwoord) dat gepold wordt, en een blok per ventilatie-unit
+
+    async def add_brink(self, email: str, password: str, name: str = "") -> str:
+        """Een Brink Home-account koppelen. Het wachtwoord wordt meteen gecontroleerd door in te loggen. Geeft het id van het account."""
+        email, password = _text(email, 200), (password or "")[:200]
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+", email) or not password:
+            raise ModelError("geef het e-mailadres en het wachtwoord van je Brink Home-account")
+        aid = brink.account_id(email)
+        if aid in self.brink_accounts:
+            raise ModelError("dit account staat er al")
+        if len(self.brink_accounts) >= MAX_BRINK:
+            raise ModelError(f"maximaal {MAX_BRINK} Brink Home-accounts")
+        st = self._brink_new()
+        try:
+            await self._brink_login(st, {"email": email, "password": password})
+            await self._brink_cycle(aid, st, {"email": email, "password": password}, flush=False)
+        except brink.BrinkError as e:
+            log.warning("Brink Home koppelen mislukt: %s", e)
+            raise ModelError(e.reason) from None
+        if not st["units"] and not st["systems"]:
+            raise ModelError("dit account heeft geen systemen bij Brink Home")
+        self.brink_accounts[aid] = {"name": _text(name, 60) or "Brink Home", "email": email, "password": password}
+        self.bk[aid] = st
+        st.update(online=True, error="", auth=False)
+        self._save()
+        self._start_brink(aid)
+        self._poke()
+        return aid
+
+    def update_brink(self, aid: str, password: str, name: str | None = None) -> None:
+        """Een nieuw wachtwoord (na een wijziging bij Brink): de volgende ronde logt meteen opnieuw in, ook als het account net was stilgezet na een onjuist wachtwoord."""
+        acc = self.brink_accounts.get(aid)
+        if not acc:
+            raise ModelError("onbekend account")
+        if not password and name is None:
+            raise ModelError("geef een nieuw wachtwoord of een naam")
+        if password:
+            acc["password"] = password[:200]
+        if name is not None:
+            acc["name"] = _text(name, 60) or acc["name"]
+        st = self.bk.get(aid)
+        if st is not None:
+            st.update(auth=False, token=None)
+        self._save()
+        self._kick(f"brink:{aid}")
+        self._poke()
+
+    async def remove_brink(self, aid: str) -> bool:
+        """Het account en al zijn blokken weghalen. Het account bij Brink Home verandert niet."""
+        if aid not in self.brink_accounts:
+            return False
+        for did in [k for k, v in self.devices.items() if v["driver"] == "brink" and v["account"] == aid]:
+            await self.remove(did)
+        t = self.tasks.pop(f"brink:{aid}", None)
+        if t:
+            t.cancel()
+        self.wake.pop(f"brink:{aid}", None)
+        del self.brink_accounts[aid]
+        self.bk.pop(aid, None)
+        self._save()
+        self._poke()
+        return True
+
+    async def claim_brink(self, aid: str, keys: list[str] | None = None) -> list[str]:
+        """Ventilatie-units van een account als blok toevoegen (`keys` leeg: alles wat er nog niet staat). Een sleutel is `<systeem>:<component>`."""
+        st = self.bk.get(aid)
+        if aid not in self.brink_accounts or not st or not st["units"]:
+            raise ModelError("Brink Home is niet bereikbaar: er is nog geen lijst van units")
+        have = {f"{v['sid']}:{v['cid']}" for v in self.devices.values() if v["driver"] == "brink" and v["account"] == aid}
+        if keys:
+            if any(k not in st["units"] for k in keys):
+                raise ModelError("Brink Home kent deze unit niet (meer)")
+            take = [k for k in keys if k not in have]
+        else:
+            take = [k for k in st["units"] if k not in have]
+        if not take:
+            raise ModelError("alles wat Brink Home aanbiedt staat er al")
+        if len(self.devices) + len(take) > MAX_DEVICES:
+            raise ModelError(f"maximaal {MAX_DEVICES} apparaten")
+        new = []
+        for key in take:
+            sid, cid = key.split(":")
+            desc = brink.describe(st["units"][key])
+            hid = brink.hid_of(sid, cid)
+            did = _slug(hid)
+            if did in self.devices:
+                continue
+            self.devices[did] = self._defaults({"hid": hid, "name": desc["name"], "driver": "brink", "account": aid, "sid": sid, "cid": cid, "type": desc["type"], "fw": desc["fw"]})
+            self.brink_desc[did] = {**desc, "id": hid}
+            self._apply_desc(did, self.brink_desc[did])
+            new.append(did)
+        self._save()
+        if st["online"]:
+            await self._brink_flush(aid)
+        self._poke()
+        return new
+
+    def _start_brink(self, aid: str) -> None:
+        if f"brink:{aid}" not in self.tasks:
+            self.bk.setdefault(aid, self._brink_new())
+            self.wake[f"brink:{aid}"] = asyncio.Event()
+            self.tasks[f"brink:{aid}"] = asyncio.get_running_loop().create_task(self._run_brink(aid))
+
+    @staticmethod
+    def _brink_new() -> dict:
+        return {"units": {}, "systems": {}, "token": None, "exp": 0.0, "online": False, "error": "", "auth": False, "burst": []}
+
+    def _brink_kick(self, aid: str) -> None:
+        """Na een opdracht: Brink voert hem asynchroon uit, dus over 2, 6 en 15 s kijken we of de unit er is."""
+        st = self.bk.get(aid)
+        if st is not None:
+            st["burst"] = list(BRINK_BURST)
+        self._kick(f"brink:{aid}")
+
+    def _brink_children(self, aid: str) -> list[str]:
+        return [did for did, dev in self.devices.items() if dev["driver"] == "brink" and dev["account"] == aid]
+
+    async def _brink_login(self, st: dict, acc: dict) -> None:
+        # een eigen sessie met een cookiejar voor het inloggen (de anti-forgery cookie); `unsafe` laat ook een IP-adres toe, voor de tests
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as s:
+            token, ttl = await brink.login(s, acc["email"], acc["password"])
+        st["token"], st["exp"] = token, time.monotonic() + ttl
+
+    async def _brink_call(self, st: dict, acc: dict, method: str, path: str, body=None) -> tuple[int, object]:
+        """Een verzoek met het toegangstoken; verlopen of ingetrokken (401) = een keer opnieuw inloggen en nog een keer proberen."""
+        for attempt in (0, 1):
+            if st["token"] is None or time.monotonic() > st["exp"] - BRINK_REAUTH:
+                await self._brink_login(st, acc)
+            try:
+                return await brink.request(self._session(), st["token"], method, path, body)
+            except brink.BrinkError as e:
+                if e.code != "token" or attempt:
+                    raise
+                st["token"] = None
+        raise brink.BrinkError("token", "de sessie bij Brink Home is verlopen")
+
+    async def _brink_cycle(self, aid: str, st: dict, acc: dict, flush: bool = True) -> None:
+        """Eén ronde: de systemen, en van elk systeem dat online is de beschrijving met de waarden. Een systeem dat offline is, geeft geen waarden (Brink toont daar zijn laatste stand)."""
+        status, data = await self._brink_call(st, acc, "GET", f"{brink.API}systems?pageSize=50")
+        if status != 200:
+            raise brink.BrinkError("net", f"Brink Home antwoordt met HTTP {status}", status)
+        systems = brink.systems(data)
+        units: dict[str, dict] = {}
+        for sid, info in systems.items():
+            if info["state"] != brink.GATEWAY_ONLINE:
+                continue
+            status, ui = await self._brink_call(st, acc, "GET", f"{brink.API}systems/{sid}/uidescription")
+            if status != 200:
+                raise brink.BrinkError("net", f"Brink Home antwoordt met HTTP {status}", status)
+            for cid, comp in brink.ventilation_units(brink.components(ui)).items():
+                units[f"{sid}:{cid}"] = comp
+        st["systems"], st["units"] = systems, units
+        if flush:
+            await self._brink_flush(aid)
+
+    async def _brink_flush(self, aid: str) -> None:
+        """De lijst van Brink als HUISDEV-state naar elk blok. Een unit die niet in de lijst staat is offline: de module meldt zich niet bij Brink, of staat niet meer in het account."""
+        st = self.bk[aid]
+        st.update(online=True, error="", auth=False)
+        for did in self._brink_children(aid):
+            dev = self.devices[did]
+            comp = st["units"].get(f"{dev['sid']}:{dev['cid']}")
+            if comp is None:
+                info = st["systems"].get(dev["sid"])
+                self._miss(did, "de module meldt zich niet bij Brink Home (offline)" if info and info["state"] != brink.GATEWAY_ONLINE else "deze unit staat niet meer in je Brink Home-account", hard=True)
+                continue
+            desc = {**brink.describe(comp, dev["name"]), "id": dev["hid"]}
+            self.brink_desc[did] = desc
+            vals = brink.values(comp)
+            pts = {p["id"]: ({"v": vals[p["id"]], "age": 0} if vals.get(p["id"]) is not None else {"v": None}) for p in desc["points"]}
+            await self._on_state(did, {"proto": "1.0", "rev": desc["rev"], "points": pts, "actions": {}})
+        self._poke()
+
+    def _brink_down(self, aid: str, st: dict, e: brink.BrinkError) -> None:
+        st.update(online=False, error=str(e), auth=e.code == "auth")
+        for did in self._brink_children(aid):
+            self._miss(did, str(e), hard=True)  # wat we niet meer horen, laat geen waarde meer vers: meteen offline
+        self._poke()
+
+    async def _run_brink(self, aid: str) -> None:
+        while True:
+            acc = self.brink_accounts.get(aid)
+            if not acc:
+                return
+            st = self.bk.setdefault(aid, self._brink_new())
+            delay = None
+            try:
+                await self._brink_cycle(aid, st, acc)
+            except brink.BrinkError as e:
+                self._brink_down(aid, st, e)
+                delay = BRINK_AUTH_WAIT if e.code == "auth" else BRINK_BACKOFF if e.code == "rate" else None
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - een rare lijst mag het volgen van dit account niet voorgoed stilleggen
+                log.exception("Brink %s: lijst niet te verwerken", aid)
+                self._brink_down(aid, st, brink.BrinkError("net", "onbegrijpelijk antwoord"))
+            if delay is None:
+                delay = st["burst"].pop(0) if st["burst"] else BRINK_POLL
+            ev = self.wake.get(f"brink:{aid}")
+            woke = False
+            try:
+                await asyncio.wait_for(ev.wait(), delay) if ev else await asyncio.sleep(delay)
+                woke = ev is not None
+            except asyncio.TimeoutError:
+                pass
+            if ev:
+                ev.clear()
+            if woke and st["burst"] and not st["auth"]:  # een opdracht net verstuurd: eerst de tijd geven die de unit nodig heeft
+                await asyncio.sleep(st["burst"].pop(0))
+
+    async def _brink_send(self, did: str, dev: dict, pid: str, v) -> dict:
+        acc, st = self.brink_accounts.get(dev["account"]), self.bk.get(dev["account"])
+        if not acc or not st or did not in self.online:
+            raise ModelError("niet verstuurd: geen verbinding met Brink Home")
+        comp = st["units"].get(f"{dev['sid']}:{dev['cid']}")
+        if comp is None:
+            raise ModelError("deze unit staat niet meer in je Brink Home-account")
+        try:
+            path, body = brink.write_request(dev["sid"], comp, pid, v)
+        except ValueError as e:
+            raise ModelError(str(e)) from None
+        try:
+            status, data = await self._brink_call(st, acc, "PUT", path, body)
+        except brink.BrinkError as e:
+            raise ModelError(e.reason) from None
+        if status not in (200, 204):
+            raise ModelError(f"Brink Home weigert dit (HTTP {status})")
+        self._brink_kick(dev["account"])
+        return {"ok": True, "result": "queued"}  # Brink nam de opdracht aan; of de unit hem uitvoerde, zie je aan de stand bij de volgende poll
+
+    def brink_view(self) -> list[dict]:
+        """De Brink Home-accounts voor de pagina, met wat ze aanbieden. Nooit het wachtwoord of het e-mailadres."""
+        out = []
+        for aid, acc in self.brink_accounts.items():
+            st = self.bk.get(aid) or self._brink_new()
+            have = {f"{v['sid']}:{v['cid']}": k for k, v in self.devices.items() if v["driver"] == "brink" and v["account"] == aid}
+            units = []
+            for key, comp in st["units"].items():
+                sid, cid = key.split(":")
+                units.append({"key": key, "sid": sid, "cid": cid, "hid": brink.hid_of(sid, cid), "name": brink.describe(comp)["name"], "id": have.get(key), "claimed": key in have})
+            out.append({"id": aid, "name": acc["name"], "online": st["online"], "error": st["error"], "auth": st["auth"], "units": sorted(units, key=lambda x: (x["name"].lower(), x["key"]))})
+        return out
+
     async def _refetch(self, did: str) -> None:
         dev = self.devices[did]
-        if dev["driver"] in ("esphome", "hue", "nuki"):  # de beschrijving komt uit de eventstroom of de poll en is al in `_es_flush`, `_hue_flush` of `_nuki_flush` gemaakt
-            self._apply_desc(did, {"esphome": lambda: self.es[did]["desc"], "hue": lambda: self.hue_desc[did], "nuki": lambda: self.nuki_desc[did]}[dev["driver"]]())
+        if dev["driver"] in ("esphome", "hue", "nuki", "brink"):  # de beschrijving komt uit de eventstroom of de poll en is al in `_es_flush`, `_hue_flush`, `_nuki_flush` of `_brink_flush` gemaakt
+            self._apply_desc(did, {"esphome": lambda: self.es[did]["desc"], "hue": lambda: self.hue_desc[did], "nuki": lambda: self.nuki_desc[did], "brink": lambda: self.brink_desc[did]}[dev["driver"]]())
             self._save()
             self._poke()
             return
@@ -1564,6 +1827,8 @@ class EspDevHub:
         v = check_value(p, value)
         if dev["driver"] == "hue":
             return await self._hue_send(did, dev, pid, v)
+        if dev["driver"] == "brink":
+            return await self._brink_send(did, dev, pid, v)
         if dev["driver"] == "esphome":
             eid = dev["emap"].get(pid)
             if not eid:
@@ -1728,7 +1993,7 @@ class EspDevHub:
         for did, dev in self.devices.items():
             pts = [self._point_view(did, dev, p) for p in dev["points"]]
             out.append({"id": did, "hid": dev["hid"], "name": dev["name"], "host": self.bridges[dev["bridge"]]["host"] if dev["driver"] == "hue" and dev["bridge"] in self.bridges
-                        else "api.nuki.io" if dev["driver"] == "nuki" else dev["host"], "bridge": dev["bridge"], "account": dev["account"], "port": dev["port"], "type": dev["type"], "fw": dev["fw"], "proto": dev["proto"],
+                        else "api.nuki.io" if dev["driver"] == "nuki" else "www.brink-home.com" if dev["driver"] == "brink" else dev["host"], "bridge": dev["bridge"], "account": dev["account"], "port": dev["port"], "type": dev["type"], "fw": dev["fw"], "proto": dev["proto"],
                         "proto_state": self.proto_state_of(dev), "current": f"{CURRENT[0]}.{CURRENT[1]}", "rev": dev["rev"], "online": did in self.online, "error": self.errors.get(did, ""),
                         "configured": True, "driver": dev["driver"], "ha": dev["ha"], "skipped": list(dev["skipped"]), "shown": self.shown(dev), "points": pts,
                         "actions": [{**a, "disabled": a["id"] in self.off.get(did, {}), "reason": self.off.get(did, {}).get(a["id"], "")} for a in dev["actions"]],
@@ -1797,8 +2062,8 @@ class EspDevHub:
             if not dev["ha"]:
                 continue
             drv = dev["driver"]
-            device = {"identifiers": [f"kk_esp_{did}"], "name": dev["name"], "manufacturer": {"esphome": "ESPHome", "hue": "Signify", "nuki": "Nuki"}.get(drv, "Zelfbouw"),
-                      "model": {"esphome": "ESPHome (webserver)", "hue": dev["type"] or "Hue", "nuki": "Smart Lock"}.get(drv) or f"{dev['type'] or 'apparaat'} (HUISDEV)", "sw_version": dev["fw"] or None}
+            device = {"identifiers": [f"kk_esp_{did}"], "name": dev["name"], "manufacturer": {"esphome": "ESPHome", "hue": "Signify", "nuki": "Nuki", "brink": "Brink"}.get(drv, "Zelfbouw"),
+                      "model": {"esphome": "ESPHome (webserver)", "hue": dev["type"] or "Hue", "nuki": "Smart Lock", "brink": "Ventilatie-unit"}.get(drv) or f"{dev['type'] or 'apparaat'} (HUISDEV)", "sw_version": dev["fw"] or None}
             device = {k: v for k, v in device.items() if v}
             for p in dev["points"]:
                 domain, extra = self._entity(did, p)

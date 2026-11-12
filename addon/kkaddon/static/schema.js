@@ -560,6 +560,12 @@ function scEspState(b) {
 }
 
 function scEspProto(b) {
+  if (b.driver === 'brink') {
+    const ac = (S.brink || []).find((x) => x.id === b.account);
+    return `<div class="sub">Account <b>${esc(ac ? ac.name : b.account)}</b> bij Brink Home (cloud, <code>brink-home.com</code>).${ac && ac.error ? ` ${esc(ac.error)}.` : ''} De waarden worden elke 30 seconden opgehaald en na een opdracht snel nog een paar keer. Een wijziging die je hier doet duurt enkele seconden voor de unit hem toont. Brink wijzigt zijn cloud soms zonder waarschuwing: houd er rekening mee dat deze koppeling dan stopt.</div>
+      ${ac && ac.auth ? `<div class="row"><button class="btn small danger" type="button" data-sc="brinkpw" data-account="${esc(b.account)}">Nieuw wachtwoord invoeren</button><span class="sub">de add-on probeert een onjuist wachtwoord niet steeds opnieuw</span></div>` : ''}
+      <div class="row"><label class="chk" title="Zet dit alleen aan als je de waarden ook via deze add-on in Home Assistant wilt."><input type="checkbox" data-esha ${b.ha ? 'checked' : ''}> ook als entiteiten in Home Assistant</label></div>`;
+  }
   if (b.driver === 'nuki') {
     const ac = (S.nuki || []).find((x) => x.id === b.account);
     return `<div class="sub">Account <b>${esc(ac ? ac.name : b.account)}</b> bij Nuki (cloud, <code>api.nuki.io</code>).${ac && ac.error ? ` ${esc(ac.error)}.` : ''} De stand wordt elke 30 seconden opgehaald en na een opdracht snel nog een paar keer: Nuki geeft de stand van het slot door zoals de cloud hem kent, dus een slot dat offline is merk je hier niet altijd direct.</div>
@@ -645,7 +651,9 @@ function scEspdevPanel(b, props) {
     <button class="btn small ${a.danger ? 'danger' : ''}" type="button" data-sc="esdo" data-id="${esc(b.id)}" data-a="${esc(a.id)}" ${a.disabled || !b.online ? 'disabled' : ''} title="${esc(a.reason || '')}">${esc(a.label)}${a.danger ? '…' : ''}</button>${a.disabled && a.reason ? `<span class="sub">${esc(a.reason)}</span>` : ''}</div>`).join('');
   const users = b.outs.flatMap((o) => scAcUsers(o.ref).map((u) => ({ ...u, label: o.label })));
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scEspState(b))}</span></div>
-    <div class="sub">${b.driver === 'nuki'
+    <div class="sub">${b.driver === 'brink'
+    ? `Een Brink-ventilatie-unit, gelezen en bediend via Brink Home. De <b>ventilatiestand</b> (0 tot 3), de <b>bedrijfsmodus</b> en de <b>bypass</b> kun je instellen, hier of via een ingang op het blok; de rest zijn metingen. Is de unit niet bereikbaar voor Brink Home, dan staan de waarden op onbekend en niet op de laatste stand.${b.ha ? ` In Home Assistant staan ze (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
+    : b.driver === 'nuki'
     ? `Een Nuki-slot, gelezen en bediend via de Nuki-cloud. <b>Vergrendelen</b> kan hier en vanuit Home Assistant; wat de deur opent (<b>ontgrendelen</b>, <b>deur vrijgeven</b>, <b>lock 'n' go</b>) met de hand, hier, na een bevestiging, of via een <b>ingang</b> op het blok (▶): sluit er een timer of module op aan, dan opent het slot als die van 0 naar 1 gaat. In Home Assistant staan alleen de stand en Vergrendelen.${b.ha ? ` In Home Assistant staat de stand (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
     : b.driver === 'hue'
     ? `Een Philips Hue-apparaat, gelezen en bediend via de bridge. De stand hier komt altijd uit wat de bridge meldt; een lamp die uit de netspanning is, heeft geen bekende stand.${b.ha ? ` In Home Assistant staat het (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
@@ -659,7 +667,7 @@ function scEspdevPanel(b, props) {
     <div class="sub">Een ingang doet pas iets als ze <b>verandert</b>: na een herstart of als de bron weer bekend wordt, onthoudt ze alleen de stand. Gevaarlijke punten (reset, kalibratie) kun je alleen hier met de hand bedienen.${b.driver === 'nuki' ? ' Een <b>actie</b> (▶) start alleen als de bron van <b>0 naar 1</b> gaat, wacht nooit (is er geen verbinding, dan vervalt hij), wordt niet opnieuw geprobeerd en komt hoogstens eens per 5 seconden. Wat een actie startte staat in het logboek van de add-on.' : ''}</div>
     <h2>Uitgangen gaan naar</h2>${users.map((u) => `<div class="sub">${esc(u.label)} → <a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.text)}</a></div>`).join('') || '<div class="sub">Nog nergens. Sleep een uitgang (rechts) naar Groter dan, Kleiner dan, En, Of of een routine.</div>'}
     ${diag.length ? `<h2>Diagnose</h2>${diag.map((p) => `<div class="sub">${esc(p.label)}: ${esc(scEspText(p))}</div>`).join('')}` : ''}
-    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="esdel" data-id="${esc(b.id)}">${b.driver === 'hue' || b.driver === 'nuki' ? 'Van de pagina halen' : 'Loskoppelen'}</button></div>`;
+    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="esdel" data-id="${esc(b.id)}">${b.driver === 'hue' || b.driver === 'nuki' || b.driver === 'brink' ? 'Van de pagina halen' : 'Loskoppelen'}</button></div>`;
 }
 
 // ---------------------------------------------------------------- tijd- en logicamodules
@@ -1266,8 +1274,22 @@ function scNukiMenu() { // Nuki-accounts: de sloten die ze aanbieden en nog niet
   return `<div class="scmenugroup scmenuwide"><h2>Nuki</h2>${(S.nuki || []).map(account).join('')}<button class="scmenuitem" type="button" data-sc="nukiadd"><b>Nuki-account koppelen</b><span class="sub">met een API-token van web.nuki.io (Integraties); het slot moet via de cloud bereikbaar zijn</span></button></div>`;
 }
 
+function scBrinkMenu() { // Brink Home-accounts: de ventilatie-units die ze aanbieden en nog niet op een pagina staan
+  const account = (a) => {
+    const left = a.units.filter((u) => !u.claimed);
+    const state = a.online ? `verbonden · ${a.units.length} ${a.units.length === 1 ? 'unit' : 'units'}` : (a.error || 'verbinden…');
+    return `<div class="scmenuwide"><div class="sub"><b>${esc(a.name)}</b> · ${esc(state)}</div>
+      <div class="scmenulist">${left.length > 1 ? `<button class="scmenuitem" type="button" data-sc="brinkall" data-account="${esc(a.id)}" data-n="${left.length}"><b>Alles toevoegen (${left.length})</b><span class="sub">op deze pagina</span></button>` : ''}
+      ${left.map((u) => `<button class="scmenuitem" type="button" data-sc="brinkclaim" data-account="${esc(a.id)}" data-key="${esc(u.key)}"><b>${esc(u.name)}</b><span class="sub">Ventilatie-unit</span></button>`).join('')}
+      <button class="scmenuitem" type="button" data-sc="brinkpw" data-account="${esc(a.id)}"><b>Wachtwoord wijzigen</b><span class="sub">als je het bij Brink Home veranderde</span></button>
+      <button class="scmenuitem" type="button" data-sc="brinkdel" data-account="${esc(a.id)}"><b>Account loskoppelen</b><span class="sub">haalt zijn blokken weg</span></button></div>
+      ${a.online && !left.length ? '<div class="sub">Alle units staan al op een pagina.</div>' : ''}</div>`;
+  };
+  return `<div class="scmenugroup scmenuwide"><h2>Brink Home (ventilatie)</h2>${(S.brink || []).map(account).join('')}<button class="scmenuitem" type="button" data-sc="brinkadd"><b>Brink Home-account koppelen</b><span class="sub">met je e-mailadres en wachtwoord van brink-home.com; via de cloud van Brink</span></button></div>`;
+}
+
 function scMenu() {
-  return `<details class="scmenu" id="scmenu"><summary class="btn small primary">+ Module</summary><div class="scmenupop">${SC_MENU.map(([title, items]) => `<div class="scmenugroup"><h2>${title}</h2>${items.map(([type, name, sub]) => `<button class="scmenuitem" type="button" data-sc="add" data-type="${type}"><b>${name}</b><span class="sub">${sub}</span></button>`).join('')}</div>`).join('')}${scEspFound()}${scHueMenu()}${scNukiMenu()}</div></details>`;
+  return `<details class="scmenu" id="scmenu"><summary class="btn small primary">+ Module</summary><div class="scmenupop">${SC_MENU.map(([title, items]) => `<div class="scmenugroup"><h2>${title}</h2>${items.map(([type, name, sub]) => `<button class="scmenuitem" type="button" data-sc="add" data-type="${type}"><b>${name}</b><span class="sub">${sub}</span></button>`).join('')}</div>`).join('')}${scEspFound()}${scHueMenu()}${scNukiMenu()}${scBrinkMenu()}</div></details>`;
 }
 
 const SC_DAYS = [['mon', 'Maandag'], ['tue', 'Dinsdag'], ['wed', 'Woensdag'], ['thu', 'Donderdag'], ['fri', 'Vrijdag'], ['sat', 'Zaterdag'], ['sun', 'Zondag']];
@@ -1932,6 +1954,53 @@ const SC_ACTIONS = {
     await refresh();
     toast('Toegevoegd. De entiteiten staan in de zijbalk; kies welke als rij op het blok staan.', 5000);
   },
+  brinkadd: async () => {
+    const menu = $('#scmenu');
+    if (menu) menu.open = false;
+    const email = (prompt('E-mailadres van je Brink Home-account (brink-home.com):') || '').trim();
+    if (!email) return;
+    const password = prompt('Wachtwoord van dit account (het wordt alleen in de add-on bewaard en alleen naar Brink Home gestuurd):') || '';
+    if (!password) return;
+    await api('POST', 'espdev/brink/account', { email, password });
+    SC.force = true;
+    await refresh();
+    toast('Gekoppeld. Kies in het menu (+ Module → Brink Home) welke unit je wilt toevoegen.', 6000);
+  },
+  brinkclaim: async (d) => {
+    const menu = $('#scmenu');
+    if (menu) menu.open = false;
+    if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
+    const r = await api('POST', 'espdev/brink/claim', { account: d.account, keys: [d.key], page: SC.page, ...scFreeSpot('module') });
+    SC.sel = SC.reveal = r.keys[0];
+    SC.force = true;
+    await refresh();
+    toast('Toegevoegd. De ventilatiestand, bedrijfsmodus en bypass kun je in de zijbalk instellen.', 5000);
+  },
+  brinkall: async (d) => {
+    const menu = $('#scmenu');
+    if (menu) menu.open = false;
+    if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
+    const r = await api('POST', 'espdev/brink/claim', { account: d.account, page: SC.page, ...scFreeSpot('module') });
+    SC.sel = SC.reveal = r.keys[0];
+    SC.force = true;
+    await refresh();
+    toast(`${r.keys.length} units toegevoegd.`, 5000);
+  },
+  brinkpw: async (d) => {
+    const password = prompt('Nieuw wachtwoord van dit Brink Home-account:') || '';
+    if (!password) return;
+    await api('PUT', `espdev/brink/account/${d.account}`, { password });
+    SC.force = true;
+    await refresh();
+    toast('Wachtwoord bijgewerkt; de add-on probeert meteen opnieuw in te loggen.', 5000);
+  },
+  brinkdel: async (d) => {
+    if (!confirm("Dit Brink Home-account loskoppelen? Zijn blokken verdwijnen van de pagina's. Je account en de unit bij Brink veranderen niet.")) return;
+    await api('DELETE', `espdev/brink/account/${d.account}`);
+    SC.sel = null;
+    SC.force = true;
+    await refresh();
+  },
   nukiadd: async () => {
     const menu = $('#scmenu');
     if (menu) menu.open = false;
@@ -2023,7 +2092,8 @@ const SC_ACTIONS = {
   },
   esdel: async (d) => {
     const es = scBlock(`e:${d.id}`);
-    if (!confirm(es && es.driver === 'nuki' ? 'Dit slot van de pagina halen? Het slot zelf verandert niet; je vindt het weer terug in het menu (+ Module → Nuki).'
+    if (!confirm(es && es.driver === 'brink' ? 'Deze ventilatie-unit van de pagina halen? Bij Brink verandert niets; je vindt hem weer terug in het menu (+ Module → Brink Home).'
+      : es && es.driver === 'nuki' ? 'Dit slot van de pagina halen? Het slot zelf verandert niet; je vindt het weer terug in het menu (+ Module → Nuki).'
       : es && es.driver === 'hue' ? 'Dit Hue-apparaat van de pagina halen? Op de bridge verandert niets; je vindt het weer terug in het menu (+ Module → Philips Hue).'
       : es && es.driver === 'esphome' ? 'Dit ESPHome-toestel uit de Huisconfig halen? Het toestel zelf verandert niet; entiteiten die de add-on in Home Assistant maakte verdwijnen.'
       : 'Dit apparaat loskoppelen? De claim op het apparaat wordt gewist en zijn entiteiten verdwijnen uit Home Assistant.')) return;

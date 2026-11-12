@@ -376,7 +376,7 @@ def _espdev_blocks(snap: dict) -> list[dict]:
         acts = [x for x in a["actions"] if a.get("driver") == "nuki" and not x["args"]]
         ports += [{"name": f"do_{x['id']}", "type": "bool", "label": x["label"], "ref": a["inputs"].get(f"do_{x['id']}"), "row": len(rows) + i, "action": True, "danger": x["danger"]} for i, x in enumerate(acts)]
         res.append({**{k: v for k, v in a.items() if k not in ("inputs", "points", "shown")}, "points": a["points"], "shown": a["shown"], "key": f"e:{a['id']}", "kind": "espdev",
-                    "source": "espdev", "tech": {"esphome": "ESPHome · webserver", "hue": f"{a['type'] or 'Apparaat'} · Philips Hue", "nuki": f"{a['type'] or 'Slot'} · Nuki"}.get(a.get("driver"), f"{a['type'] or 'Apparaat'} · HUISDEV"), "alias": "", "room": "", "rows": max(len(rows) + len(acts), 1), "ports": ports,
+                    "source": "espdev", "tech": {"esphome": "ESPHome · webserver", "hue": f"{a['type'] or 'Apparaat'} · Philips Hue", "nuki": f"{a['type'] or 'Slot'} · Nuki", "brink": f"{a['type'] or 'Ventilatie'} · Brink Home"}.get(a.get("driver"), f"{a['type'] or 'Apparaat'} · HUISDEV"), "alias": "", "room": "", "rows": max(len(rows) + len(acts), 1), "ports": ports,
                     "outs": [out(p, i) for i, p in enumerate(rows)], "all": every})
     return res
 

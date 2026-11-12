@@ -377,6 +377,26 @@ Goed om te weten:
 * Heeft ook iets anders (bijvoorbeeld JavaLox) dezelfde token, dan delen jullie de limiet.
 * De token staat alleen in `/data/espdev.json` (0600), nooit in het model, de export of de pagina. *Account loskoppelen* haalt de blokken weg maar trekt de token niet in bij Nuki: doe dat zelf op web.nuki.io.
 
+### Brink-ventilatie (Flair, Ubiflux Vigor) via Brink Home
+
+*+ Module → Brink Home (ventilatie) → Brink Home-account koppelen*: je e-mailadres en wachtwoord van **brink-home.com** (hetzelfde als in de Brink Home-app). Daarna staat je ventilatie-unit in het menu
+en maak je er een blok van. De add-on gebruikt de cloud van Brink; er is geen extra hardware voor nodig. (Het oude pad van Brink dat JavaLox gebruikte bestaat niet meer.)
+
+| Punt | Betekenis |
+|---|---|
+| *Ventilatiestand* | stand 0 tot 3, **instelbaar** |
+| *Bedrijfsmodus* | automatisch, handbediening, vakantie, party of nachtventilatie, **instelbaar** |
+| *Bypass-modus* | automatisch, gesloten of open, **instelbaar** |
+| *Debiet toevoer/afvoer*, *Buiten-* en *Toevoertemperatuur* | metingen |
+| *Bypassklep*, *Voorverwarming*, *Filter vuil*, *Dagen sinds filterreset*, *Resterende looptijd* | toestand |
+| *Actieve regeling* | wie de unit nu stuurt (portaal, wandschakelaar, ...); diagnose |
+
+* De drie instelbare punten zijn ook **ingangen** op het blok: sluit er een timer, module of getal op aan (bv. een module *Getal* die je 0 tot 3 laat volgen). Een ingang doet pas iets als ze **verandert**.
+* De stand die JavaLox zette (0 tot 3) is *Ventilatiestand*. Bij JavaLox stond de unit in *Handbediening*. Of je stand ook blijft gelden in *Automatisch* (waar het klokprogramma van de unit kan sturen), is niet nagegaan: zet de modus dan eerst op *Handbediening*.
+* De waarden worden elke **30 seconden** opgehaald en na een opdracht nog drie keer snel. Is de module niet bereikbaar voor Brink, dan staan de waarden op **onbekend** en niet op de laatste stand.
+* Het wachtwoord staat alleen in `/data/espdev.json` (0600), nooit in het model, de export of de pagina. Een **onjuist wachtwoord** probeert de add-on niet steeds opnieuw (een account kan geblokkeerd raken); kies dan *Wachtwoord wijzigen* in het menu.
+* **Let op:** Brink documenteert deze API niet en wijzigt hem zonder waarschuwing (dat gebeurde al eens). Stopt de koppeling, kijk dan eerst of Brink Home zelf nog werkt. Wil je geen afhankelijkheid van de cloud, dan kan het lokaal via Modbus (zie DESIGN.md §38).
+
 ## Energie (alle huisjes op één pagina, met prijzen)
 
 Home Assistant heeft al een energiedashboard (**Energie** in de zijbalk van HA). Het tabblad *Energie* vult het in, zodat je niet in HA

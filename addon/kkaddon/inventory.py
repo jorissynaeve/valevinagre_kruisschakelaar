@@ -51,6 +51,9 @@ def build(engine: Engine, ha: dict | None) -> list[dict[str, Any]]:
         row(f"a{a['id']}", a["name"], "airco", "Gree (UDP)", a.get("host", ""), a.get("firmware") or "", a["online"], "", a.get("error") or "")
     for e in (engine.espdev_view() if engine.espdev_view else []):
         note = {"upgrade": f"upgrade beschikbaar (actueel protocol {e['current']}, zie protocol/huisdev/HUISDEV.md)", "unsupported": "niet ondersteund: werk het apparaat of de add-on bij"}.get(e["proto_state"], "")
+        if e.get("driver") == "brink":
+            row(f"e{e['id']}", e["name"], "Brink-ventilatie", "Brink Home (cloud)", "www.brink-home.com", e.get("fw") or "", e["online"], "", e.get("error") or "")
+            continue
         if e.get("driver") == "nuki":
             row(f"e{e['id']}", e["name"], "Nuki-slot", "Nuki Web API", "api.nuki.io", e.get("fw") or "", e["online"], "", e.get("error") or "")
             continue

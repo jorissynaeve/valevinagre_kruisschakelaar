@@ -777,6 +777,39 @@ async def nuki_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
+async def brink_add(request: web.Request) -> web.Response:
+    """Een Brink Home-account koppelen met e-mail en wachtwoord. Het wachtwoord staat alleen in de body en komt nergens terug."""
+    b = await _body(request)
+    aid = await _espdev(request).add_brink(str(b.get("email") or ""), str(b.get("password") or ""), str(b.get("name") or ""))
+    return web.json_response({"ok": True, "id": aid})
+
+
+async def brink_put(request: web.Request) -> web.Response:
+    """Een nieuw wachtwoord of een andere naam voor een Brink Home-account."""
+    b = await _body(request)
+    _espdev(request).update_brink(request.match_info["aid"], str(b.get("password") or ""), str(b["name"]) if "name" in b else None)
+    return web.json_response({"ok": True})
+
+
+async def brink_claim(request: web.Request) -> web.Response:
+    """Units van een Brink Home-account als blok toevoegen (`keys` leeg: alles wat er nog niet staat) en op een pagina zetten."""
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    keys = b.get("keys")
+    if keys is not None and (not isinstance(keys, list) or any(not isinstance(x, str) for x in keys)):
+        raise ModelError("keys: een lijst met units")
+    dids = await _espdev(request).claim_brink(str(b.get("account") or ""), keys or None)
+    blocks = [f"e:{d}" for d in dids]
+    if b.get("page") and blocks:
+        schema.place_grid(ctx.model, ctx.engine.snapshot(), blocks, b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "ids": dids, "keys": blocks})
+
+
+async def brink_delete(request: web.Request) -> web.Response:
+    ok = await _espdev(request).remove_brink(request.match_info["aid"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
 async def espdev_put(request: web.Request) -> web.Response:
     _espdev(request).update(request.match_info["did"], await _body(request))
     return web.json_response({"ok": True})
@@ -1093,6 +1126,10 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/espdev/hue/claim", hue_claim)
     r.add_post("/api/espdev/nuki/account", nuki_add)
     r.add_post("/api/espdev/nuki/claim", nuki_claim)
+    r.add_post("/api/espdev/brink/account", brink_add)
+    r.add_put("/api/espdev/brink/account/{aid}", brink_put)
+    r.add_post("/api/espdev/brink/claim", brink_claim)
+    r.add_delete("/api/espdev/brink/account/{aid}", brink_delete)
     r.add_delete("/api/espdev/nuki/account/{aid}", nuki_delete)
     r.add_put("/api/espdev/{did}", espdev_put)
     r.add_post("/api/espdev/{did}/set", espdev_set)
