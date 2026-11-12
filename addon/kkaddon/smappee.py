@@ -172,17 +172,28 @@ def connectors(details: Any) -> list[dict]:
 
 
 def device_map(devices: Any) -> dict[str, dict]:
-    """`GET smart/devices` als {id: apparaat}, alleen de laadpunten."""
+    """`GET smart/devices` als {sleutel: apparaat}, met elk apparaat onder zijn `id`, `uuid`, `smartDeviceId` en `smartDeviceUuid` (de HA-integratie zoekt op al die vier). Er wordt **niet** op categorie
+    gefilterd: welke apparaten laadpunten zijn, zegt het laadstation (`connectors`); de lijst hoeft zijn categorie niet te geven."""
     out = {}
     for d in devices if isinstance(devices, list) else []:
         if not isinstance(d, dict):
             continue
-        t = d.get("type")
-        cat = t.get("category") if isinstance(t, dict) else t
-        did = _int(d.get("id"))
-        if did is not None and did > 0 and str(cat or "").upper() == CAT_CHARGER:
-            out[str(did)] = d
+        for k in ("id", "uuid", "smartDeviceId", "smartDeviceUuid"):
+            v = d.get(k)
+            key = str(_int(v)) if _int(v) is not None else v.strip() if isinstance(v, str) and v.strip() else None
+            if key:
+                out.setdefault(key, d)
     return out
+
+
+def categories(devices: Any) -> list[str]:
+    """De categorieën die de lijst met smart devices noemt, voor een foutmelding die zegt wat Smappee wel gaf."""
+    out = set()
+    for d in devices if isinstance(devices, list) else []:
+        t = d.get("type") if isinstance(d, dict) else None
+        c = t.get("category") if isinstance(t, dict) else t
+        out.add(str(c)[:30] if c else "zonder categorie")
+    return sorted(out)[:8]
 
 
 # ------------------------------------------------------------ van een laadpunt naar punten

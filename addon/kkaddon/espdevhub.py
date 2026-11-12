@@ -1747,7 +1747,9 @@ class EspDevHub:
             log.warning("Smappee koppelen mislukt: %s", e)
             raise ModelError(e.reason) from None
         if not st["units"]:
-            raise ModelError("dit account heeft geen laadpunten bij Smappee (of geen recht om ze te zien)")
+            why = self._smappee_explain(st)
+            log.warning("Smappee: geen laadpunten gevonden (%s)", why)
+            raise ModelError(f"dit account heeft geen laadpunten bij Smappee (of geen recht om ze te zien). Wat Smappee gaf: {why}")
         self.smappee_accounts[aid] = {"name": _text(name, 60) or "Smappee", "username": username, "password": password}
         self.sm[aid] = st
         st.update(online=True, error="", auth=False)
@@ -1842,6 +1844,18 @@ class EspDevHub:
             st["sess_at"] = {}  # en de sessies ook opnieuw
         self._kick(f"smappee:{aid}")
 
+    @staticmethod
+    def _smappee_explain(st: dict) -> str:
+        """Waar het zoeken naar laadpunten strandde, in woorden en getallen (geen namen, ids of tokens): wat het account aan Smappee-locaties heeft, hoeveel daarvan een laadstation hebben, hoeveel modules
+        en laadpunten dat station meldt, en wat de lijst met smart devices bevat."""
+        d = st.get("diag") or {}
+        parts = [f"{d.get('locations', '?')} locaties" + (f" (velden: {', '.join(d['keys'])})" if d.get("keys") else ""), f"{len(st.get('stations') or {})} met een laadstation"]
+        for s, x in (d.get("stations") or {}).items():
+            parts.append(f"station …{s}: {x['modules']} modules, {x['laadpunten']} laadpunten")
+        for loc, x in (d.get("devices") or {}).items():
+            parts.append(f"locatie …{loc}: {x['n']} smart devices (categorieën: {', '.join(x['categorieen']) or 'geen'})")
+        return "; ".join(parts)
+
     def _smappee_children(self, aid: str) -> list[str]:
         return [did for did, dev in self.devices.items() if dev["driver"] == "smappee" and dev["account"] == aid]
 
@@ -1868,11 +1882,15 @@ class EspDevHub:
         if status != 200:
             raise smappee.SmappeeError("net", f"Smappee antwoordt met HTTP {status}", status)
         stations = smappee.stations(data)
+        st["diag"] = {"locations": len(data) if isinstance(data, list) else f"geen lijst ({type(data).__name__})", "stations": {}, "devices": {}}
+        if isinstance(data, list):
+            st["diag"]["keys"] = sorted({k for x in data if isinstance(x, dict) for k in x})[:25]
         for serial, stn in stations.items():
             status, det = await self._smappee_call(st, acc, "GET", f"{smappee.API}/v10/chargingstations/{serial}", params={"includeDetails": "true"})
             if status != 200:
                 raise smappee.SmappeeError("net", f"Smappee antwoordt met HTTP {status} over laadstation {serial}", status)
             stn["connectors"] = smappee.connectors(det)
+            st["diag"]["stations"][serial[-4:]] = {"modules": len(det.get("modules") or []) if isinstance(det, dict) and isinstance(det.get("modules"), list) else "geen", "laadpunten": len(stn["connectors"])}
             stn["available"] = det.get("available") if isinstance(det, dict) and isinstance(det.get("available"), bool) else None
         st["stations"], st["struct_at"] = stations, time.monotonic()
 
@@ -1889,8 +1907,9 @@ class EspDevHub:
                 if status != 200:
                     raise smappee.SmappeeError("net", f"Smappee antwoordt met HTTP {status}", status)
                 by_loc[stn["loc"]] = smappee.device_map(data)
+                st.setdefault("diag", {}).setdefault("devices", {})[stn["loc"][-4:]] = {"n": len(data) if isinstance(data, list) else f"geen lijst ({type(data).__name__})", "categorieen": smappee.categories(data)}
             for c in stn["connectors"]:
-                dev = by_loc[stn["loc"]].get(c["id"])
+                dev = by_loc[stn["loc"]].get(c["id"]) or (by_loc[stn["loc"]].get(c["uuid"]) if c["uuid"] else None)
                 if dev is not None:
                     units[f"{serial}:{c['id']}"] = {**c, "serial": serial, "loc": stn["loc"], "dev": dev, "station_available": stn.get("available"), "only": len(stn["connectors"]) == 1}
         st["units"] = units

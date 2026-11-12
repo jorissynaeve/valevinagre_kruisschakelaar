@@ -86,7 +86,9 @@ def test_the_station_comes_from_the_location_with_a_charging_station_and_the_led
            + [{"position": 0, "smartDevice": {"id": LED, "type": {"category": "LED"}}}, {"smartDevice": "x"}, "y", {"position": 3, "smartDevice": {"id": "nul", "type": {"category": "CARCHARGER"}}}]}
     assert [(c["id"], c["pos"], c["name"]) for c in smappee.connectors(det)] == [(str(DEVICE), 1, "Laadpunt 1"), (str(DEVICE2), 2, "Laadpunt 2")]
     assert smappee.connectors(None) == [] and smappee.connectors({"modules": "x"}) == []
-    assert set(smappee.device_map([f.device(c) for c in f.conn.values()] + [{"id": LED, "type": {"category": "LED"}}, 5, {"id": 0, "type": {"category": "CARCHARGER"}}])) == {str(DEVICE), str(DEVICE2)}
+    m = smappee.device_map([f.device(c) for c in f.conn.values()] + [{"id": LED, "type": {"category": "LED"}}, 5, None])
+    assert {str(DEVICE), str(DEVICE2), str(LED), f.conn[DEVICE]["uuid"]} <= set(m) and m[str(DEVICE)]["uuid"] == f.conn[DEVICE]["uuid"] == m[f.conn[DEVICE]["uuid"]]["uuid"], "elk apparaat onder zijn id en zijn uuid; de lijst filtert niet op categorie"
+    assert smappee.categories([{"type": {"category": "LED"}}, {"type": "CARCHARGER"}, {"id": 1}, 5]) == ["CARCHARGER", "LED", "zonder categorie"]
 
 
 def test_a_typed_property_is_unwrapped_like_the_dashboard_sends_it():
@@ -675,4 +677,51 @@ def test_web_api_adds_claims_sets_and_removes(tmp_path, monkeypatch):
         finally:
             await c.close()
             await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_a_device_list_without_categories_still_gives_the_connectors(tmp_path, monkeypatch):
+    """De lijst met smart devices hoeft zijn categorie niet te geven: welke apparaten laadpunten zijn, zegt het laadstation."""
+    async def go():
+        fake = FakeSmappee()
+        orig = fake.device
+        fake.device = lambda c: {k: v for k, v in orig(c).items() if k != "type"}
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, fake)
+        await eventually(lambda: DID in hub.online)
+        assert r.engine.ref_value(f"e:{DID}:current") == 19
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_the_device_can_be_found_by_its_uuid_when_the_id_does_not_match(tmp_path, monkeypatch):
+    async def go():
+        fake = FakeSmappee()
+        orig = fake.device
+        fake.device = lambda c: {**orig(c), "id": 99999}  # de lijst geeft een ander id, maar wel de uuid van het laadpunt
+        r, hub, fake, aid, dids = await rig(tmp_path, monkeypatch, fake)
+        await eventually(lambda: DID in hub.online)
+        assert r.engine.ref_value(f"e:{DID}:state") == smappee.S_CONNECTED
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_when_nothing_is_found_the_message_says_where_the_search_stopped(tmp_path, monkeypatch):
+    async def go():
+        r = Rig(tmp_path)
+        hub = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)
+        fake = await FakeSmappee().start()
+        monkeypatch.setattr(smappee, "BASE", f"http://127.0.0.1:{fake.port}")
+        fake.no_stations = True  # de locaties hebben geen laadstation
+        with pytest.raises(ModelError) as e:
+            await hub.add_smappee(USERNAME, PASSWORD)
+        msg = str(e.value)
+        assert "Wat Smappee gaf" in msg and "1 locaties" in msg and "0 met een laadstation" in msg and "velden: " in msg and "id" in msg
+        assert USERNAME not in msg and PASSWORD not in msg and SERIAL not in msg, "geen gegevens van het account in de melding"
+        fake.no_stations = False
+        fake.conn.clear()  # het station meldt geen laadpunten
+        with pytest.raises(ModelError) as e:
+            await hub.add_smappee(USERNAME, PASSWORD)
+        assert "1 met een laadstation" in str(e.value) and f"station …{SERIAL[-4:]}: 1 modules, 0 laadpunten" in str(e.value) and SERIAL not in str(e.value)
+        hub.close()
+        await fake.stop()
     asyncio.run(go())
