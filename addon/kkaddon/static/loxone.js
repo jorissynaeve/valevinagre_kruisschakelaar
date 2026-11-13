@@ -59,7 +59,8 @@ function loxGroup(g) {
   const off = g.sigs.filter((s) => !s.enabled).length;
   return `<details class="lxgroup" data-lxg="${esc(g.id)}" ${LX_OPEN.has(g.id) ? 'open' : ''}>
     <summary><input type="checkbox" data-lxpick="${esc(g.id)}" ${picked ? 'checked' : ''} title="Dit apparaat in de bestanden voor Loxone Config">
-      <span class="nm">${esc(g.name)}</span><span class="sub">${nOut ? `${nOut} → Loxone` : ''}${nOut && nIn ? ' · ' : ''}${nIn ? `${nIn} ← Loxone` : ''}${off ? ` · ${off} uit` : ''}</span></summary>
+      <span class="nm">${esc(g.name)}</span><span class="sub">${nOut ? `${nOut} → Loxone` : ''}${nOut && nIn ? ' · ' : ''}${nIn ? `${nIn} ← Loxone` : ''}${off ? ` · ${off} uit` : ''}</span>
+      ${LX.channels.length > 1 ? `<select data-lxch="${esc(g.id)}" title="In welk kanaal (virtuele ingang en uitgang in Loxone) dit apparaat zit" aria-label="Kanaal">${LX.channels.map((c) => `<option value="${esc(c.id)}" ${c.id === g.sigs[0].channel ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : ''}</summary>
     <div class="scroll"><table><thead><tr><th>Richting</th><th>Bericht</th><th>Bron</th><th>Waarde</th><th>Aan</th><th></th></tr></thead><tbody>${g.sigs.map(loxSigRow).join('')}</tbody></table></div>
   </details>`;
 }
@@ -69,11 +70,8 @@ function viewLox() {
   if (LX.error) return `<div class="panel"><h3>Loxone</h3><p class="lead">${esc(LX.error)}</p></div>`;
   const groups = loxGroups();
   const rows = groups.map(loxGroup).join('') || '<p class="lead">Nog geen signalen. Kies hieronder een apparaat.</p>';
-  const none = LX_PICK && LX_PICK.size === 0;
-  const q = loxQuery();
-  const devs = (S.espdev || []).map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('');
+  const devs =(S.espdev || []).map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('');
   const st = LX.stats;
-  const ready = LX.miniserver && LX.me;
   const listening = LX.listen_error ? `<span class="badge bad">${esc(LX.listen_error)}</span>`
     : LX.udp || LX.http ? `<span class="badge ok">luistert op poort ${LX.port}</span>` : '<span class="badge warn">luistert niet</span>';
   return `<div class="panel">
@@ -92,6 +90,8 @@ function viewLox() {
       <div class="note"><span>ⓘ</span><span>De add-on luistert op poort <b>${LX.port}</b> (UDP en HTTP) en neemt alleen berichten aan van het IP van de Miniserver.</span></div>
     </div>
 
+    ${viewLoxChannels(groups)}
+
     <div class="panel">
       <div class="phead"><h3>Signalen</h3><span class="sub">${groups.length} apparaten · ${LX.signals.length} signalen</span></div>
       <div class="toolbar"><span class="sub">Klap een apparaat open voor zijn signalen. Het vinkje bepaalt wat in de bestanden voor Loxone Config komt.</span>
@@ -100,6 +100,7 @@ function viewLox() {
       <h4>Signalen van een apparaat maken</h4>
       <div class="row"><select id="lxdev">${devs || '<option value="">Nog geen apparaten</option>'}</select>
         <input type="text" id="lxpre" maxlength="24" placeholder="voorvoegsel, bv. tuin">
+        ${LX.channels.length > 1 ? `<select id="lxdevch" aria-label="Kanaal">${LX.channels.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select>` : ''}
         <button class="btn" type="button" data-lx="adddev" ${devs ? '' : 'disabled'}>Signalen maken</button></div>
       <p class="sub" style="margin:8px 0 0">De punten die op het blok van het apparaat staan, gaan naar Loxone; wat instelbaar is kan Loxone ook zetten (<code>…_set</code>); <code>…_ok</code> meldt of het apparaat bereikbaar is.
         Een gevaarlijk punt (zoals een deur) kan Loxone lezen, nooit zetten. Wil je andere punten, zet ze eerst op het blok van het apparaat.</p>
@@ -107,16 +108,43 @@ function viewLox() {
 
     ${viewLoxLock()}
 
-    <div class="panel">
-      <div class="phead"><h3>Bestanden voor Loxone Config</h3><span class="sub">${LX_PICK ? `${LX_PICK.size} van ${groups.length} apparaten gekozen` : 'alle apparaten'}</span></div>
-      <p class="lead">Importeer de bestanden in Loxone Config als sjabloon, op dezelfde plek als waar je er een exporteerde.</p>
-      <div class="actions">${ready && !none ? `<a class="btn primary" href="api/loxone/viu.xml${q}" download>Virtuele ingang (VIU)</a><a class="btn primary" href="api/loxone/vo.xml${q}" download>Virtuele uitgang (VO)</a>
-        <a class="btn" href="api/loxone/table.txt${q}" target="_blank" rel="noopener">Tabel om over te typen</a>` : `<span class="sub">${ready ? 'Kies eerst minstens één apparaat.' : 'Vul eerst het IP van de Miniserver in.'}</span>`}
-        <button class="btn small" type="button" data-lx="pickall">Alle apparaten kiezen</button><button class="btn small" type="button" data-lx="picknone">Geen kiezen</button></div>
-      <div class="note"><span>ⓘ</span><span>Een sjabloon dat al in je project staat, werkt Config niet bij door het opnieuw te importeren, en commando's toevoegen aan een bestaande ingang of uitgang via een bestand lukt niet.
-        Maak je later signalen bij: voor <b>naar Loxone</b> typ je de commando's over uit de tabel (kies alleen dat apparaat); een nieuwe virtuele <b>uitgang</b> mag wel naast de bestaande staan.</span></div>
-      <h4>Opnieuw sturen</h4>
-      <div class="row"><button class="btn" type="button" data-lx="sync" title="Alle waarden meteen opnieuw naar Loxone sturen">Alles opnieuw sturen</button>
+    `;
+}
+
+// De downloads van een kanaal, met de keuze van apparaten (vinkjes bij Signalen) erbij.
+function loxHref(file, cid) {
+  const p = [`channel=${encodeURIComponent(cid)}`];
+  if (LX_PICK) p.push(`devices=${[...LX_PICK].map(encodeURIComponent).join(',')}`);
+  return `api/loxone/${file}?${p.join('&')}`;
+}
+
+// Kanalen: elk is één virtuele UDP-ingang plus één virtuele uitgang in Loxone, met een eigen poort. Een nieuw apparaat in een nieuw kanaal is een nieuw bestand om te importeren,
+// zonder iets te veranderen aan wat er al in Loxone Config staat.
+function viewLoxChannels(groups) {
+  const ready = LX.miniserver && LX.me;
+  const none = LX_PICK && LX_PICK.size === 0;
+  const dl = (file, label, n, cid, cls = '') => (ready && !none && n ? `<a class="btn small ${cls}" href="${loxHref(file, cid)}" download>${label}</a>` : `<button class="btn small" type="button" disabled>${label}</button>`);
+  const rows = LX.channels.map((c) => `<tr>
+      <td>${c.default ? '<b>Standaard</b>' : `<input type="text" data-chname="${esc(c.id)}" maxlength="30" value="${esc(c.name)}" aria-label="Naam van het kanaal">`}</td>
+      <td>${c.default ? `${c.port} <span class="sub">(zie hierboven)</span>` : `<input type="number" data-chport="${esc(c.id)}" min="1" max="65535" value="${c.port}" aria-label="Poort van de virtuele ingang">`}</td>
+      <td>${c.devices.length ? esc(c.devices.join(', ')) : '<span class="sub">nog geen apparaten</span>'}<div class="sub">${c.n_out} → Loxone · ${c.n_in} ← Loxone</div></td>
+      <td><div class="actions">${dl('viu.xml', 'VIU', c.n_out, c.id, 'primary')}${dl('vo.xml', 'VO', c.n_in, c.id, 'primary')}
+        <a class="btn small" href="${loxHref('table.txt', c.id)}" target="_blank" rel="noopener">Tabel</a></div></td>
+      <td>${c.default ? '' : `<div class="actions"><button class="btn small" type="button" data-lx="savech" data-id="${esc(c.id)}">Opslaan</button>
+        <button class="btn small danger" type="button" data-lx="rmch" data-id="${esc(c.id)}" title="Kanaal weghalen">✕</button></div>`}</td></tr>`).join('');
+  const nextPort = Math.max(LX.out_port, ...LX.channels.map((c) => c.port)) + 1;
+  return `<div class="panel">
+      <div class="phead"><h3>Kanalen</h3><span class="sub">${LX.channels.length} ${LX.channels.length === 1 ? 'kanaal' : 'kanalen'}</span></div>
+      <p class="lead">Een kanaal is één virtuele UDP-ingang plus één virtuele uitgang in Loxone, met een eigen poort. Zet een apparaat bij Signalen in een kanaal, en importeer het bestand van dat kanaal in Loxone Config.
+        Bij nieuwe apparaten maak je een nieuw kanaal: Config werkt een bestaand sjabloon niet bij en twee ingangen op dezelfde poort kunnen niet, maar een extra kanaal is gewoon een extra import.</p>
+      <div class="scroll"><table><thead><tr><th>Kanaal</th><th>Poort van de ingang</th><th>Apparaten</th><th title="VIU: virtuele UDP-ingang (naar Loxone). VO: virtuele uitgang (van Loxone).">Bestanden (VIU · VO)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+      <h4>Een kanaal toevoegen</h4>
+      <div class="row"><input type="text" id="lxchname" maxlength="30" placeholder="naam, bv. Tuin"><input type="number" id="lxchport" min="1" max="65535" value="${nextPort}" aria-label="Poort van de nieuwe virtuele ingang">
+        <button class="btn" type="button" data-lx="addch">Kanaal toevoegen</button></div>
+      <div class="toolbar" style="margin:12px 0 0"><span class="sub">${LX_PICK ? `Alleen ${LX_PICK.size} van ${groups.length} apparaten (vinkjes bij Signalen) komen in de bestanden.` : 'Alle apparaten van het kanaal komen in zijn bestanden; haal een vinkje bij Signalen weg om er één weg te laten.'}</span>
+        <button class="btn small" type="button" data-lx="pickall">Alle apparaten</button><button class="btn small" type="button" data-lx="picknone">Geen</button></div>
+      <div class="note"><span>ⓘ</span><span>Een signaal dat je later bij een bestaand apparaat maakt, typ je over uit de tabel van dat kanaal: commando's toevoegen aan een bestaande ingang of uitgang via een bestand lukt niet.</span></div>
+      <div class="row" style="margin-top:12px"><button class="btn" type="button" data-lx="sync" title="Alle waarden meteen opnieuw naar Loxone sturen">Alles opnieuw sturen</button>
         <span class="sub">Loxone kan dat zelf vragen met <code>kk.sync=1</code>.</span></div>
     </div>`;
 }
@@ -156,7 +184,7 @@ const LX_ACTIONS = {
   adddev: async () => {
     const did = $('#lxdev').value;
     const dev = (S.espdev || []).find((x) => x.id === did);
-    const r = await api('POST', 'loxone/device', { did, prefix: $('#lxpre').value.trim() || loxSlug(dev && dev.name) });
+    const r = await api('POST', 'loxone/device', { did, prefix: $('#lxpre').value.trim() || loxSlug(dev && dev.name), channel: ($('#lxdevch') || {}).value || '' });
     toast(r.made.length ? `${r.made.length} signalen gemaakt` : 'Er waren al signalen met deze namen');
   },
   sync: async () => { await api('POST', 'loxone/sync'); toast('Alles wordt opnieuw gestuurd'); },
@@ -167,6 +195,19 @@ const LX_ACTIONS = {
     const name = loxSlug($('#lxactname').value.trim() || a.dev);
     await api('POST', 'loxone/signals', { id: `${name}_${aid}`.slice(0, 40), dir: 'in', ref: `a:${did}:${aid}`, label: `${a.dev}: ${a.label}`, ack: $('#lxactack').checked });
     toast('Signaal gemaakt');
+  },
+  addch: async () => {
+    await api('POST', 'loxone/channels', { name: $('#lxchname').value.trim(), port: +$('#lxchport').value });
+    toast('Kanaal gemaakt: zet er een apparaat in en importeer zijn bestanden');
+  },
+  savech: async (d) => {
+    const q = (a) => document.querySelector(`[data-${a}="${CSS.escape(d.id)}"]`);
+    await api('PUT', `loxone/channels/${encodeURIComponent(d.id)}`, { name: q('chname').value.trim(), port: +q('chport').value });
+    toast('Opgeslagen. Wijzigde de poort, pas hem dan ook aan in Loxone Config.');
+  },
+  rmch: async (d) => {
+    if (!confirm('Dit kanaal weghalen? Haal ook zijn virtuele ingang en uitgang weg in Loxone Config.')) return;
+    await api('DELETE', `loxone/channels/${encodeURIComponent(d.id)}`);
   },
   openall: () => loxOpen(loxGroups().map((g) => g.id)),
   closeall: () => loxOpen([]),
@@ -197,6 +238,16 @@ document.addEventListener('toggle', (ev) => {
 document.addEventListener('change', (ev) => {
   const t = ev.target;
   if (!t.dataset) return;
+  if (t.dataset.lxch !== undefined) { // een apparaat naar een ander kanaal
+    t.blur();
+    act(async () => {
+      try {
+        await api('POST', 'loxone/assign', { group: t.dataset.lxch, channel: t.value });
+        toast('Verhuisd. Importeer de bestanden van dat kanaal in Loxone Config (en haal de commando\'s bij het oude kanaal weg).');
+      } finally { await loxLoad(); }
+    })();
+    return;
+  }
   if (t.dataset.lxpick !== undefined) { // een apparaat in of uit de bestanden
     const all = loxGroups().map((g) => g.id);
     const cur = new Set(LX_PICK || all);

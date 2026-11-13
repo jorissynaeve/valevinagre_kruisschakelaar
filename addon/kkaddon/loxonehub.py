@@ -47,6 +47,8 @@ ONLINE_RE = re.compile(r"^online:([a-z0-9_]{1,40})$")
 ACT_RE = re.compile(r"^a:([a-z0-9_]{1,40}):([a-z][a-z0-9_]{0,23})$")  # een actie van een Nuki-slot: `a:<apparaat>:<actie>`
 KINDS = ("bool", "int", "float")
 NO_DEVICE = "-"  # de groep van signalen zonder apparaat (een timer of module als bron)
+MAIN = "main"  # het standaardkanaal: zijn poort is `out_port`
+MAX_CHANNELS = 20  # een Miniserver kent hoogstens ~50 verschillende UDP-poorten voor virtuele ingangen
 
 
 def _int(raw, lo: int, hi: int, what: str) -> int:
@@ -97,6 +99,8 @@ class LoxoneHub:
         self.addon_host = ""
         self.transport = "http"  # hoe de Miniserver de add-on aanroept: http of udp
         self.signals: dict[str, dict] = {}
+        self.channels: dict[str, dict] = {}  # extra kanalen: id -> {"name", "port"}; het standaardkanaal (`MAIN`) staat hier niet in
+        self.assign: dict[str, str] = {}  # apparaat (of `-`) -> kanaal; wat er niet in staat zit in het standaardkanaal
         self.sent: dict[str, dict] = {}  # id -> {"txt", "v", "t", "wall"} van het laatst verstuurde
         self.got: dict[str, dict] = {}  # id -> {"v", "wall", "result"} van het laatst ontvangene
         self.queue: OrderedDict[str, bytes] = OrderedDict()
@@ -132,6 +136,15 @@ class LoxoneHub:
             self.transport = raw.get("transport") if raw.get("transport") in ("http", "udp") else "http"
         except ModelError as e:
             log.error("instellingen in %s ongeldig: %s", self.path, e)
+        for cid, c in (raw.get("channels") or {}).items():
+            try:
+                self._check_channel(cid, c.get("name"), c.get("port"))
+                self.channels[cid] = {"name": str(c["name"]).strip()[:30], "port": c["port"]}
+            except (ModelError, AttributeError) as e:
+                log.error("kanaal %s in %s overgeslagen: %s", cid, self.path, e)
+        for g, cid in (raw.get("assign") or {}).items():
+            if isinstance(g, str) and cid in self.channels:
+                self.assign[g] = cid
         for sid, s in (raw.get("signals") or {}).items():
             try:
                 self.signals[sid] = self._clean(sid, s)
@@ -142,7 +155,8 @@ class LoxoneHub:
         tmp = self.path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"miniserver": self.miniserver, "out_port": self.out_port, "addon_host": self.addon_host, "transport": self.transport, "signals": self.signals},
+            json.dump({"miniserver": self.miniserver, "out_port": self.out_port, "addon_host": self.addon_host, "transport": self.transport, "signals": self.signals,
+                       "channels": self.channels, "assign": self.assign},
                       f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.path)
 
@@ -167,10 +181,93 @@ class LoxoneHub:
         transport = b.get("transport", self.transport)
         if transport not in ("http", "udp"):
             raise ModelError("verbinding naar de add-on: http of udp")
+        if any(c["port"] == port for c in self.channels.values()):
+            raise ModelError(f"poort {port} is al van een ander kanaal")
         if transport == "udp" and any(self.is_danger(sg) for sg in self.signals.values()):
             raise ModelError("er zijn gevaarlijke acties (ontgrendelen): die worden alleen over HTTP aangenomen. Haal ze eerst weg, of kies HTTP")
         self.miniserver, self.out_port, self.addon_host, self.transport = mini, port, host, transport
         self._save()
+        self._poke()
+
+    # ------------------------------------------------------------ kanalen
+
+    # Een kanaal is één virtuele UDP-ingang plus één virtuele uitgang in Loxone, met een eigen poort voor de ingang. Een sjabloon dat je al in Config hebt, werkt Config niet bij
+    # en twee virtuele UDP-ingangen op dezelfde poort kunnen niet: een nieuw apparaat in een nieuw kanaal is dus een nieuw bestand, zonder iets te veranderen aan wat er staat.
+
+    def _check_channel(self, cid, name, port, current: str | None = None) -> None:
+        if not isinstance(cid, str) or not re.fullmatch(r"[a-z0-9_]{1,20}", cid) or cid == MAIN:
+            raise ModelError("onbruikbaar kanaal")
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 30:
+            raise ModelError("naam van het kanaal: 1 tot 30 tekens")
+        port = _int(port, 1, 65535, "poort van het kanaal")
+        if port == self.out_port or any(c["port"] == port for k, c in self.channels.items() if k != current):
+            raise ModelError(f"poort {port} is al van een ander kanaal")
+
+    def channel_list(self) -> list[dict]:
+        return [{"id": MAIN, "name": "Standaard", "port": self.out_port, "default": True}] + [
+            {"id": k, "name": c["name"], "port": c["port"], "default": False} for k, c in sorted(self.channels.items(), key=lambda kv: kv[1]["name"].lower())]
+
+    def channel_of(self, s: dict) -> str:
+        cid = self.assign.get(self.group_of(s), MAIN)
+        return cid if cid in self.channels else MAIN
+
+    def channel_port(self, cid: str) -> int:
+        return self.out_port if cid == MAIN or cid not in self.channels else self.channels[cid]["port"]
+
+    def channel_name(self, cid: str) -> str:
+        return "Standaard" if cid == MAIN or cid not in self.channels else self.channels[cid]["name"]
+
+    def add_channel(self, name: str, port) -> str:
+        if len(self.channels) >= MAX_CHANNELS:
+            raise ModelError(f"hoogstens {MAX_CHANNELS} kanalen")
+        name = str(name or "").strip()
+        base = re.sub(r"[^a-z0-9]+", "_", name.lower().encode("ascii", "ignore").decode()).strip("_")[:16] or "kanaal"
+        cid, n = base, 2
+        while cid in self.channels or cid == MAIN:
+            cid, n = f"{base}_{n}", n + 1
+        self._check_channel(cid, name, port)
+        self.channels[cid] = {"name": name[:30], "port": _int(port, 1, 65535, "poort van het kanaal")}
+        self._save()
+        self._poke()
+        return cid
+
+    def update_channel(self, cid: str, b: dict) -> None:
+        c = self.channels.get(cid)
+        if not c:
+            raise ModelError("onbekend kanaal (de poort van het standaardkanaal stel je in bij de verbinding)")
+        name, port = b.get("name", c["name"]), b.get("port", c["port"])
+        self._check_channel(cid, name, port, current=cid)
+        moved = _int(port, 1, 65535, "poort van het kanaal") != c["port"]
+        c["name"], c["port"] = str(name).strip()[:30], _int(port, 1, 65535, "poort van het kanaal")
+        self._save()
+        if moved:
+            self.request_snapshot()  # de ingang staat nu op een andere poort: alles opnieuw, daar naartoe
+        self._poke()
+
+    def remove_channel(self, cid: str) -> bool:
+        if cid not in self.channels:
+            return False
+        using = sorted({self.group_name(g) for g, c in self.assign.items() if c == cid and any(self.group_of(s) == g for s in self.signals.values())})
+        if using:
+            raise ModelError("dit kanaal wordt gebruikt door " + ", ".join(using) + ": zet die eerst in een ander kanaal")
+        del self.channels[cid]
+        self.assign = {g: c for g, c in self.assign.items() if c != cid}
+        self._save()
+        self._poke()
+        return True
+
+    def set_channel(self, group: str, cid: str) -> None:
+        """Alle signalen van een apparaat (`group`) in een ander kanaal. Wat naar Loxone gaat, gaat dan naar de poort van dat kanaal."""
+        if not any(self.group_of(s) == group for s in self.signals.values()):
+            raise ModelError("onbekend apparaat")
+        if cid != MAIN and cid not in self.channels:
+            raise ModelError("onbekend kanaal")
+        if cid == MAIN:
+            self.assign.pop(group, None)
+        else:
+            self.assign[group] = cid
+        self._save()
+        self.request_snapshot()
         self._poke()
 
     # ------------------------------------------------------------ signalen
@@ -296,9 +393,11 @@ class LoxoneHub:
                for p in dev["points"] if p["kind"] != "text" and not p.get("gone")]
         return out
 
-    def add_device(self, did: str, prefix: str, points: list[dict] | None = None) -> list[str]:
+    def add_device(self, did: str, prefix: str, points: list[dict] | None = None, channel: str | None = None) -> list[str]:
         """Signalen voor de punten van een apparaat: `<voorvoegsel>_<punt>` (naar Loxone) en `<voorvoegsel>_<punt>_set` (van Loxone), plus `<voorvoegsel>_ok`.
         Zonder keuze: de punten die op het blok staan; instelbare punten krijgen ook een ingaand signaal."""
+        if channel not in (None, "", MAIN) and channel not in self.channels:
+            raise ModelError("onbekend kanaal")
         prefix = str(prefix or "").strip().lower()
         if not re.fullmatch(r"[a-z0-9_]{1,24}", prefix):
             raise ModelError("voorvoegsel: kleine letters, cijfers en _, tot 24 tekens")
@@ -331,6 +430,8 @@ class LoxoneHub:
         if len(self.signals) + len(cleaned) > MAX_SIGNALS:
             raise ModelError(f"hoogstens {MAX_SIGNALS} signalen")
         self.signals.update(cleaned)
+        if channel and channel != MAIN and cleaned:
+            self.assign[did] = channel
         self._save()
         self._poke()
         return made
@@ -383,7 +484,8 @@ class LoxoneHub:
             if self.queue and self._udp and self.miniserver:
                 sid, data = self.queue.popitem(last=False)
                 try:
-                    self._udp.sendto(data, (self.miniserver, self.out_port))
+                    sg = self.signals.get(sid)
+                    self._udp.sendto(data, (self.miniserver, self.channel_port(self.channel_of(sg)) if sg else self.out_port))
                     self.stats["sent"] += 1
                 except OSError as e:
                     self.error = f"versturen mislukt: {e}"
@@ -562,7 +664,7 @@ class LoxoneHub:
         order = sorted(self.signals.items(), key=lambda kv: (self.group_name(self.group_of(kv[1])).lower(), kv[0]))
         for sid, s in order:
             g = self.group_of(s)
-            row = {"id": sid, **s, "key": lx.key(sid), "group": g, "group_name": self.group_name(g), "action": bool(ACT_RE.match(s["ref"])), "danger": self.is_danger(s)}
+            row = {"id": sid, **s, "key": lx.key(sid), "group": g, "group_name": self.group_name(g), "channel": self.channel_of(s), "action": bool(ACT_RE.match(s["ref"])), "danger": self.is_danger(s)}
             if s["dir"] == "out":
                 st = self.sent.get(sid)
                 try:
@@ -580,7 +682,10 @@ class LoxoneHub:
             sigs.append(row)
         return {"miniserver": self.miniserver, "out_port": self.out_port, "addon_host": self.addon_host, "me": self.me(), "transport": self.transport,
                 "port": self.port, "udp": self.udp_port, "http": self.http_port, "listen_error": self.error, "stats": dict(self.stats), "queue": len(self.queue),
-                "signals": sigs, "now": now}
+                "signals": sigs, "now": now,
+                "channels": [{**c, "n_out": sum(1 for s in sigs if s["channel"] == c["id"] and s["dir"] == "out" and s["enabled"]),
+                              "n_in": sum(1 for s in sigs if s["channel"] == c["id"] and s["dir"] == "in" and s["enabled"]),
+                              "devices": sorted({s["group_name"] for s in sigs if s["channel"] == c["id"]})} for c in self.channel_list()]}
 
     @staticmethod
     def group_of(s: dict) -> str:
@@ -594,36 +699,47 @@ class LoxoneHub:
         dev = self.espdev.devices.get(g) if self.espdev else None
         return dev["name"] if dev else g
 
-    def _sorted(self, devices=None) -> list[dict]:
-        """De ingeschakelde signalen, per apparaat en dan op naam; met `devices` (een lijst apparaat-id's, `-` voor overig) alleen die van die apparaten."""
+    def _sorted(self, devices=None, channel: str = MAIN) -> list[dict]:
+        """De ingeschakelde signalen van een kanaal, per apparaat en dan op naam; met `devices` (een lijst apparaat-id's, `-` voor overig) alleen die van die apparaten."""
         want = set(devices) if devices is not None else None
-        rows = [{"id": sid, **s} for sid, s in self.signals.items() if s["enabled"] and (want is None or self.group_of(s) in want)]
+        rows = [{"id": sid, **s} for sid, s in self.signals.items()
+                if s["enabled"] and self.channel_of(s) == channel and (want is None or self.group_of(s) in want)]
         return sorted(rows, key=lambda r: (self.group_name(self.group_of(r)).lower(), r["id"]))
 
-    def _title(self, base: str, devices) -> str:
-        """Een gefilterd bestand krijgt de namen van zijn apparaten in de titel, zodat twee imports in Config uit elkaar te houden zijn."""
+    def _title(self, base: str, devices, channel: str = MAIN) -> str:
+        """Een bestand van een ander kanaal of van een paar apparaten krijgt dat in de titel, zodat twee imports in Config uit elkaar te houden zijn."""
+        if channel != MAIN:
+            base = f"{base} - {self.channel_name(channel)}"
         if devices is None:
             return base
         names = sorted({self.group_name(g) for g in devices})
         return f"{base} - " + (", ".join(names) if 0 < len(names) <= 3 else f"{len(names)} apparaten")
 
-    def viu(self, devices=None) -> str:
-        if not self.me():
-            raise ModelError("stel eerst het adres van de Miniserver of van de add-on in")
-        return lx.viu_xml(self._title("Huisconfig naar Loxone", devices), self.me(), self.out_port, [s for s in self._sorted(devices) if s["dir"] == "out"])
+    def _known(self, channel: str) -> None:
+        if channel != MAIN and channel not in self.channels:
+            raise ModelError("onbekend kanaal")
 
-    def vo(self, devices=None) -> str:
+    def viu(self, devices=None, channel: str = MAIN) -> str:
         if not self.me():
             raise ModelError("stel eerst het adres van de Miniserver of van de add-on in")
-        return lx.vo_xml(self._title("Huisconfig van Loxone", devices), self.me(), self._listen_port(), self.transport,
-                         [s for s in self._sorted(devices) if s["dir"] == "in"])
+        self._known(channel)
+        return lx.viu_xml(self._title("Huisconfig naar Loxone", devices, channel), self.me(), self.channel_port(channel),
+                          [s for s in self._sorted(devices, channel) if s["dir"] == "out"])
+
+    def vo(self, devices=None, channel: str = MAIN) -> str:
+        if not self.me():
+            raise ModelError("stel eerst het adres van de Miniserver of van de add-on in")
+        self._known(channel)
+        return lx.vo_xml(self._title("Huisconfig van Loxone", devices, channel), self.me(), self._listen_port(), self.transport,
+                         [s for s in self._sorted(devices, channel) if s["dir"] == "in"])
 
     def _listen_port(self) -> int:
         """De poort waarop de add-on luistert, voor het soort verbinding dat Loxone gebruikt."""
         return (self.http_port if self.transport == "http" else self.udp_port) or self.port
 
-    def table(self, devices=None) -> str:
-        return lx.table(self.me(), self.out_port, self.me(), self._listen_port(), self.transport, self._sorted(devices))
+    def table(self, devices=None, channel: str = MAIN) -> str:
+        self._known(channel)
+        return lx.table(self.me(), self.channel_port(channel), self.me(), self._listen_port(), self.transport, self._sorted(devices, channel))
 
 
 class _Udp(asyncio.DatagramProtocol):

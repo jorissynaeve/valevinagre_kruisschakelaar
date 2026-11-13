@@ -531,8 +531,9 @@ Het model zit in `/data/network.json` (zit in de HA-back-up) en kan geëxporteer
 Instellingen → **Loxone** koppelt de add-on aan een Loxone Miniserver. Elk signaal is een kort bericht `kk.<naam>=<getal>`; een aan/uit is 1 of 0 en een keuze (scene, ventilatiestand) is het nummer ervan.
 
 1. Vul het IP van de Miniserver in, de poort van zijn virtuele UDP-ingang (je kiest er zelf een, standaard 9100) en eventueel het IP van de add-on.
-2. Kies een apparaat (Hue, Smappee, Brink, Nuki, een eigen apparaat) en een voorvoegsel: de punten van zijn blok worden signalen naar Loxone, wat instelbaar is kan Loxone ook zetten (`…_set`), en `…_ok` meldt of het apparaat bereikbaar is.
-3. Download **VIU_Huisconfig.xml** (wat naar Loxone gaat) en **VO_Huisconfig.xml** (wat van Loxone komt) en importeer ze in Loxone Config als sjabloon. Het signalenoverzicht is per apparaat ingeklapt; het vinkje bij een apparaat bepaalt of het in de bestanden komt (standaard alle apparaten).
+2. Maak eventueel een **kanaal** (*Kanalen*): één virtuele UDP-ingang plus één virtuele uitgang in Loxone, met een eigen poort. Kies dan bij een apparaat in welk kanaal het zit; zonder keuze zit het in *Standaard*. Zet nieuwe apparaten in een nieuw kanaal, want Config werkt een sjabloon dat al in je project staat niet bij.
+   Kies een apparaat (Hue, Smappee, Brink, Nuki, een eigen apparaat) en een voorvoegsel: de punten van zijn blok worden signalen naar Loxone, wat instelbaar is kan Loxone ook zetten (`…_set`), en `…_ok` meldt of het apparaat bereikbaar is.
+3. Download per kanaal de **VIU** (wat naar Loxone gaat) en de **VO** (wat van Loxone komt) en importeer ze in Loxone Config als sjabloon. Het signalenoverzicht is per apparaat ingeklapt; het vinkje bij een apparaat bepaalt of het in de bestanden komt (standaard alle apparaten).
    Een sjabloon dat al in je project staat, werkt Config niet bij door opnieuw te importeren, en commando's toevoegen aan een bestaande ingang of uitgang via een bestand lukt niet. Twee virtuele UDP-ingangen op dezelfde poort kunnen ook niet.
    Bij nieuwe signalen naar Loxone typ je de commando's over uit de tabel (kies alleen dat apparaat). Een nieuwe virtuele **uitgang** (van Loxone) mag wel naast de bestaande staan: importeer het bestand van alleen dat apparaat (de titel noemt het apparaat).
 

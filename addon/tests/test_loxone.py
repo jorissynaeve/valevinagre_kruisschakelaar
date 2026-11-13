@@ -1,6 +1,7 @@
 """De brug naar een Loxone Miniserver (loxone.py en loxonehub.py): het berichtformaat, de importbestanden voor Loxone Config (vergeleken met echte exports van de gebruiker
 in tests/data/loxone/), en het verkeer: naar een nagebootste Miniserver (een UDP-socket) en terug over UDP en HTTP, met een nagebootst HUISDEV-apparaat als bron en doel."""
 import asyncio
+import json
 import os
 import socket
 import xml.etree.ElementTree as ET
@@ -711,6 +712,148 @@ def test_an_action_arrives_over_the_real_http_and_udp_sockets(tmp_path):
         finally:
             await hub.close()
             mini.close()
+
+    run(go())
+
+
+# ------------------------------------------------------------ kanalen: elk een eigen poort
+
+
+def test_channels_have_their_own_port_and_a_name_and_are_checked(tmp_path):
+    _, esp, hub = make(tmp_path)
+    assert hub.channel_list() == [{"id": "main", "name": "Standaard", "port": 9100, "default": True}]
+    cid = hub.add_channel("Tuin & Oprit", 9101)
+    assert cid == "tuin_oprit" and hub.channel_port(cid) == 9101 and hub.channel_name(cid) == "Tuin & Oprit"
+    assert hub.add_channel("Tuin & Oprit", 9102) == "tuin_oprit_2", "dezelfde naam geeft een ander id"
+    for name, port, word in [("Nieuw", 9100, "al van een ander kanaal"), ("Nieuw", 9101, "al van een ander kanaal"), ("", 9105, "naam"), ("x" * 31, 9105, "naam"), ("Nieuw", 0, "poort"),
+                             ("Nieuw", 70000, "poort"), ("Nieuw", "abc", "poort")]:
+        with pytest.raises(ModelError, match=word):
+            hub.add_channel(name, port)
+    hub.update_channel(cid, {"name": "Buiten", "port": 9150})
+    assert hub.channel_name(cid) == "Buiten" and hub.channel_port(cid) == 9150
+    hub.update_channel(cid, {"port": 9150})  # dezelfde poort mag, het is zijn eigen
+    with pytest.raises(ModelError, match="al van een ander"):
+        hub.update_channel(cid, {"port": 9102})
+    with pytest.raises(ModelError, match="onbekend kanaal"):
+        hub.update_channel("main", {"port": 9200})
+    with pytest.raises(ModelError, match="al van een ander"):
+        hub.configure({"out_port": 9150})
+    assert hub.remove_channel(cid) and not hub.remove_channel(cid)
+
+
+def test_a_device_in_a_channel_goes_to_its_port_and_its_files_hold_only_its_signals(tmp_path):
+    _, esp, hub = make(tmp_path)
+    esp.devices["bad"] = {"name": "Badkamer", "shown": None, "points": [pt("lux", "int"), pt("on", "bool", writable=True)]}
+    esp.online.add("bad")
+    cid = hub.add_channel("Badkamer", 9101)
+    hub.add_device("tuin", "tuin", [{"pid": "bri", "out": True, "in": True}])
+    hub.add_device("bad", "bad", [{"pid": "lux", "out": True}, {"pid": "on", "out": True, "in": True}], channel=cid)
+    hub.configure({"miniserver": "192.168.1.112", "addon_host": "192.168.1.5"})
+    assert hub.assign == {"bad": cid}
+    main = ET.fromstring(hub.viu())
+    assert main.attrib["Port"] == "9100" and {e.attrib["Title"] for e in main.iter("VirtualInUdpCmd")} == {"kk.tuin_bri", "kk.tuin_ok"} and main.attrib["Title"] == "Huisconfig naar Loxone"
+    bad = ET.fromstring(hub.viu(channel=cid))
+    assert bad.attrib["Port"] == "9101" and {e.attrib["Title"] for e in bad.iter("VirtualInUdpCmd")} == {"kk.bad_lux", "kk.bad_on", "kk.bad_ok"}
+    assert bad.attrib["Title"] == "Huisconfig naar Loxone - Badkamer", "twee imports in Config zijn zo uit elkaar te houden"
+    assert {e.attrib["Title"] for e in ET.fromstring(hub.vo(channel=cid)).iter("VirtualOutCmd")} == {"kk.bad_on_set"}
+    assert {e.attrib["Title"] for e in ET.fromstring(hub.vo()).iter("VirtualOutCmd")} == {"kk.tuin_bri_set"}
+    assert "kk.bad_lux" in hub.table(channel=cid) and "kk.bad_lux" not in hub.table() and "poort 9101" in hub.table(channel=cid)
+    with pytest.raises(ModelError, match="onbekend kanaal"):
+        hub.viu(channel="nee")
+    with pytest.raises(ModelError, match="onbekend kanaal"):
+        hub.add_device("bad", "x", [{"pid": "lux", "out": True}], channel="nee")
+
+
+def test_values_are_sent_to_the_port_of_the_channel_of_their_device(tmp_path):
+    async def go():
+        r, esp, hub = make(tmp_path)
+        esp.devices["bad"] = {"name": "Badkamer", "shown": None, "points": [pt("lux", "int")]}
+        esp.online.add("bad")
+        esp.vals["lux"] = 5
+        main, other = Mini(), Mini()
+        cid = hub.add_channel("Badkamer", other.port)
+        hub.add_device("tuin", "tuin", [{"pid": "lux", "out": True}])
+        hub.add_device("bad", "bad", [{"pid": "lux", "out": True}], channel=cid)
+        await up(hub, main)
+        try:
+            a, b = [], []
+
+            def both():
+                a.extend(main.got())
+                b.extend(other.got())
+                return "kk.tuin_lux=5" in a and "kk.bad_lux=5" in b
+
+            await eventually(both)
+            assert not any(x.startswith("kk.bad_") for x in a) and not any(x.startswith("kk.tuin_") for x in b)
+            hub.set_channel("bad", "main")  # een apparaat verhuist: voortaan naar de andere poort, en meteen alles opnieuw
+            moved = []
+
+            def arrived():
+                moved.extend(main.got())
+                return "kk.bad_lux=5" in moved
+
+            await eventually(arrived)
+        finally:
+            await hub.close()
+            main.close()
+            other.close()
+
+    run(go())
+
+
+def test_a_channel_in_use_cannot_be_removed_and_assignments_are_checked(tmp_path):
+    _, esp, hub = make(tmp_path)
+    cid = hub.add_channel("Tuin", 9101)
+    hub.add_device("tuin", "tuin", [{"pid": "lux", "out": True}], channel=cid)
+    with pytest.raises(ModelError, match="Tuin"):
+        hub.remove_channel(cid)
+    with pytest.raises(ModelError, match="onbekend apparaat"):
+        hub.set_channel("weg", cid)
+    with pytest.raises(ModelError, match="onbekend kanaal"):
+        hub.set_channel("tuin", "nee")
+    hub.set_channel("tuin", "main")
+    assert hub.assign == {} and hub.remove_channel(cid)
+
+
+def test_channels_and_assignments_survive_a_restart_and_a_broken_channel_is_skipped(tmp_path):
+    r, esp, hub = make(tmp_path)
+    cid = hub.add_channel("Tuin", 9101)
+    hub.add_device("tuin", "tuin", [{"pid": "lux", "out": True}], channel=cid)
+    raw = json.loads((tmp_path / "loxone.json").read_text(encoding="utf-8"))
+    raw["channels"]["kapot"] = {"name": "", "port": 99999}
+    raw["assign"]["x"] = "kapot"
+    (tmp_path / "loxone.json").write_text(json.dumps(raw), encoding="utf-8")
+    again = LoxoneHub(tmp_path, r.engine, esp, port=0)
+    assert set(again.channels) == {cid} and again.assign == {"tuin": cid}
+    assert again.channel_port(cid) == 9101
+
+
+def test_the_web_api_manages_channels_and_filters_the_files_by_channel(tmp_path):
+    async def go():
+        r, esp, hub = make(tmp_path)
+        s = Settings(data_dir=tmp_path, key=KEY, key_generated=False, dev_mode=True)
+        c = TestClient(TestServer(web.make_app(web.Ctx(s, r.engine, espdev=esp, loxone=hub))))
+        await c.start_server()
+        try:
+            assert (await c.put("/api/loxone", json={"miniserver": "192.168.1.112", "addon_host": "192.168.1.5", "out_port": 9100})).status == 200
+            made = await (await c.post("/api/loxone/channels", json={"name": "Tuin", "port": 9101})).json()
+            cid = made["id"]
+            assert (await c.post("/api/loxone/channels", json={"name": "Dubbel", "port": 9101})).status == 400
+            assert (await c.post("/api/loxone/device", json={"did": "tuin", "prefix": "tuin", "channel": cid})).status == 200
+            view = await (await c.get("/api/loxone")).json()
+            ch = {x["id"]: x for x in view["channels"]}
+            assert ch[cid]["port"] == 9101 and ch[cid]["n_out"] > 0 and ch[cid]["devices"] == ["Tuin"] and ch["main"]["n_out"] == 0
+            assert all(x["channel"] == cid for x in view["signals"])
+            viu = await c.get(f"/api/loxone/viu.xml?channel={cid}")
+            assert f'filename="VIU_Huisconfig_{cid}.xml"' in viu.headers["Content-Disposition"] and ET.fromstring(await viu.text()).attrib["Port"] == "9101"
+            assert list(ET.fromstring(await (await c.get("/api/loxone/viu.xml")).text()).iter("VirtualInUdpCmd")) == []
+            assert (await c.get("/api/loxone/viu.xml?channel=nee")).status == 400
+            assert (await c.delete(f"/api/loxone/channels/{cid}")).status == 400, "in gebruik"
+            assert (await c.post("/api/loxone/assign", json={"group": "tuin", "channel": "main"})).status == 200
+            assert (await c.put(f"/api/loxone/channels/{cid}", json={"name": "Buiten", "port": 9200})).status == 200
+            assert (await c.delete(f"/api/loxone/channels/{cid}")).status == 200 and (await c.delete(f"/api/loxone/channels/{cid}")).status == 404
+        finally:
+            await c.close()
 
     run(go())
 

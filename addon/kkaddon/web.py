@@ -743,7 +743,7 @@ async def loxone_device_get(request: web.Request) -> web.Response:
 async def loxone_device_post(request: web.Request) -> web.Response:
     b = await _body(request)
     pts = b.get("points")
-    made = _loxone(request).add_device(str(b.get("did") or ""), str(b.get("prefix") or ""), pts if isinstance(pts, list) else None)
+    made = _loxone(request).add_device(str(b.get("did") or ""), str(b.get("prefix") or ""), pts if isinstance(pts, list) else None, str(b.get("channel") or "") or None)
     return web.json_response({"ok": True, "made": made})
 
 
@@ -764,25 +764,52 @@ def _lox_devices(request: web.Request):
     return [d for d in raw.split(",") if d]
 
 
-def _lox_filename(prefix: str, devices) -> str:
+def _lox_filename(prefix: str, devices, channel: str = "main") -> str:
+    ch = "" if channel == "main" else "_" + re.sub(r"[^a-z0-9]+", "_", channel.lower()).strip("_")[:20]
     if devices is None:
-        return f"{prefix}_Huisconfig.xml"
+        return f"{prefix}_Huisconfig{ch}.xml"
     slug = re.sub(r"[^a-z0-9]+", "_", "_".join(sorted(devices)).lower()).strip("_")[:40] or "leeg"
-    return f"{prefix}_Huisconfig_{slug}.xml"
+    return f"{prefix}_Huisconfig{ch}_{slug}.xml"
+
+
+def _lox_channel(request: web.Request) -> str:
+    return request.query.get("channel") or "main"
 
 
 async def loxone_viu(request: web.Request) -> web.Response:
-    devs = _lox_devices(request)
-    return _download(_loxone(request).viu(devs), _lox_filename("VIU", devs))
+    devs, ch = _lox_devices(request), _lox_channel(request)
+    return _download(_loxone(request).viu(devs, ch), _lox_filename("VIU", devs, ch))
 
 
 async def loxone_vo(request: web.Request) -> web.Response:
-    devs = _lox_devices(request)
-    return _download(_loxone(request).vo(devs), _lox_filename("VO", devs))
+    devs, ch = _lox_devices(request), _lox_channel(request)
+    return _download(_loxone(request).vo(devs, ch), _lox_filename("VO", devs, ch))
 
 
 async def loxone_table(request: web.Request) -> web.Response:
-    return web.Response(text=_loxone(request).table(_lox_devices(request)), content_type="text/plain", charset="utf-8")
+    return web.Response(text=_loxone(request).table(_lox_devices(request), _lox_channel(request)), content_type="text/plain", charset="utf-8")
+
+
+async def loxone_channel_post(request: web.Request) -> web.Response:
+    b = await _body(request)
+    return web.json_response({"ok": True, "id": _loxone(request).add_channel(b.get("name"), b.get("port"))})
+
+
+async def loxone_channel_put(request: web.Request) -> web.Response:
+    _loxone(request).update_channel(request.match_info["cid"], await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def loxone_channel_delete(request: web.Request) -> web.Response:
+    if not _loxone(request).remove_channel(request.match_info["cid"]):
+        raise web.HTTPNotFound(text="onbekend kanaal")
+    return web.json_response({"ok": True})
+
+
+async def loxone_assign(request: web.Request) -> web.Response:
+    b = await _body(request)
+    _loxone(request).set_channel(str(b.get("group") or ""), str(b.get("channel") or "main"))
+    return web.json_response({"ok": True})
 
 
 async def espdev_claim(request: web.Request) -> web.Response:
@@ -1253,6 +1280,10 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_get("/api/loxone/device/{did}", loxone_device_get)
     r.add_post("/api/loxone/device", loxone_device_post)
     r.add_post("/api/loxone/sync", loxone_sync)
+    r.add_post("/api/loxone/channels", loxone_channel_post)
+    r.add_put("/api/loxone/channels/{cid}", loxone_channel_put)
+    r.add_delete("/api/loxone/channels/{cid}", loxone_channel_delete)
+    r.add_post("/api/loxone/assign", loxone_assign)
     r.add_get("/api/loxone/viu.xml", loxone_viu)
     r.add_get("/api/loxone/vo.xml", loxone_vo)
     r.add_get("/api/loxone/table.txt", loxone_table)

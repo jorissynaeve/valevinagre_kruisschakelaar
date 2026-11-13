@@ -251,3 +251,7 @@ details.lxgroup .scroll { border: 0; border-top: 1px solid var(--line); border-r
 details.lxgroup table { font-size: 13.5px; }
 details.lxgroup th { background: var(--bg); }
 details.lxgroup .badge { display: inline-block; }
+details.lxgroup > summary select { width: auto; max-width: 160px; padding: 2px 6px; font-size: 12.5px; flex: none; }
+.panel td input[type=text], .panel td input[type=number] { min-width: 110px; }
+.panel td .actions { flex-wrap: nowrap; }
+.panel td .btn { white-space: nowrap; }
