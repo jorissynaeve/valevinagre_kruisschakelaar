@@ -1,0 +1,5 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<VirtualOut HintText="" Title="Kidswekker" Comment="" Address="http://192.168.1.95" CmdInit="" CloseAfterSend="true" CmdSep=";">
+	<Info templateType="3" minVersion="17010727"/>
+	<VirtualOutCmd Title="Kidswekker setAlarm" Comment="" CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="setAlarm?nextalarm=&lt;v&gt;&amp;sunlength=10&amp;wakelength=20" CmdOnHTTP="" CmdOnPost="" CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="true" Repeat="0" RepeatRate="60" SourceValLow="0" DestValLow="0" SourceValHigh="10" DestValHigh="10" HintText=""/>
+</VirtualOut>

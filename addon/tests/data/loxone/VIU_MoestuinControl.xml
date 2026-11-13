@@ -1,0 +1,8 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<VirtualInUdp HintText="" Title="MoestuinControl" Comment="" Address="192.168.1.96" Port="9999">
+	<Info templateType="1" minVersion="17010727"/>
+	<VirtualInUdpCmd Title="moestuincontrol_relay1_get" Comment="moestuin Zone 1" Address="" Check="\iRELAY-SET-255,1,\i\v" Signed="false" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="100" DestValHigh="100" DefVal="0" MinVal="-10000" MaxVal="10000" Unit="&lt;v.1&gt;" HintText=""/>
+	<VirtualInUdpCmd Title="moestuincontrol_relay2_get" Comment="Serre zone" Address="" Check="\iRELAY-SET-255,2,\i\v" Signed="true" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="100" DestValHigh="100" DefVal="0" MinVal="-10000" MaxVal="10000" Unit="&lt;v.1&gt;" HintText=""/>
+	<VirtualInUdpCmd Title="moestuincontrol_relay3_get" Comment="Vulling kippen" Address="" Check="\iRELAY-SET-255,3,\i\v" Signed="true" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="100" DestValHigh="100" DefVal="0" MinVal="-10000" MaxVal="10000" Unit="&lt;v.1&gt;" HintText=""/>
+	<VirtualInUdpCmd Title="moestuincontrol_relay4_get" Comment="moestuin Zone 2" Address="" Check="\iRELAY-SET-255,4,\i\v" Signed="true" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="100" DestValHigh="100" DefVal="0" MinVal="-10000" MaxVal="10000" Unit="&lt;v.1&gt;" HintText=""/>
+</VirtualInUdp>

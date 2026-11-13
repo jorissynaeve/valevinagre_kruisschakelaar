@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<VirtualOut HintText="" Title="Moestuincontrol" Comment="" Address="/dev/udp/192.168.1.96/8888" CmdInit="" CloseAfterSend="true" CmdSep=";">
+	<Info templateType="3" minVersion="17010727"/>
+	<VirtualOutCmd Title="moestuincontrol_relay1_set" Comment="" CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="RELAY-SET-255,1,1
+" CmdOnHTTP="" CmdOnPost="" CmdOff="RELAY-SET-255,1,0
+" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>
+	<VirtualOutCmd Title="moestuincontrol_relay2_set" Comment="" CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="RELAY-SET-255,2,1
+" CmdOnHTTP="" CmdOnPost="" CmdOff="RELAY-SET-255,2,0
+" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>
+	<VirtualOutCmd Title="moestuincontrol_relay3_set" Comment="" CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="RELAY-SET-255,3,1
+" CmdOnHTTP="" CmdOnPost="" CmdOff="RELAY-SET-255,3,0
+" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>
+	<VirtualOutCmd Title="moestuincontrol_relay4_set" Comment="" CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="RELAY-SET-255,4,1
+" CmdOnHTTP="" CmdOnPost="" CmdOff="RELAY-SET-255,4,0
+" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>
+</VirtualOut>

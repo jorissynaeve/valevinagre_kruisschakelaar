@@ -523,6 +523,16 @@ Het model zit in `/data/network.json` (zit in de HA-back-up) en kan geëxporteer
   gemaakte Overview laat de add-on met rust en meldt dat in het logboek. Het aparte dashboard *Lampen* uit versie 0.18.0 ruimt de add-on zelf op. Heb je airco's (zie *Airco*), dan zet de add-on daar een tweede tab *Airco* naast, met een thermostaat per airco. Ook die volgt
   vanzelf: een airco toevoegen, hernoemen of verwijderen werkt hem bij, en zonder airco's is er geen tab. Zet de optie `ha_dashboard` uit als je dit niet wilt.
 
+## Loxone (in plaats van JavaLox)
+
+Instellingen → **Loxone** koppelt de add-on aan een Loxone Miniserver. Elk signaal is een kort bericht `kk.<naam>=<getal>`; een aan/uit is 1 of 0 en een keuze (scene, ventilatiestand) is het nummer ervan.
+
+1. Vul het IP van de Miniserver in, de poort van zijn virtuele UDP-ingang (je kiest er zelf een, standaard 9100) en eventueel het IP van de add-on.
+2. Kies een apparaat (Hue, Smappee, Brink, Nuki, een eigen apparaat) en een voorvoegsel: de punten van zijn blok worden signalen naar Loxone, wat instelbaar is kan Loxone ook zetten (`…_set`), en `…_ok` meldt of het apparaat bereikbaar is.
+3. Download **VIU_Huisconfig.xml** (wat naar Loxone gaat) en **VO_Huisconfig.xml** (wat van Loxone komt) en importeer ze in Loxone Config als sjabloon. Bij nieuwe signalen: opnieuw downloaden en importeren.
+
+De add-on stuurt een waarde bij een verandering en elke minuut opnieuw, en alles 10 s na het starten. Een apparaat dat offline is geeft niets (nooit een verzonnen 0). Van Loxone neemt de add-on alleen berichten aan van het IP van de Miniserver, alleen punten die instelbaar zijn en niet gevaarlijk (nooit een deur), en alleen als de waarde verandert. `kk.sync=1` vanuit Loxone vraagt om alles opnieuw. Gebruik je **HTTP** (aanbevolen: je krijgt een bevestiging), dan roept Loxone `http://<add-on>:<poort>/loxone?kk.<naam>=<waarde>` aan; bij **UDP** stuurt het `kk.<naam>=<waarde>` naar de poort `loxone_port`.
+
 ## Opties
 
 | Optie | Betekenis |
@@ -533,6 +543,7 @@ Het model zit in `/data/network.json` (zit in de HA-back-up) en kan geëxporteer
 | `broadcast_addr` | Standaard `255.255.255.255`; gebruik het subnet-broadcast als dat niet aankomt. |
 | `mqtt_host` e.a. | Leeg: de broker van Home Assistant. |
 | `ha_dashboard` | Standaard aan: de add-on houdt de tabs *Lampen* en *Airco* in de Overview van HA bij. |
+| `loxone_port` | Standaard 47510 (UDP en TCP): waar de add-on luistert naar de Loxone Miniserver. |
 
 ## Beperkingen (versie 0.1)
 

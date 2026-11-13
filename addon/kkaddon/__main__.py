@@ -19,6 +19,7 @@ from .greehub import GreeHub
 from .habridge import HaBridge
 from .hasphub import HaspHub
 from .linkhub import LinkHub
+from .loxonehub import LoxoneHub
 from .energyhub import EnergyHub
 from .remotesensors import RemoteSensors
 from .solarhub import SolarHub
@@ -96,12 +97,14 @@ async def run() -> None:
     mqtt.extras.append(espdev)
     espdev.changed = mqtt.resync
     espdev.start()
+    loxone = LoxoneHub(s.data_dir, engine, espdev, port=s.loxone_port)  # de brug naar een Loxone Miniserver, in plaats van JavaLox
+    await loxone.start()
     remote = RemoteSensors(s.data_dir, links)  # de kWh-tellers van gekoppelde Tuya-toestellen als sensoren in HA, voor het energiedashboard
     mqtt.extras.append(remote)
     links.changed = mqtt.resync
     energy = EnergyHub(s.data_dir, ha)  # het energiedashboard van HA invullen vanuit de meters
     await links.start()
-    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar, energy, charge, espdev)
+    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar, energy, charge, espdev, loxone)
     runner = web.AppRunner(make_app(ctx), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", s.web_port).start()
@@ -139,6 +142,7 @@ async def run() -> None:
     airco.close()
     solar.close()
     espdev.close()
+    await loxone.close()
     await links.close()
     engine.close()  # zet het leren uit en bewaart de staat
     await asyncio.sleep(0.2)  # laat de Learn(uit)-frames nog weggaan

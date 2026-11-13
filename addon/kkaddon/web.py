@@ -22,19 +22,20 @@ STATIC = Path(__file__).parent / "static"
 CTX = web.AppKey("ctx", object)
 INGRESS_PROXY = {"172.30.32.2", "127.0.0.1", "::1"}
 # Events die de pagina moet kennen; de rest (bv. losse commando-statussen) is ruis.
-PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "airco", "solar", "espdev", "charge", "link", "action"}
+PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "airco", "solar", "espdev", "charge", "link", "action", "loxone"}
 
 
 class Ctx:
     """Alles wat de handlers nodig hebben."""
 
-    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None, energy=None, charge=None, espdev=None) -> None:
+    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None, energy=None, charge=None, espdev=None, loxone=None) -> None:
         self.settings, self.engine, self.model = settings, engine, engine.model
         self.transport, self.mqtt, self.ha, self.panels, self.tuya, self.links = transport, mqtt, ha, panels, tuya, links
         self.airco = airco
         self.charge = charge  # laadpalen met sessies (chargehub.py)
         self.solar = solar  # omvormers (solarhub.py)
         self.espdev = espdev  # zelfbouwapparaten met het HUISDEV-protocol (espdevhub.py)
+        self.loxone = loxone  # de brug naar een Loxone Miniserver (loxonehub.py)
         self.energy = energy  # het energiedashboard van HA (energyhub.py)
         self.clients: set[web.WebSocketResponse] = set()
         engine.subscribe(self._on_event)
@@ -702,6 +703,71 @@ def _espdev(request: web.Request):
     return hub
 
 
+def _loxone(request: web.Request):
+    hub = request.app[CTX].loxone
+    if hub is None:
+        raise ModelError("de koppeling met Loxone is niet beschikbaar")
+    return hub
+
+
+async def loxone_get(request: web.Request) -> web.Response:
+    return web.json_response(_loxone(request).view())
+
+
+async def loxone_put(request: web.Request) -> web.Response:
+    _loxone(request).configure(await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def loxone_signal_post(request: web.Request) -> web.Response:
+    b = await _body(request)
+    _loxone(request).add_signal(str(b.get("id") or ""), b)
+    return web.json_response({"ok": True})
+
+
+async def loxone_signal_put(request: web.Request) -> web.Response:
+    _loxone(request).update_signal(request.match_info["sid"], await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def loxone_signal_delete(request: web.Request) -> web.Response:
+    if not _loxone(request).remove_signal(request.match_info["sid"]):
+        raise web.HTTPNotFound(text="onbekend signaal")
+    return web.json_response({"ok": True})
+
+
+async def loxone_device_get(request: web.Request) -> web.Response:
+    return web.json_response(_loxone(request).candidates(request.match_info["did"]))
+
+
+async def loxone_device_post(request: web.Request) -> web.Response:
+    b = await _body(request)
+    pts = b.get("points")
+    made = _loxone(request).add_device(str(b.get("did") or ""), str(b.get("prefix") or ""), pts if isinstance(pts, list) else None)
+    return web.json_response({"ok": True, "made": made})
+
+
+async def loxone_sync(request: web.Request) -> web.Response:
+    _loxone(request).request_snapshot()
+    return web.json_response({"ok": True})
+
+
+def _download(text: str, name: str, ctype: str = "application/xml") -> web.Response:
+    return web.Response(text=text, content_type=ctype, charset="utf-8", headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+async def loxone_viu(request: web.Request) -> web.Response:
+    return _download(_loxone(request).viu(), "VIU_Huisconfig.xml")
+
+
+async def loxone_vo(request: web.Request) -> web.Response:
+    return _download(_loxone(request).vo(), "VO_Huisconfig.xml")
+
+
+async def loxone_table(request: web.Request) -> web.Response:
+    return web.Response(text=_loxone(request).table(), content_type="text/plain", charset="utf-8")
+
+
 async def espdev_claim(request: web.Request) -> web.Response:
     """Een gevonden apparaat koppelen (claimen) en als blok op een pagina zetten."""
     ctx: Ctx = request.app[CTX]
@@ -1162,6 +1228,17 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/solar/scan", solar_scan)
     r.add_put("/api/solar/{did}", solar_put)
     r.add_delete("/api/solar/{did}", solar_delete)
+    r.add_get("/api/loxone", loxone_get)
+    r.add_put("/api/loxone", loxone_put)
+    r.add_post("/api/loxone/signals", loxone_signal_post)
+    r.add_put("/api/loxone/signals/{sid}", loxone_signal_put)
+    r.add_delete("/api/loxone/signals/{sid}", loxone_signal_delete)
+    r.add_get("/api/loxone/device/{did}", loxone_device_get)
+    r.add_post("/api/loxone/device", loxone_device_post)
+    r.add_post("/api/loxone/sync", loxone_sync)
+    r.add_get("/api/loxone/viu.xml", loxone_viu)
+    r.add_get("/api/loxone/vo.xml", loxone_vo)
+    r.add_get("/api/loxone/table.txt", loxone_table)
     r.add_post("/api/espdev/claim", espdev_claim)
     r.add_post("/api/espdev/scan", espdev_scan)
     r.add_post("/api/espdev/esphome", espdev_esphome)

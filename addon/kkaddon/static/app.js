@@ -177,6 +177,7 @@ function viewLog() {
 }
 
 function viewSettings() {
+  setTimeout(() => loxLoad(), 0); // de Loxone-koppeling haalt zijn eigen stand
   const peers = S.peers.map((p) => `<tr><td>${esc(p.ip)}${p.configured ? ' <span class="badge">vast</span>' : ''}</td><td>${p.frames}</td><td class="sub">${ago(p.last)}</td></tr>`).join('')
     || '<tr><td colspan="3" class="sub">Nog geen frames van een bridge ontvangen.</td></tr>';
   return `<h2>Bridges op het LAN</h2>
@@ -184,6 +185,7 @@ function viewSettings() {
     <p class="sub">Peer-id van deze add-on: ${S.peer_id} (0x${S.peer_id.toString(16)}). ${S.mqtt.error ? `MQTT-fout: ${esc(S.mqtt.error)}` : ''}</p>
     <p class="sub">Home Assistant (externe apparaten): ${S.ha.connected ? 'verbonden' : S.ha.enabled ? `niet verbonden${S.ha.error ? ` (${esc(S.ha.error)})` : ''}` : 'niet ingesteld (nodig voor Tuya en andere HA-entiteiten)'}.</p>
     <div id="linkbox">${viewLinks()}</div>
+    <div id="loxbox">${viewLox()}</div>
     <h2>Kringen</h2>
     <p class="sub">Importeer je oude AppDaemon-kringen: ze komen uitgeschakeld binnen en staan daarna als lampen op het schema. Zet een lamp daar <b>Actief</b> en dezelfde kring <b>in AppDaemon uit</b>, anders werken ze elkaar tegen.</p>
     <div class="row"><button class="btn" data-grp="import">AppDaemon-YAML importeren</button>

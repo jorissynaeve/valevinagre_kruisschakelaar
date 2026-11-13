@@ -35,6 +35,7 @@ class Settings:
     panel_port: int = 47480  # UDP: hier luistert de add-on naar de NSPanels
     panel_remote_port: int = 47481  # UDP: hier luistert het Berry-script op de panel
     link_port: int = 47490  # TCP: koppelingen met de add-on van een ander subnet (linkhub.py)
+    loxone_port: int = 47510  # UDP en TCP: hier luistert de add-on naar de Loxone Miniserver (loxonehub.py)
     web_port: int = WEB_PORT
     dev_mode: bool = False  # web-UI ook buiten HA-ingress toegankelijk
     log_level: str = "info"
@@ -138,6 +139,7 @@ def load(env: dict | None = None) -> Settings:
         panel_port=int(get("panel_port", 47480)),
         panel_remote_port=int(get("panel_remote_port", 47481)),
         link_port=int(get("link_port", 47490)),
+        loxone_port=int(get("loxone_port", 47510)),
         web_port=int(get("web_port", WEB_PORT)),
         dev_mode=_bool(get("dev_mode", False)),
         log_level=str(get("log_level", "info")).lower(),
