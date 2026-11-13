@@ -39,7 +39,7 @@ STREAM = "/eventstream/clip/v2"
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 FP_RE = re.compile(r"^[0-9a-f]{64}$")
 BRIDGE_ID_RE = re.compile(r"^[0-9A-F]{16}$")
-KINDS = {"lamp": "Hue-lamp", "plug": "Hue-stopcontact", "sensor": "Hue-bewegingsmelder"}
+KINDS = {"lamp": "Hue-lamp", "plug": "Hue-stopcontact", "sensor": "Hue-bewegingsmelder", "room": "Hue-kamer"}
 
 
 class HueError(Exception):
@@ -102,7 +102,9 @@ def _svc(dev: dict, store: dict, rtype: str) -> dict | None:
 
 
 def kind_of(dev: dict, store: dict) -> str | None:
-    """lamp, plug of sensor; None voor wat we niet aanbieden (een knop, de bridge, een apparaat zonder lichtdienst of beweging)."""
+    """lamp, plug, sensor of room; None voor wat we niet aanbieden (een knop, de bridge, een apparaat zonder lichtdienst of beweging, een kamer zonder lampen)."""
+    if dev.get("type") == "room":
+        return "room" if _svc(dev, store, "grouped_light") is not None else None
     if dev.get("type") != "device":
         return None
     light = _svc(dev, store, "light")
@@ -132,6 +134,29 @@ def devices(store: dict[str, dict]) -> list[dict]:
     return sorted(out, key=lambda x: (x["name"].lower(), x["rid"]))
 
 
+def room_scenes(room: dict, store: dict) -> list[tuple[str, str]]:
+    """[(rid, naam)] van de scènes van een kamer, op naam."""
+    out = []
+    for rid, r in store.items():
+        g = r.get("group")
+        if r.get("type") == "scene" and isinstance(g, dict) and g.get("rid") == room.get("id") and UUID_RE.match(rid):
+            n = (r.get("metadata") or {}).get("name")
+            out.append((rid, n.strip()[:36] if isinstance(n, str) and n.strip() else "Scène"))
+    return sorted(out, key=lambda x: (x[1].lower(), x[0]))
+
+
+def assign_scenes(numbers: dict, room: dict, store: dict) -> bool:
+    """Elke scène van de kamer een vast nummer (1, 2, ...), want Loxone onthoudt een scène als getal. Een nummer wordt nooit hergebruikt, ook niet als de scène verdwijnt
+    of een andere naam krijgt (het id van de scène blijft). True als er een scène bijkwam."""
+    nxt, changed = max(numbers.values(), default=0) + 1, False
+    for rid, _ in room_scenes(room, store):
+        if rid not in numbers:
+            numbers[rid] = nxt
+            nxt += 1
+            changed = True
+    return changed
+
+
 def skipped(store: dict[str, dict]) -> list[str]:
     """De namen van apparaten die we niet aanbieden (knoppen, dimmers), zodat het in de zijbalk staat en niet stil ontbreekt."""
     return sorted(_name(d) for d in store.values() if d.get("type") == "device" and kind_of(d, store) is None and not _is_bridge(d, store))
@@ -148,14 +173,19 @@ def _pt(pid: str, label: str, kind: str, **kw) -> dict:
             "danger": False, "diag": False, "group": "", "cls": "", "state": "", "stale": 0, "confirm": "", **kw}
 
 
-def describe(dev: dict, store: dict, name: str = "") -> dict | None:
+def describe(dev: dict, store: dict, name: str = "", numbers: dict | None = None) -> dict | None:
     """De descriptor van een Hue-apparaat in de vorm van `espdevhub.clean_descriptor` (zonder device-velden), of None als we het niet kennen.
     De punten hangen af van de diensten die het apparaat heeft: een melder zonder temperatuurdienst krijgt geen temperatuurpunt."""
     k = kind_of(dev, store)
     if not k:
         return None
     pts: list[dict] = []
-    if k in ("lamp", "plug"):
+    if k == "room":
+        scenes = sorted(((numbers or {}).get(rid), n) for rid, n in room_scenes(dev, store) if (numbers or {}).get(rid))
+        pts.append(_pt("on", "Aan", "bool", writable=True))
+        pts.append(_pt("bri", "Helderheid", "int", writable=True, unit="%", min=0, max=100, step=1))  # 0 is uit
+        pts.append(_pt("scene", "Scène", "enum", writable=True, options=[{"v": 0, "l": "geen / uit"}] + [{"v": v, "l": n} for v, n in scenes[:63]]))
+    elif k in ("lamp", "plug"):
         pts.append(_pt("on", "Aan", "bool", writable=True))
         if k == "lamp":
             pts.append(_pt("bri", "Helderheid", "int", writable=True, unit="%", min=1, max=100, step=1))
@@ -186,8 +216,34 @@ def reachable(dev: dict, store: dict) -> bool:
     return z is None or z.get("status") == "connected"
 
 
-def values(dev: dict, store: dict) -> dict[str, Any]:
+def room_reach(room: dict, store: dict) -> bool:
+    """Een kamer is bereikbaar als minstens één van haar lampen dat is; anders is de stand van de groep een gok."""
+    for c in room.get("children") if isinstance(room.get("children"), list) else []:
+        d = store.get(c.get("rid")) if isinstance(c, dict) else None
+        if d and d.get("type") == "device" and _svc(d, store, "light") is not None and reachable(d, store):
+            return True
+    return False
+
+
+def _room_values(room: dict, store: dict, numbers: dict) -> dict[str, Any]:
+    out: dict[str, Any] = {"reach": room_reach(room, store)}
+    g = _svc(room, store, "grouped_light")
+    if not out["reach"] or g is None:
+        return out
+    on = (g.get("on") or {}).get("on")
+    on = on if isinstance(on, bool) else None
+    b = (g.get("dimming") or {}).get("brightness")
+    out["on"] = on
+    out["bri"] = 0 if on is False else int(round(b)) if isinstance(b, (int, float)) and not isinstance(b, bool) and b == b else None
+    active = [numbers[rid] for rid, _ in room_scenes(room, store) if rid in numbers and (store[rid].get("status") or {}).get("active") not in (None, "inactive")]
+    out["scene"] = None if on is None else 0 if on is False or not active else min(active)
+    return out
+
+
+def values(dev: dict, store: dict, numbers: dict | None = None) -> dict[str, Any]:
     """De waarde per punt, of None (onbekend). Een apparaat dat de bridge niet bereikt heeft alleen `reach`."""
+    if dev.get("type") == "room":
+        return _room_values(dev, store, numbers or {})
     out: dict[str, Any] = {"reach": reachable(dev, store)}
     if not out["reach"]:
         return out
@@ -218,8 +274,28 @@ def values(dev: dict, store: dict) -> dict[str, Any]:
     return out
 
 
-def point_request(dev: dict, store: dict, pid: str, value) -> tuple[str, dict]:
-    """(pad, body) voor `PUT` bij de bridge. Opdrachten zijn absoluut: `on` is aan of uit, nooit een toggle (HUISDEV §7)."""
+def point_request(dev: dict, store: dict, pid: str, value, numbers: dict | None = None) -> tuple[str, dict]:
+    """(pad, body) voor `PUT` bij de bridge. Opdrachten zijn absoluut: `on` is aan of uit, nooit een toggle (HUISDEV §7).
+    Een kamer: `on` en `bri` gaan naar haar groep (0 is uit), een scène wordt geactiveerd met haar eigen verzoek."""
+    if dev.get("type") == "room":
+        g = _svc(dev, store, "grouped_light")
+        if g is None:
+            raise ValueError("deze kamer heeft geen lampen")
+        path = f"{RESOURCE}/grouped_light/{g['id']}"
+        if pid == "on":
+            return path, {"on": {"on": bool(value)}}
+        if pid == "bri":
+            v = float(value)
+            return path, ({"on": {"on": False}} if v <= 0 else {"on": {"on": True}, "dimming": {"brightness": v}})
+        if pid == "scene":
+            n = int(value)
+            if n == 0:
+                return path, {"on": {"on": False}}
+            rid = next((r for r, _ in room_scenes(dev, store) if (numbers or {}).get(r) == n), None)
+            if rid is None:
+                raise ValueError("deze scène bestaat niet (meer) in deze kamer")
+            return f"{RESOURCE}/scene/{rid}", {"recall": {"action": "active"}}
+        raise ValueError("dit punt is niet instelbaar")
     light = _svc(dev, store, "light")
     if light is None or pid not in ("on", "bri"):
         raise ValueError("dit punt is niet instelbaar")

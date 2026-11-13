@@ -97,7 +97,8 @@ function viewLox() {
       <a class="btn" href="api/loxone/table.txt${q}" target="_blank" rel="noopener">Tabel om over te typen</a>` : `<span class="sub">${ready ? '' : 'Vul eerst het IP van de Miniserver in.'}</span>`}
       <button class="btn" type="button" data-lx="sync" title="Alle waarden meteen opnieuw naar Loxone sturen">Alles opnieuw sturen</button></div>
     <div class="sub">Importeer de bestanden in Loxone Config als sjabloon, op dezelfde plek als waar je er een exporteerde. Een sjabloon dat je al in je project hebt, werkt Config niet bij door het opnieuw te importeren.
-      Maak je later signalen bij, kies dan alleen dat apparaat en voeg het bestand toe als aparte ingang en uitgang (de titel noemt het apparaat), of typ de nieuwe commando's over uit de tabel.
+      Commando's toevoegen aan een bestaande ingang of uitgang via een bestand lukt niet, en twee virtuele UDP-ingangen op dezelfde poort kunnen niet.
+      Maak je later signalen bij: voor <b>naar Loxone</b> typ je de commando's over uit de tabel (kies alleen dat apparaat); een nieuwe virtuele <b>uitgang</b> mag wel naast de bestaande staan, importeer daarvoor het bestand van alleen dat apparaat.
       Loxone kan zelf alles opnieuw opvragen: stuur <code>kk.sync=1</code>.</div>`;
 }
 

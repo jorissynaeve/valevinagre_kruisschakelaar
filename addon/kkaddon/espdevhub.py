@@ -408,6 +408,7 @@ class EspDevHub:
         port = v.get("port")
         driver = v["driver"] if v.get("driver") in ("esphome", "hue", "nuki", "brink", "smappee") else "huisdev"
         emap, skipped = v.get("emap"), v.get("skipped")
+        scenes = v.get("scenes")
         rid = v.get("rid")
         return {"name": _text(v.get("name"), 60) or "Apparaat", "hid": v["hid"], "host": _text(v.get("host"), 253), "port": port if isinstance(port, int) and 1 <= port <= 65535 else 80,
                 "type": _text(v.get("type"), 40), "fw": _text(v.get("fw"), 40), "proto": v.get("proto") if parse_proto(v.get("proto")) else "1.0", "rev": _text(v.get("rev"), 16),
@@ -423,6 +424,8 @@ class EspDevHub:
                 "auth": _text(v.get("auth"), 200) if driver == "esphome" else "",  # gebruiker:wachtwoord van web_server: auth, alleen in dit bestand
                 "emap": {k: x for k, x in emap.items() if isinstance(k, str) and isinstance(x, str)} if isinstance(emap, dict) else {},  # punt-id -> ESPHome-id, voor altijd vast
                 "skipped": [x for x in skipped if isinstance(x, str)][:100] if isinstance(skipped, list) else [],
+                # hue, een kamer: het vaste nummer van elke scène (id van de scène -> 1, 2, ...), zodat Loxone een scène als getal kan onthouden
+                "scenes": {k: n for k, n in scenes.items() if isinstance(k, str) and hue.UUID_RE.match(k) and isinstance(n, int) and not isinstance(n, bool) and n > 0} if driver == "hue" and isinstance(scenes, dict) else {},
                 # een ESPHome-toestel of Hue-lamp staat meestal al via zijn eigen integratie in HA: dubbele entiteiten alleen als de gebruiker dat wil
                 "ha": v["ha"] if isinstance(v.get("ha"), bool) else driver == "huisdev"}
 
@@ -1132,11 +1135,13 @@ class EspDevHub:
             raise ModelError(f"maximaal {MAX_DEVICES} apparaten")
         new = []
         for o in take:
-            desc = hue.describe(st["store"][o["rid"]], st["store"])
+            nums: dict = {}
+            hue.assign_scenes(nums, st["store"][o["rid"]], st["store"])  # alleen een kamer heeft scènes
+            desc = hue.describe(st["store"][o["rid"]], st["store"], numbers=nums)
             did = _slug(o["hid"])
             if did in self.devices:
                 continue
-            self.devices[did] = self._defaults({"hid": o["hid"], "name": o["name"], "driver": "hue", "bridge": bid, "rid": o["rid"], "type": desc["type"], "fw": desc["fw"]})
+            self.devices[did] = self._defaults({"hid": o["hid"], "name": o["name"], "driver": "hue", "bridge": bid, "rid": o["rid"], "type": desc["type"], "fw": desc["fw"], "scenes": nums})
             self.hue_desc[did] = desc
             self._apply_desc(did, desc)
             new.append(did)
@@ -1223,12 +1228,14 @@ class EspDevHub:
         for did in self._hue_children(bid):
             dev = self.devices[did]
             d = store.get(dev["rid"])
-            desc = hue.describe(d, store, dev["name"]) if d else None
+            if d and hue.assign_scenes(dev["scenes"], d, store):
+                self._save()  # een nieuwe scène krijgt een nummer dat blijft
+            desc = hue.describe(d, store, dev["name"], dev["scenes"]) if d else None
             if desc is None:
-                self._miss(did, "dit apparaat bestaat niet meer op de bridge (of is geen lamp, stopcontact of melder meer)", hard=True)
+                self._miss(did, "dit apparaat bestaat niet meer op de bridge (of is geen lamp, stopcontact, melder of kamer meer)", hard=True)
                 continue
             self.hue_desc[did] = desc
-            vals = hue.values(d, store)
+            vals = hue.values(d, store, dev["scenes"])
             pts = {p["id"]: ({"v": vals[p["id"]], "age": 0} if vals.get(p["id"]) is not None else {"v": None}) for p in desc["points"]}
             await self._on_state(did, {"proto": "1.0", "rev": desc["rev"], "points": pts, "actions": {}})
         self._poke()
@@ -1286,7 +1293,7 @@ class EspDevHub:
         if not d:
             raise ModelError("dit apparaat bestaat niet meer op de bridge")
         try:
-            path, body = hue.point_request(d, st["store"], pid, v)
+            path, body = hue.point_request(d, st["store"], pid, v, dev.get("scenes"))
         except ValueError as e:
             raise ModelError(str(e)) from None
         async with self._hue_locks.setdefault(bid, asyncio.Lock()):  # een bridge verdraagt maar ~10 opdrachten per seconde

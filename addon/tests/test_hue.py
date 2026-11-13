@@ -686,3 +686,122 @@ def test_web_api_pairs_claims_places_sets_and_removes(tmp_path):
             await c.close()
             await shutdown(hub, fake)
     asyncio.run(go())
+
+
+# ------------------------------------------------------------ kamers en scènes
+
+
+def room_house() -> FakeHue:
+    h = house()
+    h.add_room("Woonkamer", ["Keuken", "Gang"], on=False, bri=60.0)  # Gang is onbereikbaar, Keuken niet
+    for n in ("Relax", "Helder", "Avond"):
+        h.add_scene("Woonkamer", n)
+    return h
+
+
+def room_id(fake: FakeHue, name: str) -> str:
+    return eh._slug(hue.hid_of(fake.dev[name]))
+
+
+def test_a_room_has_on_brightness_and_a_scene_that_is_a_number():
+    h = room_house()
+    room = h.res[h.dev["Woonkamer"]]
+    assert hue.kind_of(room, h.res) == "room" and any(o["kind"] == "room" for o in hue.devices(h.res))
+    nums: dict = {}
+    assert hue.assign_scenes(nums, room, h.res) and sorted(nums.values()) == [1, 2, 3]
+    assert not hue.assign_scenes(nums, room, h.res), "nog een keer geeft niets nieuws"
+    d = hue.describe(room, h.res, numbers=nums)
+    assert [p["id"] for p in d["points"]] == ["on", "bri", "scene", "reach"] and all(eh._point(p) for p in d["points"])
+    by = {p["id"]: p for p in d["points"]}
+    assert by["on"]["writable"] and by["bri"]["writable"] and (by["bri"]["min"], by["bri"]["max"]) == (0, 100) and by["scene"]["writable"] and by["reach"]["diag"]
+    assert {o["l"]: o["v"] for o in by["scene"]["options"]} == {"geen / uit": 0, "Avond": 1, "Helder": 2, "Relax": 3}, "nummers op volgorde van naam, 0 is geen scène"
+
+
+def test_a_room_follows_its_group_and_its_active_scene_and_is_unknown_when_no_lamp_is_reachable():
+    h = room_house()
+    room = h.res[h.dev["Woonkamer"]]
+    nums: dict = {}
+    hue.assign_scenes(nums, room, h.res)
+    assert hue.values(room, h.res, nums) == {"reach": True, "on": False, "bri": 0, "scene": 0}, "uit is helderheid 0 en geen scène, ook als de bridge nog een oude helderheid kent"
+    h.group("Woonkamer")["on"]["on"] = True
+    h.res[h._id("scene", "Woonkamer/Relax")]["status"]["active"] = "static"
+    assert hue.values(room, h.res, nums) == {"reach": True, "on": True, "bri": 60, "scene": nums[h._id("scene", "Woonkamer/Relax")]}
+    h.res[h._id("scene", "Woonkamer/Relax")]["status"]["active"] = "inactive"
+    assert hue.values(room, h.res, nums)["scene"] == 0, "aan zonder scène"
+    h.svc(h.dev["Keuken"], "zigbee_connectivity")["status"] = "connectivity_issue"
+    assert hue.values(room, h.res, nums) == {"reach": False}, "alle lampen weg: de stand van de groep is een gok"
+
+
+def test_room_commands_go_to_the_group_and_a_scene_to_its_own_resource():
+    h = room_house()
+    room = h.res[h.dev["Woonkamer"]]
+    nums: dict = {}
+    hue.assign_scenes(nums, room, h.res)
+    gl = h.group("Woonkamer")["id"]
+    assert hue.point_request(room, h.res, "on", True) == (f"/clip/v2/resource/grouped_light/{gl}", {"on": {"on": True}})
+    assert hue.point_request(room, h.res, "bri", 40)[1] == {"on": {"on": True}, "dimming": {"brightness": 40.0}}
+    assert hue.point_request(room, h.res, "bri", 0)[1] == {"on": {"on": False}}
+    assert hue.point_request(room, h.res, "scene", 0)[1] == {"on": {"on": False}}
+    path, body = hue.point_request(room, h.res, "scene", nums[h._id("scene", "Woonkamer/Avond")], nums)
+    assert path == f"/clip/v2/resource/scene/{h._id('scene', 'Woonkamer/Avond')}" and body == {"recall": {"action": "active"}}
+    with pytest.raises(ValueError, match="bestaat niet"):
+        hue.point_request(room, h.res, "scene", 99, nums)
+
+
+def test_a_room_is_a_block_and_scenes_and_brightness_reach_the_bridge(tmp_path):
+    async def go():
+        r, hub, fake, bid, dids = await rig(tmp_path, room_house())
+        w = room_id(fake, "Woonkamer")
+        assert w in dids and hub.devices[w]["type"] == "Hue-kamer" and hub.devices[w]["name"] == "Woonkamer"
+        await eventually(lambda: hub.output(f"e:{w}:scene") == 0)
+        sc = {o["l"]: o["v"] for o in pts(hub, w)["scene"]["options"]}
+        gl, relax = fake.group("Woonkamer")["id"], fake._id("scene", "Woonkamer/Relax")
+        assert (await hub.set(w, "scene", sc["Relax"]))["result"] == "applied"
+        await eventually(lambda: hub.output(f"e:{w}:scene") == sc["Relax"] and hub.output(f"e:{w}:on") is True)
+        await hub.set(w, "bri", 30)
+        await eventually(lambda: hub.output(f"e:{w}:bri") == 30)
+        await hub.set(w, "bri", 0)
+        await eventually(lambda: hub.output(f"e:{w}:on") is False)
+        assert hub.output(f"e:{w}:bri") == 0 and hub.output(f"e:{w}:scene") == 0
+        await hub.set(w, "scene", sc["Helder"])
+        await eventually(lambda: hub.output(f"e:{w}:scene") == sc["Helder"])
+        await hub.set(w, "scene", 0)
+        await eventually(lambda: hub.output(f"e:{w}:on") is False)
+        with pytest.raises(ModelError, match="geen toegestane keuze"):
+            await hub.set(w, "scene", 99)
+        puts = [(c[1], c[2]) for c in fake.calls if c[0] == "PUT"]
+        grp = f"/clip/v2/resource/grouped_light/{gl}"
+        assert puts == [(f"/clip/v2/resource/scene/{relax}", {"recall": {"action": "active"}}), (grp, {"on": {"on": True}, "dimming": {"brightness": 30.0}}), (grp, {"on": {"on": False}}),
+                        (f"/clip/v2/resource/scene/{fake._id('scene', 'Woonkamer/Helder')}", {"recall": {"action": "active"}}), (grp, {"on": {"on": False}})]
+        await shutdown(hub, fake)
+    asyncio.run(go())
+
+
+def test_scene_numbers_stay_when_scenes_change_and_after_a_restart(tmp_path):
+    async def go():
+        h = room_house()
+        r, hub, fake, bid, dids = await rig(tmp_path, h)
+        w = room_id(fake, "Woonkamer")
+        opts = lambda: {o["l"]: o["v"] for o in pts(hub, w)["scene"]["options"]}  # noqa: E731
+        await eventually(lambda: "Relax" in opts())
+        first = opts()
+        assert first == {"geen / uit": 0, "Avond": 1, "Helder": 2, "Relax": 3}
+        helder = h._id("scene", "Woonkamer/Helder")
+        h.res.pop(helder)
+        h.push("delete", [{"id": helder, "type": "scene"}])
+        nacht = h.add_scene("Woonkamer", "Nacht")
+        h.push("add", [h.res[nacht]])
+        await eventually(lambda: "Nacht" in opts())
+        assert opts() == {"geen / uit": 0, "Avond": 1, "Relax": 3, "Nacht": 4}, "de scène die weg is geeft zijn nummer niet door aan een nieuwe"
+        h.res[h._id("scene", "Woonkamer/Relax")]["metadata"]["name"] = "Gezellig"
+        h.push("update", [{"id": h._id("scene", "Woonkamer/Relax"), "type": "scene", "metadata": {"name": "Gezellig"}}])
+        await eventually(lambda: "Gezellig" in opts())
+        assert opts()["Gezellig"] == 3, "een andere naam, hetzelfde nummer"
+        nums = dict(hub.devices[w]["scenes"])
+        hub.close()
+        again = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)
+        assert again.devices[w]["scenes"] == nums and len(nums) == 4, "ook de nummers van een scène die weg is blijven, zodat ze niet opnieuw worden uitgegeven"
+        again.close()
+        await fake.stop()
+        await asyncio.sleep(0.05)
+    asyncio.run(go())

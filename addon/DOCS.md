@@ -318,7 +318,7 @@ met bevestiging. Wat de add-on niet kent (rolluik, klimaat, slot) staat in de zi
 * In Home Assistant staan de entiteiten **niet** nog eens via de add-on, want het toestel staat daar meestal al via ESPHome. Wil je ze toch, zet dan in de zijbalk het vinkje *ook als entiteiten in Home Assistant* aan (ze staan dan dubbel).
 * Heeft de webserver een wachtwoord (`web_server: auth:`), geef dan gebruiker en wachtwoord bij het toevoegen (API: `POST /api/espdev/esphome` met `user` en `password`).
 
-### Philips Hue: lampen, stopcontacten en bewegingsmelders
+### Philips Hue: lampen, stopcontacten, bewegingsmelders en kamers
 
 *+ Module → Philips Hue → Hue-bridge koppelen*: tik het IP-adres van de bridge in, druk op de ronde knop bovenop de bridge en klik binnen 30 seconden op OK.
 Daarna staan de apparaten van de bridge in hetzelfde menu: één voor één, of *Alles toevoegen* in een raster op de pagina. Elk apparaat is een blok:
@@ -328,6 +328,9 @@ Daarna staan de apparaten van de bridge in hetzelfde menu: één voor één, of 
 | Lamp | *Aan* en *Helderheid* (1–100 %): beide zijn uitgang en ingang |
 | Stopcontact (een lamp zonder dimmen) | *Aan* |
 | Bewegingsmelder | *Beweging*, *Temperatuur*, *Lichtniveau* (lux), *Batterij*: alleen uitgangen |
+| Kamer (de groep van de Hue-app) | *Aan*, *Helderheid* (0–100 %, 0 is uit) en *Scène* (een keuze): alle drie uitgang en ingang |
+
+Een **scène** van een kamer heeft een vast nummer (1, 2, …, op volgorde van naam bij het eerste zien; 0 is *geen scène*, schrijven van 0 zet de kamer uit). Een nummer verandert nooit: een scène die je hernoemt houdt zijn nummer, een scène die je weghaalt geeft het niet door aan een nieuwe. Zo kan Loxone een scène als getal onthouden. Een kamer is *bereikbaar* als minstens één van haar lampen dat is.
 
 *Bereikbaar* staat in de zijbalk als diagnose. Knoppen en dimmers (de Hue dimmer switch, Friends of Hue) worden niet aangeboden; ze staan in het menu onder *Niet aangeboden*.
 
@@ -530,7 +533,8 @@ Instellingen → **Loxone** koppelt de add-on aan een Loxone Miniserver. Elk sig
 1. Vul het IP van de Miniserver in, de poort van zijn virtuele UDP-ingang (je kiest er zelf een, standaard 9100) en eventueel het IP van de add-on.
 2. Kies een apparaat (Hue, Smappee, Brink, Nuki, een eigen apparaat) en een voorvoegsel: de punten van zijn blok worden signalen naar Loxone, wat instelbaar is kan Loxone ook zetten (`…_set`), en `…_ok` meldt of het apparaat bereikbaar is.
 3. Download **VIU_Huisconfig.xml** (wat naar Loxone gaat) en **VO_Huisconfig.xml** (wat van Loxone komt) en importeer ze in Loxone Config als sjabloon. Het signalenoverzicht is per apparaat ingeklapt; het vinkje bij een apparaat bepaalt of het in de bestanden komt (standaard alle apparaten).
-   Een sjabloon dat al in je project staat, werkt Config niet bij door opnieuw te importeren. Bij nieuwe signalen: kies alleen dat apparaat, download het bestand (de titel noemt het apparaat) en voeg het toe als aparte virtuele ingang en uitgang, of typ de nieuwe commando's over uit de tabel. Het is niet getest of Loxone twee virtuele UDP-ingangen op dezelfde poort toestaat.
+   Een sjabloon dat al in je project staat, werkt Config niet bij door opnieuw te importeren, en commando's toevoegen aan een bestaande ingang of uitgang via een bestand lukt niet. Twee virtuele UDP-ingangen op dezelfde poort kunnen ook niet.
+   Bij nieuwe signalen naar Loxone typ je de commando's over uit de tabel (kies alleen dat apparaat). Een nieuwe virtuele **uitgang** (van Loxone) mag wel naast de bestaande staan: importeer het bestand van alleen dat apparaat (de titel noemt het apparaat).
 
 De add-on stuurt een waarde bij een verandering en elke minuut opnieuw, en alles 10 s na het starten. Een apparaat dat offline is geeft niets (nooit een verzonnen 0). Van Loxone neemt de add-on alleen berichten aan van het IP van de Miniserver, alleen punten die instelbaar zijn en niet gevaarlijk (nooit een deur), en alleen als de waarde verandert. `kk.sync=1` vanuit Loxone vraagt om alles opnieuw. Gebruik je **HTTP** (aanbevolen: je krijgt een bevestiging), dan roept Loxone `http://<add-on>:<poort>/loxone?kk.<naam>=<waarde>` aan; bij **UDP** stuurt het `kk.<naam>=<waarde>` naar de poort `loxone_port`.
 

@@ -116,6 +116,23 @@ class FakeHue:
         return self._device(name, "RWL021", "unknown_archetype", [("button", {"metadata": {"control_id": 1}, "button": {"last_event": "short_release"}}),
                                                                     ("device_power", {"power_state": {"battery_state": "normal", "battery_level": 80}}), self._zigbee(True)])
 
+    def add_room(self, name: str, lamps: list[str], on=False, bri=50.0) -> str:
+        """Een kamer: de lampen als `children` en één `grouped_light` (de stand van de hele kamer) als dienst."""
+        rid, gl = self._id("room", name), self._id("grouped_light", name)
+        self.res[gl] = {"id": gl, "type": "grouped_light", "owner": {"rid": rid, "rtype": "room"}, "on": {"on": on}, "dimming": {"brightness": bri}, "alert": {"action_values": ["breathe"]}}
+        self.res[rid] = {"id": rid, "type": "room", "metadata": {"name": name, "archetype": "living_room"}, "children": [{"rid": self.dev[x], "rtype": "device"} for x in lamps],
+                         "services": [{"rid": gl, "rtype": "grouped_light"}]}
+        self.dev[name] = rid
+        return rid
+
+    def add_scene(self, room: str, name: str, active: str = "inactive") -> str:
+        sid = self._id("scene", f"{room}/{name}")
+        self.res[sid] = {"id": sid, "type": "scene", "metadata": {"name": name}, "group": {"rid": self.dev[room], "rtype": "room"}, "status": {"active": active}, "actions": []}
+        return sid
+
+    def group(self, room: str) -> dict:
+        return self.svc(self.dev[room], "grouped_light")
+
     def svc(self, dev_id: str, rtype: str) -> dict:
         return next(self.res[s["rid"]] for s in self.res[dev_id]["services"] if s["rtype"] == rtype)
 
@@ -202,6 +219,56 @@ class FakeHue:
         self.push("update", [{"id": light["id"], "type": "light", "owner": light["owner"], **body}])
         return web.json_response({"errors": [], "data": [{"rid": light["id"], "rtype": "light"}]})
 
+    def _answer(self, r: web.Request, body) -> web.Response | None:
+        """Wat elke opdracht eerst doet: de sleutel, het logboek en de storingen die een test kan inschakelen."""
+        self.calls.append(("PUT", r.path, body))
+        self.times.append(time.monotonic())
+        if self.status_next:
+            self.status_next -= 1
+            return web.json_response({"errors": [{"description": "busy"}]} if self.status_code == 429 else {}, status=self.status_code)
+        if self.reject:
+            self.reject -= 1
+            return web.json_response({"errors": [{"description": "device (light) is unreachable"}], "data": []})
+        return None
+
+    async def _put_group(self, r: web.Request) -> web.Response:
+        if self._unauthorised(r):
+            return web.json_response({"errors": [{"description": "unauthorized user"}]}, status=403)
+        body = await r.json()
+        gl = self.res.get(r.match_info["id"])
+        if gl is None or gl["type"] != "grouped_light":
+            return web.json_response({"errors": [{"description": "resource not found"}]}, status=404)
+        bad = self._answer(r, body)
+        if bad is not None:
+            return bad
+        merge(gl, json.loads(json.dumps(body)))
+        self.push("update", [{"id": gl["id"], "type": "grouped_light", "owner": gl["owner"], **body}])
+        return web.json_response({"errors": [], "data": [{"rid": gl["id"], "rtype": "grouped_light"}]})
+
+    async def _put_scene(self, r: web.Request) -> web.Response:
+        """Een scène activeren: de kamer gaat aan, deze scène is actief en de andere van die kamer niet meer."""
+        if self._unauthorised(r):
+            return web.json_response({"errors": [{"description": "unauthorized user"}]}, status=403)
+        body = await r.json()
+        sc = self.res.get(r.match_info["id"])
+        if sc is None or sc["type"] != "scene":
+            return web.json_response({"errors": [{"description": "resource not found"}]}, status=404)
+        bad = self._answer(r, body)
+        if bad is not None:
+            return bad
+        if (body.get("recall") or {}).get("action") == "active":
+            room = sc["group"]["rid"]
+            ups = []
+            for o in self.res.values():
+                if o["type"] == "scene" and o["group"]["rid"] == room:
+                    o["status"]["active"] = "static" if o is sc else "inactive"
+                    ups.append({"id": o["id"], "type": "scene", "status": {"active": o["status"]["active"]}})
+            gl = next(x for x in self.res.values() if x["type"] == "grouped_light" and x["owner"]["rid"] == room)
+            gl["on"]["on"] = True
+            ups.append({"id": gl["id"], "type": "grouped_light", "owner": gl["owner"], "on": {"on": True}})
+            self.push("update", ups)
+        return web.json_response({"errors": [], "data": [{"rid": sc["id"], "rtype": "scene"}]})
+
     async def _events(self, r: web.Request) -> web.StreamResponse:
         if self._unauthorised(r):
             return web.json_response({"errors": [{"description": "unauthorized user"}]}, status=403)
@@ -242,6 +309,8 @@ class FakeHue:
         app.router.add_get("/clip/v2/resource", self._list)
         app.router.add_get("/clip/v2/resource/bridge", self._bridge)
         app.router.add_put("/clip/v2/resource/light/{id}", self._put_light)
+        app.router.add_put("/clip/v2/resource/grouped_light/{id}", self._put_group)
+        app.router.add_put("/clip/v2/resource/scene/{id}", self._put_scene)
         app.router.add_get("/eventstream/clip/v2", self._events)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(self._cert[0], self._cert[1])
