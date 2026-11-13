@@ -756,16 +756,33 @@ def _download(text: str, name: str, ctype: str = "application/xml") -> web.Respo
     return web.Response(text=text, content_type=ctype, charset="utf-8", headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
+def _lox_devices(request: web.Request):
+    """`?devices=a,b` (apparaat-id's, `-` voor signalen zonder apparaat): alleen die in het bestand; zonder: alles. Een lege lijst (`?devices=`) is niets."""
+    raw = request.query.get("devices")
+    if raw is None:
+        return None
+    return [d for d in raw.split(",") if d]
+
+
+def _lox_filename(prefix: str, devices) -> str:
+    if devices is None:
+        return f"{prefix}_Huisconfig.xml"
+    slug = re.sub(r"[^a-z0-9]+", "_", "_".join(sorted(devices)).lower()).strip("_")[:40] or "leeg"
+    return f"{prefix}_Huisconfig_{slug}.xml"
+
+
 async def loxone_viu(request: web.Request) -> web.Response:
-    return _download(_loxone(request).viu(), "VIU_Huisconfig.xml")
+    devs = _lox_devices(request)
+    return _download(_loxone(request).viu(devs), _lox_filename("VIU", devs))
 
 
 async def loxone_vo(request: web.Request) -> web.Response:
-    return _download(_loxone(request).vo(), "VO_Huisconfig.xml")
+    devs = _lox_devices(request)
+    return _download(_loxone(request).vo(devs), _lox_filename("VO", devs))
 
 
 async def loxone_table(request: web.Request) -> web.Response:
-    return web.Response(text=_loxone(request).table(), content_type="text/plain", charset="utf-8")
+    return web.Response(text=_loxone(request).table(_lox_devices(request)), content_type="text/plain", charset="utf-8")
 
 
 async def espdev_claim(request: web.Request) -> web.Response:

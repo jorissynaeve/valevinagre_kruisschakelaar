@@ -44,6 +44,7 @@ DEFAULT_OUT_PORT = 9100  # waar de Miniserver luistert (zijn virtuele UDP-ingang
 HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,253}$")
 ONLINE_RE = re.compile(r"^online:([a-z0-9_]{1,40})$")
 KINDS = ("bool", "int", "float")
+NO_DEVICE = "-"  # de groep van signalen zonder apparaat (een timer of module als bron)
 
 
 def _int(raw, lo: int, hi: int, what: str) -> int:
@@ -484,8 +485,10 @@ class LoxoneHub:
     def view(self) -> dict:
         now = time.time()
         sigs = []
-        for sid, s in sorted(self.signals.items()):
-            row = {"id": sid, **s, "key": lx.key(sid)}
+        order = sorted(self.signals.items(), key=lambda kv: (self.group_name(self.group_of(kv[1])).lower(), kv[0]))
+        for sid, s in order:
+            g = self.group_of(s)
+            row = {"id": sid, **s, "key": lx.key(sid), "group": g, "group_name": self.group_name(g)}
             if s["dir"] == "out":
                 st = self.sent.get(sid)
                 try:
@@ -505,25 +508,48 @@ class LoxoneHub:
                 "port": self.port, "udp": self.udp_port, "http": self.http_port, "listen_error": self.error, "stats": dict(self.stats), "queue": len(self.queue),
                 "signals": sigs, "now": now}
 
-    def _sorted(self) -> list[dict]:
-        return [{"id": sid, **s} for sid, s in sorted(self.signals.items()) if s["enabled"]]
+    @staticmethod
+    def group_of(s: dict) -> str:
+        """Bij welk apparaat een signaal hoort: het id van het apparaat, of `-` voor een bron zonder apparaat (timer, module)."""
+        m = REF_RE.match(s.get("ref") or "") or ONLINE_RE.match(s.get("ref") or "")
+        return m.group(1) if m else NO_DEVICE
 
-    def viu(self) -> str:
+    def group_name(self, g: str) -> str:
+        if g == NO_DEVICE:
+            return "Overig"
+        dev = self.espdev.devices.get(g) if self.espdev else None
+        return dev["name"] if dev else g
+
+    def _sorted(self, devices=None) -> list[dict]:
+        """De ingeschakelde signalen, per apparaat en dan op naam; met `devices` (een lijst apparaat-id's, `-` voor overig) alleen die van die apparaten."""
+        want = set(devices) if devices is not None else None
+        rows = [{"id": sid, **s} for sid, s in self.signals.items() if s["enabled"] and (want is None or self.group_of(s) in want)]
+        return sorted(rows, key=lambda r: (self.group_name(self.group_of(r)).lower(), r["id"]))
+
+    def _title(self, base: str, devices) -> str:
+        """Een gefilterd bestand krijgt de namen van zijn apparaten in de titel, zodat twee imports in Config uit elkaar te houden zijn."""
+        if devices is None:
+            return base
+        names = sorted({self.group_name(g) for g in devices})
+        return f"{base} - " + (", ".join(names) if 0 < len(names) <= 3 else f"{len(names)} apparaten")
+
+    def viu(self, devices=None) -> str:
         if not self.me():
             raise ModelError("stel eerst het adres van de Miniserver of van de add-on in")
-        return lx.viu_xml("Huisconfig naar Loxone", self.me(), self.out_port, [s for s in self._sorted() if s["dir"] == "out"])
+        return lx.viu_xml(self._title("Huisconfig naar Loxone", devices), self.me(), self.out_port, [s for s in self._sorted(devices) if s["dir"] == "out"])
 
-    def vo(self) -> str:
+    def vo(self, devices=None) -> str:
         if not self.me():
             raise ModelError("stel eerst het adres van de Miniserver of van de add-on in")
-        return lx.vo_xml("Huisconfig van Loxone", self.me(), self._listen_port(), self.transport, [s for s in self._sorted() if s["dir"] == "in"])
+        return lx.vo_xml(self._title("Huisconfig van Loxone", devices), self.me(), self._listen_port(), self.transport,
+                         [s for s in self._sorted(devices) if s["dir"] == "in"])
 
     def _listen_port(self) -> int:
         """De poort waarop de add-on luistert, voor het soort verbinding dat Loxone gebruikt."""
         return (self.http_port if self.transport == "http" else self.udp_port) or self.port
 
-    def table(self) -> str:
-        return lx.table(self.me(), self.out_port, self.me(), self._listen_port(), self.transport, self._sorted())
+    def table(self, devices=None) -> str:
+        return lx.table(self.me(), self.out_port, self.me(), self._listen_port(), self.transport, self._sorted(devices))
 
 
 class _Udp(asyncio.DatagramProtocol):

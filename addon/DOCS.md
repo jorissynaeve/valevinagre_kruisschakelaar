@@ -529,7 +529,8 @@ Instellingen → **Loxone** koppelt de add-on aan een Loxone Miniserver. Elk sig
 
 1. Vul het IP van de Miniserver in, de poort van zijn virtuele UDP-ingang (je kiest er zelf een, standaard 9100) en eventueel het IP van de add-on.
 2. Kies een apparaat (Hue, Smappee, Brink, Nuki, een eigen apparaat) en een voorvoegsel: de punten van zijn blok worden signalen naar Loxone, wat instelbaar is kan Loxone ook zetten (`…_set`), en `…_ok` meldt of het apparaat bereikbaar is.
-3. Download **VIU_Huisconfig.xml** (wat naar Loxone gaat) en **VO_Huisconfig.xml** (wat van Loxone komt) en importeer ze in Loxone Config als sjabloon. Bij nieuwe signalen: opnieuw downloaden en importeren.
+3. Download **VIU_Huisconfig.xml** (wat naar Loxone gaat) en **VO_Huisconfig.xml** (wat van Loxone komt) en importeer ze in Loxone Config als sjabloon. Het signalenoverzicht is per apparaat ingeklapt; het vinkje bij een apparaat bepaalt of het in de bestanden komt (standaard alle apparaten).
+   Een sjabloon dat al in je project staat, werkt Config niet bij door opnieuw te importeren. Bij nieuwe signalen: kies alleen dat apparaat, download het bestand (de titel noemt het apparaat) en voeg het toe als aparte virtuele ingang en uitgang, of typ de nieuwe commando's over uit de tabel. Het is niet getest of Loxone twee virtuele UDP-ingangen op dezelfde poort toestaat.
 
 De add-on stuurt een waarde bij een verandering en elke minuut opnieuw, en alles 10 s na het starten. Een apparaat dat offline is geeft niets (nooit een verzonnen 0). Van Loxone neemt de add-on alleen berichten aan van het IP van de Miniserver, alleen punten die instelbaar zijn en niet gevaarlijk (nooit een deur), en alleen als de waarde verandert. `kk.sync=1` vanuit Loxone vraagt om alles opnieuw. Gebruik je **HTTP** (aanbevolen: je krijgt een bevestiging), dan roept Loxone `http://<add-on>:<poort>/loxone?kk.<naam>=<waarde>` aan; bij **UDP** stuurt het `kk.<naam>=<waarde>` naar de poort `loxone_port`.
 

@@ -503,6 +503,70 @@ def test_nothing_is_accepted_until_the_miniserver_is_set(tmp_path):
     run(go())
 
 
+# ------------------------------------------------------------ per apparaat
+
+def _two_devices(tmp_path):
+    r, esp, hub = make(tmp_path)
+    esp.devices["bad"] = {"name": "Badkamer", "shown": None, "points": [pt("lux", "int"), pt("on", "bool", writable=True)]}
+    esp.vals.update({"lux": 5})
+    esp.online.add("bad")
+    hub.add_device("tuin", "tuin", [{"pid": "bri", "out": True, "in": True}])
+    hub.add_device("bad", "bad", [{"pid": "lux", "out": True}, {"pid": "on", "out": True, "in": True}])
+    hub.configure({"miniserver": "192.168.1.112", "addon_host": "192.168.1.5"})
+    return hub
+
+
+def test_signals_are_grouped_by_device_and_ordered_by_device_name_then_name(tmp_path):
+    hub = _two_devices(tmp_path)
+    rows = hub.view()["signals"]
+    assert [r["group_name"] for r in rows] == sorted(r["group_name"] for r in rows), "Badkamer vóór Tuin, ook al is tuin eerder gemaakt"
+    assert {r["group"] for r in rows} == {"tuin", "bad"} and {r["group_name"] for r in rows} == {"Tuin", "Badkamer"}
+    bad = [r["id"] for r in rows if r["group"] == "bad"]
+    assert bad == sorted(bad) and "bad_ok" in bad, "binnen een apparaat op naam, de bereikbaarheid hoort erbij"
+
+
+def test_a_file_can_hold_one_device_and_says_so_in_its_title(tmp_path):
+    hub = _two_devices(tmp_path)
+    everything = ET.fromstring(hub.viu())
+    assert {e.attrib["Title"] for e in everything.iter("VirtualInUdpCmd")} >= {"kk.tuin_bri", "kk.bad_lux", "kk.bad_ok"} and everything.attrib["Title"] == "Huisconfig naar Loxone"
+    one = ET.fromstring(hub.viu(["bad"]))
+    assert {e.attrib["Title"] for e in one.iter("VirtualInUdpCmd")} == {"kk.bad_lux", "kk.bad_on", "kk.bad_ok"}
+    assert one.attrib["Title"] == "Huisconfig naar Loxone - Badkamer", "twee imports in Config zijn zo uit elkaar te houden"
+    vo = ET.fromstring(hub.vo(["tuin"]))
+    assert {e.attrib["Title"] for e in vo.iter("VirtualOutCmd")} == {"kk.tuin_bri_set"} and vo.attrib["Title"] == "Huisconfig van Loxone - Tuin"
+    assert "kk.bad_lux" not in hub.table(["tuin"]) and "kk.tuin_bri_set" in hub.table(["tuin"])
+    assert list(ET.fromstring(hub.viu([])).iter("VirtualInUdpCmd")) == [], "een lege keuze is een leeg bestand, niet alles"
+    assert "2 apparaten" not in hub.viu(["bad", "tuin"]) and "Badkamer, Tuin" in hub.viu(["bad", "tuin"])
+
+
+def test_the_web_api_filters_the_downloads_by_device(tmp_path):
+    async def go():
+        r, esp, hub = make(tmp_path)
+        esp.devices["bad"] = {"name": "Badkamer", "shown": None, "points": [pt("lux", "int")]}
+        esp.online.add("bad")
+        hub.add_device("tuin", "tuin", [{"pid": "bri", "out": True}])
+        hub.add_device("bad", "bad", [{"pid": "lux", "out": True}])
+        hub.configure({"miniserver": "192.168.1.112", "addon_host": "192.168.1.5"})
+        s = Settings(data_dir=tmp_path, key=KEY, key_generated=False, dev_mode=True)
+        c = TestClient(TestServer(web.make_app(web.Ctx(s, r.engine, espdev=esp, loxone=hub))))
+        await c.start_server()
+        try:
+            allf = await c.get("/api/loxone/viu.xml")
+            assert 'filename="VIU_Huisconfig.xml"' in allf.headers["Content-Disposition"]
+            one = await c.get("/api/loxone/viu.xml?devices=bad")
+            assert 'filename="VIU_Huisconfig_bad.xml"' in one.headers["Content-Disposition"]
+            assert {e.attrib["Title"] for e in ET.fromstring(await one.text()).iter("VirtualInUdpCmd")} == {"kk.bad_lux", "kk.bad_ok"}
+            both = ET.fromstring(await (await c.get("/api/loxone/viu.xml?devices=bad,tuin")).text())
+            assert "kk.tuin_bri" in {e.attrib["Title"] for e in both.iter("VirtualInUdpCmd")}
+            none = ET.fromstring(await (await c.get("/api/loxone/viu.xml?devices=")).text())
+            assert list(none.iter("VirtualInUdpCmd")) == []
+            assert "kk.bad_lux" not in await (await c.get("/api/loxone/table.txt?devices=tuin")).text()
+        finally:
+            await c.close()
+
+    run(go())
+
+
 # ------------------------------------------------------------ de web-API en de bestanden
 
 
