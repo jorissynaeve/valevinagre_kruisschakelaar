@@ -180,25 +180,50 @@ function viewSettings() {
   setTimeout(() => loxLoad(), 0); // de Loxone-koppeling haalt zijn eigen stand
   const peers = S.peers.map((p) => `<tr><td>${esc(p.ip)}${p.configured ? ' <span class="badge">vast</span>' : ''}</td><td>${p.frames}</td><td class="sub">${ago(p.last)}</td></tr>`).join('')
     || '<tr><td colspan="3" class="sub">Nog geen frames van een bridge ontvangen.</td></tr>';
-  return `<h2>Bridges op het LAN</h2>
-    <div class="scroll"><table><thead><tr><th>Adres</th><th>Frames</th><th>Laatst</th></tr></thead><tbody>${peers}</tbody></table></div>
-    <p class="sub">Peer-id van deze add-on: ${S.peer_id} (0x${S.peer_id.toString(16)}). ${S.mqtt.error ? `MQTT-fout: ${esc(S.mqtt.error)}` : ''}</p>
-    <p class="sub">Home Assistant (externe apparaten): ${S.ha.connected ? 'verbonden' : S.ha.enabled ? `niet verbonden${S.ha.error ? ` (${esc(S.ha.error)})` : ''}` : 'niet ingesteld (nodig voor Tuya en andere HA-entiteiten)'}.</p>
-    <div id="linkbox">${viewLinks()}</div>
-    <div id="loxbox">${viewLox()}</div>
-    <h2>Kringen</h2>
-    <p class="sub">Importeer je oude AppDaemon-kringen: ze komen uitgeschakeld binnen en staan daarna als lampen op het schema. Zet een lamp daar <b>Actief</b> en dezelfde kring <b>in AppDaemon uit</b>, anders werken ze elkaar tegen.</p>
-    <div class="row"><button class="btn" data-grp="import">AppDaemon-YAML importeren</button>
-    <button class="btn" data-grp="lampmatch">Lamp-relais kiezen op naam…</button>
-    <button class="btn danger" data-grp="alloff">Alle kringen uitzetten</button></div>
-    <h2>Netwerksleutel</h2>
-    <p class="sub">Alle nodes van dit huis delen één sleutel, die bij het compileren in de firmware komt (<code>firmware/secrets.h</code>, staat in .gitignore).</p>
-    <div class="row"><button class="btn" data-act="showkey">Toon secrets.h</button></div><div id="keybox"></div>
-    <h2>Back-up</h2>
-    <div class="row"><a class="btn" href="api/export" download="huisconfig.json">Exporteer configuratie</a>
-    <label class="btn" style="margin:0;color:var(--ink)">Importeer… <input id="imp" type="file" accept="application/json" hidden></label></div>
-    <p class="sub">Versie ${esc(S.version)}.</p>`;
+  const ha = S.ha.connected ? '<span class="badge ok">verbonden</span>' : S.ha.enabled ? `<span class="badge bad">niet verbonden</span>${S.ha.error ? ` <span class="sub">${esc(S.ha.error)}</span>` : ''}` : '<span class="badge">niet ingesteld</span>';
+  const sec = (id, body) => `<section class="setsec" data-sec="${id}">${body}</section>`;
+  const nav = [['conn', 'Verbindingen'], ['lox', 'Loxone'], ['grp', 'Kringen'], ['sys', 'Systeem']];
+  return `<div class="set" id="setroot" data-on="${esc(SET_TAB)}">
+    <nav class="setnav" id="setnav">${nav.map(([id, t]) => `<button type="button" data-set="${id}" class="${SET_TAB === id ? 'on' : ''}">${t}</button>`).join('')}</nav>
+    <div>
+    ${sec('conn', `<div class="panel"><h3>Bridges op het LAN</h3>
+        <p class="lead">De ESP32-bridges die frames naar deze add-on sturen. "Vast" betekent dat je het adres zelf hebt ingesteld.</p>
+        <div class="scroll"><table><thead><tr><th>Adres</th><th>Frames</th><th>Laatst</th></tr></thead><tbody>${peers}</tbody></table></div>
+        <dl class="kv" style="margin:12px 0 0"><dt>Peer-id van deze add-on</dt><dd>${S.peer_id} <span class="sub">(0x${S.peer_id.toString(16)})</span></dd>
+          <dt>Home Assistant</dt><dd>${ha} <span class="sub">nodig voor Tuya en andere HA-entiteiten</span></dd>
+          ${S.mqtt.error ? `<dt>MQTT</dt><dd><span class="badge bad">fout</span> <span class="sub">${esc(S.mqtt.error)}</span></dd>` : ''}</dl></div>
+      <div id="linkbox">${viewLinks()}</div>`)}
+    ${sec('lox', `<div id="loxbox">${viewLox()}</div>`)}
+    ${sec('grp', `<div class="panel"><h3>Kringen</h3>
+        <p class="lead">Importeer je oude AppDaemon-kringen: ze komen uitgeschakeld binnen en staan daarna als lampen op het schema. Zet een lamp daar <b>Actief</b> en dezelfde kring <b>in AppDaemon uit</b>, anders werken ze elkaar tegen.</p>
+        <div class="actions"><button class="btn" data-grp="import">AppDaemon-YAML importeren</button>
+          <button class="btn" data-grp="lampmatch">Lamp-relais kiezen op naam…</button>
+          <button class="btn danger" data-grp="alloff">Alle kringen uitzetten</button></div></div>`)}
+    ${sec('sys', `<div class="panel"><h3>Netwerksleutel</h3>
+        <p class="lead">Alle nodes van dit huis delen één sleutel, die bij het compileren in de firmware komt (<code>firmware/secrets.h</code>, staat in .gitignore).</p>
+        <div class="actions"><button class="btn" data-act="showkey">Toon secrets.h</button></div><div id="keybox"></div></div>
+      <div class="panel"><h3>Back-up</h3>
+        <p class="lead">Alle instellingen van de add-on in één bestand, om te bewaren of op een andere installatie te zetten.</p>
+        <div class="actions"><a class="btn" href="api/export" download="huisconfig.json">Exporteer configuratie</a>
+          <label class="btn" style="margin:0;color:var(--ink)">Importeer… <input id="imp" type="file" accept="application/json" hidden></label></div></div>
+      <p class="sub" style="margin:0 4px">Versie ${esc(S.version)}.</p>`)}
+    </div></div>`;
 }
+
+// De rubriek van Instellingen die open staat: onthouden, en omschakelen zonder opnieuw te tekenen (de rest van de pagina houdt zijn stand).
+let SET_TAB = 'conn';
+try { SET_TAB = localStorage.getItem('kk.settab') || 'conn'; } catch (e) { /* zonder opslag: de eerste rubriek */ }
+if (!['conn', 'lox', 'grp', 'sys'].includes(SET_TAB)) SET_TAB = 'conn';
+
+document.addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-set]');
+  const root = $('#setroot');
+  if (!b || !root) return;
+  SET_TAB = b.dataset.set;
+  try { localStorage.setItem('kk.settab', SET_TAB); } catch (e) { /* niet onthouden */ }
+  root.dataset.on = SET_TAB;
+  document.querySelectorAll('#setnav button').forEach((x) => x.classList.toggle('on', x.dataset.set === SET_TAB));
+});
 
 function render() {
   if (!S || (tab === 'schema' && (SC.drag || (SC.link && !SC.link.armed)))) return; // tijdens slepen niet opnieuw tekenen

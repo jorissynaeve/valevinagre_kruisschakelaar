@@ -41,7 +41,8 @@ function loxQuery() {
 }
 
 function loxSigRow(s) {
-  const dir = s.dir === 'out' ? '<span class="badge">→ Loxone</span>' : '<span class="badge">← Loxone</span>';
+  const via = s.dir === 'out' ? 'UDP' : String(LX.transport || 'http').toUpperCase(); // naar Loxone altijd UDP; van Loxone volgt de instelling bovenaan
+  const dir = `<span class="badge">${s.dir === 'out' ? '→' : '←'} Loxone</span><div class="sub">${via}</div>`;
   const last = s.dir === 'out'
     ? (s.last ? `verstuurd ${ago(s.last)}` : (LX.miniserver ? 'nog niet verstuurd' : ''))
     : (s.last ? `ontvangen ${ago(s.last)}: ${esc(String(s.got))} → ${esc(s.result || '')}` : 'nog niets ontvangen');
@@ -55,53 +56,69 @@ function loxGroup(g) {
   const nOut = g.sigs.filter((s) => s.dir === 'out').length;
   const nIn = g.sigs.length - nOut;
   const picked = !LX_PICK || LX_PICK.has(g.id);
+  const off = g.sigs.filter((s) => !s.enabled).length;
   return `<details class="lxgroup" data-lxg="${esc(g.id)}" ${LX_OPEN.has(g.id) ? 'open' : ''}>
     <summary><input type="checkbox" data-lxpick="${esc(g.id)}" ${picked ? 'checked' : ''} title="Dit apparaat in de bestanden voor Loxone Config">
-      <b>${esc(g.name)}</b> <span class="sub">${nOut} naar Loxone, ${nIn} van Loxone</span></summary>
-    <div class="scroll"><table><thead><tr><th></th><th>Bericht</th><th>Bron</th><th>Waarde</th><th>Aan</th><th></th></tr></thead><tbody>${g.sigs.map(loxSigRow).join('')}</tbody></table></div>
+      <span class="nm">${esc(g.name)}</span><span class="sub">${nOut ? `${nOut} → Loxone` : ''}${nOut && nIn ? ' · ' : ''}${nIn ? `${nIn} ← Loxone` : ''}${off ? ` · ${off} uit` : ''}</span></summary>
+    <div class="scroll"><table><thead><tr><th>Richting</th><th>Bericht</th><th>Bron</th><th>Waarde</th><th>Aan</th><th></th></tr></thead><tbody>${g.sigs.map(loxSigRow).join('')}</tbody></table></div>
   </details>`;
 }
 
 function viewLox() {
-  if (!LX) return '<h2>Loxone</h2><p class="sub">Laden…</p>';
-  if (LX.error) return `<h2>Loxone</h2><p class="sub">${esc(LX.error)}</p>`;
+  if (!LX) return '<div class="panel"><h3>Loxone</h3><p class="lead">Laden…</p></div>';
+  if (LX.error) return `<div class="panel"><h3>Loxone</h3><p class="lead">${esc(LX.error)}</p></div>`;
   const groups = loxGroups();
-  const rows = groups.map(loxGroup).join('') || '<p class="sub">Nog geen signalen. Kies hieronder een apparaat.</p>';
+  const rows = groups.map(loxGroup).join('') || '<p class="lead">Nog geen signalen. Kies hieronder een apparaat.</p>';
   const none = LX_PICK && LX_PICK.size === 0;
   const q = loxQuery();
   const devs = (S.espdev || []).map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('');
   const st = LX.stats;
   const ready = LX.miniserver && LX.me;
-  return `<h2>Loxone</h2>
-    <p class="sub">Vervangt JavaLox. Elk signaal is één kort bericht <code>kk.&lt;naam&gt;=&lt;getal&gt;</code>: een aan/uit is 1 of 0, een keuze (scene, stand) is het nummer ervan. Naar Loxone gaat het als UDP naar één virtuele UDP-ingang;
-      van Loxone komt het binnen via één virtuele uitgang. Beide maakt deze pagina als bestand voor Loxone Config, dus je typt geen commando's over.</p>
-    <div class="row"><div style="flex:1;min-width:170px"><label for="lxmini">IP van de Miniserver</label><input type="text" id="lxmini" placeholder="192.168.1.112" value="${esc(LX.miniserver)}"></div>
-      <div style="width:150px"><label for="lxout">Poort van zijn UDP-ingang</label><input type="number" id="lxout" min="1" max="65535" value="${LX.out_port}"></div>
-      <div style="flex:1;min-width:170px"><label for="lxhost">IP van deze add-on</label><input type="text" id="lxhost" placeholder="${esc(LX.me || 'bv. 192.168.1.5')}" value="${esc(LX.addon_host)}"></div>
-      <div style="width:200px"><label for="lxtr">Loxone roept de add-on aan via</label><select id="lxtr"><option value="http" ${LX.transport === 'http' ? 'selected' : ''}>HTTP (met bevestiging)</option><option value="udp" ${LX.transport === 'udp' ? 'selected' : ''}>UDP</option></select></div>
-      <button class="btn small" type="button" data-lx="save">Opslaan</button></div>
-    <p class="sub">De add-on luistert op poort <b>${LX.port}</b> (UDP en HTTP)${LX.listen_error ? ` — <span style="color:var(--warn)">${esc(LX.listen_error)}</span>` : (LX.udp || LX.http ? '' : ' — <span style="color:var(--warn)">niet actief</span>')}. Alleen berichten van het IP van de Miniserver worden aangenomen.
-      Verstuurd: ${st.sent}, ontvangen: ${st.received}, geweigerd: ${st.refused}, onbekend: ${st.unknown}${LX.queue ? `, in de rij: ${LX.queue}` : ''}.</p>
-    <div class="row"><span class="sub">${groups.length} apparaten, ${LX.signals.length} signalen. Het vinkje bij een apparaat bepaalt wat in de bestanden voor Loxone Config komt.</span>
-      <button class="btn small" type="button" data-lx="openall">Alles open</button><button class="btn small" type="button" data-lx="closeall">Alles dicht</button>
-      <button class="btn small" type="button" data-lx="pickall">Alle apparaten kiezen</button><button class="btn small" type="button" data-lx="picknone">Geen kiezen</button></div>
-    <div id="lxgroups">${rows}</div>
-    <label>Signalen van een apparaat maken</label>
-    <div class="row"><select id="lxdev">${devs || '<option value="">Nog geen apparaten</option>'}</select>
-      <input type="text" id="lxpre" maxlength="24" placeholder="voorvoegsel, bv. tuin" style="width:200px">
-      <button class="btn small" type="button" data-lx="adddev" ${devs ? '' : 'disabled'}>Signalen maken</button></div>
-    <div class="sub">De punten die op het blok van het apparaat staan, gaan naar Loxone; wat instelbaar is kan Loxone ook zetten (<code>…_set</code>); <code>…_ok</code> meldt of het apparaat bereikbaar is.
-      Een gevaarlijk punt (zoals een deur) kan Loxone lezen, nooit zetten. Wil je andere punten, zet ze eerst op het blok van het apparaat.</div>
+  const listening = LX.listen_error ? `<span class="badge bad">${esc(LX.listen_error)}</span>`
+    : LX.udp || LX.http ? `<span class="badge ok">luistert op poort ${LX.port}</span>` : '<span class="badge warn">luistert niet</span>';
+  return `<div class="panel">
+      <div class="phead"><h3>Verbinding met de Miniserver</h3>${listening}</div>
+      <p class="lead">Vervangt JavaLox. Elk signaal is één kort bericht <code>kk.&lt;naam&gt;=&lt;getal&gt;</code>: een aan/uit is 1 of 0, een keuze (scene, stand) is het nummer ervan.
+        Naar Loxone gaat het als UDP naar één virtuele UDP-ingang; van Loxone komt het binnen via één virtuele uitgang.</p>
+      <div class="fgrid">
+        <div><label for="lxmini">IP van de Miniserver</label><input type="text" id="lxmini" placeholder="192.168.1.112" value="${esc(LX.miniserver)}"></div>
+        <div><label for="lxout">Poort van zijn UDP-ingang</label><input type="number" id="lxout" min="1" max="65535" value="${LX.out_port}"></div>
+        <div><label for="lxhost">IP van deze add-on</label><input type="text" id="lxhost" placeholder="${esc(LX.me || 'bv. 192.168.1.5')}" value="${esc(LX.addon_host)}"></div>
+        <div><label for="lxtr">Loxone roept de add-on aan via</label><select id="lxtr"><option value="http" ${LX.transport === 'http' ? 'selected' : ''}>HTTP (met bevestiging)</option><option value="udp" ${LX.transport === 'udp' ? 'selected' : ''}>UDP</option></select></div>
+      </div>
+      <div class="row sp"><div class="stats"><span class="stat">Verstuurd<b>${st.sent}</b></span><span class="stat">Ontvangen<b>${st.received}</b></span>
+          <span class="stat ${st.refused ? 'bad' : ''}">Geweigerd<b>${st.refused}</b></span><span class="stat">Onbekend<b>${st.unknown}</b></span>${LX.queue ? `<span class="stat">In de rij<b>${LX.queue}</b></span>` : ''}</div>
+        <button class="btn primary" type="button" data-lx="save">Opslaan</button></div>
+      <div class="note"><span>ⓘ</span><span>De add-on luistert op poort <b>${LX.port}</b> (UDP en HTTP) en neemt alleen berichten aan van het IP van de Miniserver.</span></div>
+    </div>
+
+    <div class="panel">
+      <div class="phead"><h3>Signalen</h3><span class="sub">${groups.length} apparaten · ${LX.signals.length} signalen</span></div>
+      <div class="toolbar"><span class="sub">Klap een apparaat open voor zijn signalen. Het vinkje bepaalt wat in de bestanden voor Loxone Config komt.</span>
+        <button class="btn small" type="button" data-lx="openall">Alles open</button><button class="btn small" type="button" data-lx="closeall">Alles dicht</button></div>
+      <div id="lxgroups">${rows}</div>
+      <h4>Signalen van een apparaat maken</h4>
+      <div class="row"><select id="lxdev">${devs || '<option value="">Nog geen apparaten</option>'}</select>
+        <input type="text" id="lxpre" maxlength="24" placeholder="voorvoegsel, bv. tuin">
+        <button class="btn" type="button" data-lx="adddev" ${devs ? '' : 'disabled'}>Signalen maken</button></div>
+      <p class="sub" style="margin:8px 0 0">De punten die op het blok van het apparaat staan, gaan naar Loxone; wat instelbaar is kan Loxone ook zetten (<code>…_set</code>); <code>…_ok</code> meldt of het apparaat bereikbaar is.
+        Een gevaarlijk punt (zoals een deur) kan Loxone lezen, nooit zetten. Wil je andere punten, zet ze eerst op het blok van het apparaat.</p>
+    </div>
+
     ${viewLoxLock()}
-    <label>Voor Loxone Config</label>
-    <div class="sub">${LX_PICK ? `Gekozen: ${LX_PICK.size} van ${groups.length} apparaten.` : 'Alle apparaten.'}${none ? ' Kies eerst minstens één apparaat.' : ''}</div>
-    <div class="row">${ready && !none ? `<a class="btn" href="api/loxone/viu.xml${q}" download>Virtuele ingang (VIU)</a><a class="btn" href="api/loxone/vo.xml${q}" download>Virtuele uitgang (VO)</a>
-      <a class="btn" href="api/loxone/table.txt${q}" target="_blank" rel="noopener">Tabel om over te typen</a>` : `<span class="sub">${ready ? '' : 'Vul eerst het IP van de Miniserver in.'}</span>`}
-      <button class="btn" type="button" data-lx="sync" title="Alle waarden meteen opnieuw naar Loxone sturen">Alles opnieuw sturen</button></div>
-    <div class="sub">Importeer de bestanden in Loxone Config als sjabloon, op dezelfde plek als waar je er een exporteerde. Een sjabloon dat je al in je project hebt, werkt Config niet bij door het opnieuw te importeren.
-      Commando's toevoegen aan een bestaande ingang of uitgang via een bestand lukt niet, en twee virtuele UDP-ingangen op dezelfde poort kunnen niet.
-      Maak je later signalen bij: voor <b>naar Loxone</b> typ je de commando's over uit de tabel (kies alleen dat apparaat); een nieuwe virtuele <b>uitgang</b> mag wel naast de bestaande staan, importeer daarvoor het bestand van alleen dat apparaat.
-      Loxone kan zelf alles opnieuw opvragen: stuur <code>kk.sync=1</code>.</div>`;
+
+    <div class="panel">
+      <div class="phead"><h3>Bestanden voor Loxone Config</h3><span class="sub">${LX_PICK ? `${LX_PICK.size} van ${groups.length} apparaten gekozen` : 'alle apparaten'}</span></div>
+      <p class="lead">Importeer de bestanden in Loxone Config als sjabloon, op dezelfde plek als waar je er een exporteerde.</p>
+      <div class="actions">${ready && !none ? `<a class="btn primary" href="api/loxone/viu.xml${q}" download>Virtuele ingang (VIU)</a><a class="btn primary" href="api/loxone/vo.xml${q}" download>Virtuele uitgang (VO)</a>
+        <a class="btn" href="api/loxone/table.txt${q}" target="_blank" rel="noopener">Tabel om over te typen</a>` : `<span class="sub">${ready ? 'Kies eerst minstens één apparaat.' : 'Vul eerst het IP van de Miniserver in.'}</span>`}
+        <button class="btn small" type="button" data-lx="pickall">Alle apparaten kiezen</button><button class="btn small" type="button" data-lx="picknone">Geen kiezen</button></div>
+      <div class="note"><span>ⓘ</span><span>Een sjabloon dat al in je project staat, werkt Config niet bij door het opnieuw te importeren, en commando's toevoegen aan een bestaande ingang of uitgang via een bestand lukt niet.
+        Maak je later signalen bij: voor <b>naar Loxone</b> typ je de commando's over uit de tabel (kies alleen dat apparaat); een nieuwe virtuele <b>uitgang</b> mag wel naast de bestaande staan.</span></div>
+      <h4>Opnieuw sturen</h4>
+      <div class="row"><button class="btn" type="button" data-lx="sync" title="Alle waarden meteen opnieuw naar Loxone sturen">Alles opnieuw sturen</button>
+        <span class="sub">Loxone kan dat zelf vragen met <code>kk.sync=1</code>.</span></div>
+    </div>`;
 }
 
 // Een slot bedienen vanuit Loxone: een signaal per actie. Alleen een Nuki-slot, alleen een actie zonder argument.
@@ -118,12 +135,16 @@ function viewLoxLock() {
   const acts = loxLockActions();
   if (!acts.length) return '';
   const opts = acts.map((a) => `<option value="${esc(a.did)}|${esc(a.aid)}">${esc(a.dev)}: ${esc(a.label)}${a.danger ? ' (opent de deur)' : ''}</option>`).join('');
-  return `<label>Een slot bedienen vanuit Loxone</label>
-    <div class="row"><select id="lxact">${opts}</select>
-      <input type="text" id="lxactname" maxlength="30" placeholder="naam, bv. voordeur" style="width:180px">
-      <button class="btn small" type="button" data-lx="addact">Signaal maken</button></div>
-    <label class="sub"><input type="checkbox" id="lxactack"> Ik begrijp dat Loxone hiermee de deur kan <b>ontgrendelen</b> (nodig voor een actie die de deur opent)</label>
-    <div class="sub">Loxone moet een puls sturen: 1 en daarna weer 0 (de uitgang in het bestand doet dat bij een digitale uitgang). Een actie die de deur opent start alleen bij de overgang van 0 naar 1, alleen over HTTP, hoogstens eens per 5 s en alleen als het slot bereikbaar is; zonder die overgang (bv. na een herstart van de Miniserver) gebeurt er niets. Elke start staat in het logboek van de add-on.</div>`;
+  return `<div class="panel">
+      <div class="phead"><h3>Een slot bedienen vanuit Loxone</h3></div>
+      <p class="lead">Een signaal per actie, bijvoorbeeld <code>voordeur_lock</code> en <code>voordeur_unlock</code>.</p>
+      <div class="row"><select id="lxact">${opts}</select>
+        <input type="text" id="lxactname" maxlength="30" placeholder="naam, bv. voordeur">
+        <button class="btn" type="button" data-lx="addact">Signaal maken</button></div>
+      <label class="chk" style="display:flex;gap:8px;align-items:flex-start;color:var(--ink);margin-top:12px"><input type="checkbox" id="lxactack" style="margin-top:3px"> <span>Ik begrijp dat Loxone hiermee de deur kan <b>ontgrendelen</b> (nodig voor een actie die de deur opent).</span></label>
+      <div class="note warn"><span>⚠</span><span>Loxone moet een puls sturen: 1 en daarna weer 0 (de uitgang in het bestand doet dat bij een digitale uitgang). Een actie die de deur opent start alleen bij de overgang van 0 naar 1, alleen over HTTP,
+        hoogstens eens per 5 s en alleen als het slot bereikbaar is; zonder die overgang (bv. na een herstart van de Miniserver) gebeurt er niets. Elke start staat in het logboek van de add-on.</span></div>
+    </div>`;
 }
 
 const LX_ACTIONS = {

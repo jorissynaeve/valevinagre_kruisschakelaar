@@ -30,8 +30,8 @@ function viewLinks() {
       <div class="sub">${offer.length ? `${used} van ${offer.length} in gebruik. Vink aan wat je hier wilt gebruiken: alleen dat wordt een blok, en alleen daarvan komt de stand over de lijn.` : 'Biedt nog niets aan.'}</div>
       ${rows}</div>`;
   }).join('');
-  return `<h2>Andere installaties</h2>
-    <p class="sub">Een Huisconfig in een ander subnet (met een eigen Home Assistant) biedt zijn lampen, gangen (touch en relais van een schakelaar), laadpalen en Tuya-toestellen aan, en omgekeerd. Je kiest per installatie wat je wilt gebruiken; dat verschijnt op het schema als blok dat je kunt bedienen, aan een kaart kunt hangen, of (een gang) op een lamp kunt aansluiten. Instellen doe je bij de installatie waar het toestel hangt.</p>
+  return `<div class="panel"><h3>Andere installaties</h3>
+    <p class="lead">Een Huisconfig in een ander subnet (met een eigen Home Assistant) biedt zijn lampen, gangen (touch en relais van een schakelaar), laadpalen en Tuya-toestellen aan, en omgekeerd. Je kiest per installatie wat je wilt gebruiken; dat verschijnt op het schema als blok dat je kunt bedienen, aan een kaart kunt hangen, of (een gang) op een lamp kunt aansluiten. Instellen doe je bij de installatie waar het toestel hangt.</p>
     <label for="lkname">Naam van deze installatie</label>
     <div class="row"><input type="text" id="lkname" maxlength="60" placeholder="bv. Hoofdhuis" value="${esc(me.name)}"><button class="btn small" type="button" data-lk="name">Opslaan</button></div>
     ${me.id ? `<div class="sub">Id: <code>${esc(me.id)}</code>. Die blijft, ook als je de naam verandert: de andere installaties verwijzen ermee naar deze.</div>` : '<div class="sub">Nodig om te koppelen. Elke installatie een andere naam.</div>'}
@@ -45,7 +45,7 @@ function viewLinks() {
     <div class="scroll"><table><thead><tr><th>Home Assistant</th><th>Stand</th><th></th></tr></thead><tbody>${peers}</tbody></table></div>
     <div class="row" style="margin-top:6px"><input type="text" id="lkhost" spellcheck="false" autocomplete="off" placeholder="IP-adres, bv. 192.168.20.10" style="flex:1;min-width:180px"><input type="number" id="lkport" min="1" max="65535" value="47490" style="width:90px">
       <button class="btn small" type="button" data-lk="addpeer">Toevoegen</button></div>
-    ${known ? `<label>Wat je van andere installaties gebruikt</label>${known}` : ''}`;
+    ${known ? `<h4>Wat je van andere installaties gebruikt</h4>${known}` : ''}</div>`;
 }
 
 function linksUpdate() { // de stand van de verbindingen verandert: bijwerken, behalve terwijl je in een veld typt
