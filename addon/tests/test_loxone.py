@@ -901,3 +901,26 @@ def test_the_web_api_makes_signals_and_downloads_the_files_for_loxone_config(tmp
             await c.close()
 
     run(go())
+
+
+def test_the_traffic_log_shows_what_really_went_over_the_line_newest_first(tmp_path):
+    async def go():
+        r, esp, hub = make(tmp_path)
+        mini = Mini()
+        _in(hub)
+        hub.add_device("tuin", "tuin", [{"pid": "motion", "out": True}])
+        await up(hub, mini)
+        try:
+            await eventually(lambda: any(e["d"] == "uit" and e["txt"] == "kk.tuin_motion=0" for e in hub.view()["traffic"]))
+            assert await hub.apply([("bri", 85.0)], "http") == [("bri", "ok")]
+            esp.vals["motion"] = True
+            await eventually(lambda: any(e["txt"] == "kk.tuin_motion=1" for e in hub.view()["traffic"]), 5)
+            t = hub.view()["traffic"]
+            assert [e["t"] for e in t] == sorted((e["t"] for e in t), reverse=True), "de nieuwste bovenaan"
+            assert next(e for e in t if e["d"] == "in") == {**next(e for e in t if e["d"] == "in"), "txt": "kk.bri=85", "via": "HTTP", "result": "ok"}
+            assert next(e for e in t if e["txt"] == "kk.tuin_motion=1")["via"] == str(mini.port)
+        finally:
+            await hub.close()
+            mini.close()
+
+    run(go())

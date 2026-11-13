@@ -23,7 +23,7 @@ import os
 import re
 import socket
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from pathlib import Path
 
 from aiohttp import web
@@ -48,6 +48,7 @@ ACT_RE = re.compile(r"^a:([a-z0-9_]{1,40}):([a-z][a-z0-9_]{0,23})$")  # een acti
 KINDS = ("bool", "int", "float")
 NO_DEVICE = "-"  # de groep van signalen zonder apparaat (een timer of module als bron)
 MAIN = "main"  # het standaardkanaal: zijn poort is `out_port`
+TRAFFIC = 150  # zoveel berichten blijven in het verkeerslogboek
 MAX_CHANNELS = 20  # een Miniserver kent hoogstens ~50 verschillende UDP-poorten voor virtuele ingangen
 
 
@@ -106,6 +107,7 @@ class LoxoneHub:
         self.queue: OrderedDict[str, bytes] = OrderedDict()
         self.act_mem: dict[str, bool] = {}  # de laatst ontvangen waarde van een actie-signaal sinds het starten (voor de overgang 0 naar 1)
         self.act_last: dict[str, float] = {}  # wanneer een actie-signaal voor het laatst iets startte
+        self.traffic: deque = deque(maxlen=TRAFFIC)  # de laatste berichten, in en uit, om te zien wat er echt over de lijn ging
         self.seen: set[str] = set()  # ingaande signalen waarvan sinds het starten al een waarde kwam (voor skip_first)
         self.stats = {"sent": 0, "received": 0, "refused": 0, "unknown": 0}
         self.changed = None
@@ -487,6 +489,7 @@ class LoxoneHub:
                     sg = self.signals.get(sid)
                     self._udp.sendto(data, (self.miniserver, self.channel_port(self.channel_of(sg)) if sg else self.out_port))
                     self.stats["sent"] += 1
+                    self._note("uit", data.decode("ascii", "replace"), str(self.channel_port(self.channel_of(sg)) if sg else self.out_port), "")
                 except OSError as e:
                     self.error = f"versturen mislukt: {e}"
             await asyncio.sleep(self.gap)
@@ -513,8 +516,13 @@ class LoxoneHub:
         """Waarden van Loxone toepassen (`via`: udp of http). Per signaal een uitslag: 'ok', 'zelfde', 'onthouden' of de reden van de weigering."""
         res = []
         for sid, value in pairs:
-            res.append((sid, await self._apply_one(sid, value, via)))
+            r = await self._apply_one(sid, value, via)
+            self._note("in", f"kk.{sid}={value:g}", via.upper(), r)
+            res.append((sid, r))
         return res
+
+    def _note(self, d: str, text: str, via: str, result: str) -> None:
+        self.traffic.append({"t": time.time(), "d": d, "txt": text, "via": via, "result": result})
 
     async def _apply_action(self, sid: str, s: dict, value: float, via: str, out: dict) -> str:
         """Loxone start een actie van een slot. Strenger dan een punt, want het kan een deur zijn (dezelfde regels als de ingang op het blok, DESIGN §37):
@@ -682,7 +690,7 @@ class LoxoneHub:
             sigs.append(row)
         return {"miniserver": self.miniserver, "out_port": self.out_port, "addon_host": self.addon_host, "me": self.me(), "transport": self.transport,
                 "port": self.port, "udp": self.udp_port, "http": self.http_port, "listen_error": self.error, "stats": dict(self.stats), "queue": len(self.queue),
-                "signals": sigs, "now": now,
+                "signals": sigs, "now": now, "traffic": list(self.traffic)[::-1],
                 "channels": [{**c, "n_out": sum(1 for s in sigs if s["channel"] == c["id"] and s["dir"] == "out" and s["enabled"]),
                               "n_in": sum(1 for s in sigs if s["channel"] == c["id"] and s["dir"] == "in" and s["enabled"]),
                               "devices": sorted({s["group_name"] for s in sigs if s["channel"] == c["id"]})} for c in self.channel_list()]}

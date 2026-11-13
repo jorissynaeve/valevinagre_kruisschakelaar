@@ -108,8 +108,37 @@ function viewLox() {
 
     ${viewLoxLock()}
 
-    `;
+    ${viewLoxTraffic()}`;
 }
+
+// Het verkeerslogboek: wat de add-on echt naar Loxone stuurde en van Loxone kreeg, met tijd. Handig om te zien of een vreemde waarde in Loxone van de add-on komt.
+let LX_FILTER = '';
+let LX_TRAFFIC_OPEN = false;
+
+function loxTrafficRows() {
+  const f = LX_FILTER.trim().toLowerCase();
+  const rows = (LX.traffic || []).filter((e) => !f || e.txt.toLowerCase().includes(f)).slice(0, 60);
+  return rows.map((e) => {
+    const t = new Date(e.t * 1000).toLocaleTimeString('nl-BE');
+    return `<tr><td class="sub" style="white-space:nowrap">${esc(t)}</td><td><span class="badge">${e.d === 'uit' ? '→ UDP ' + esc(e.via) : '← ' + esc(e.via)}</span></td><td><code>${esc(e.txt)}</code></td><td class="sub">${esc(e.result)}</td></tr>`;
+  }).join('') || '<tr><td colspan="4" class="sub">Nog niets (of niets dat past bij het filter).</td></tr>';
+}
+
+function viewLoxTraffic() {
+  return `<div class="panel"><details id="lxtraffic" ${LX_TRAFFIC_OPEN ? 'open' : ''}>
+      <summary style="cursor:pointer"><h3 style="display:inline">Verkeer</h3> <span class="sub">de laatste berichten naar en van Loxone, met de tijd</span></summary>
+      <div class="row" style="margin:12px 0 8px"><input type="text" id="lxfilter" placeholder="filter, bv. motion" value="${esc(LX_FILTER)}" style="max-width:260px"></div>
+      <div class="scroll"><table><thead><tr><th>Tijd</th><th>Route</th><th>Bericht</th><th>Uitslag</th></tr></thead><tbody id="lxtrafficrows">${loxTrafficRows()}</tbody></table></div>
+    </details></div>`;
+}
+
+document.addEventListener('toggle', (ev) => { if (ev.target && ev.target.id === 'lxtraffic') LX_TRAFFIC_OPEN = ev.target.open; }, true);
+document.addEventListener('input', (ev) => {
+  if (!ev.target || ev.target.id !== 'lxfilter') return;
+  LX_FILTER = ev.target.value;
+  const body = $('#lxtrafficrows');
+  if (body) body.innerHTML = loxTrafficRows();
+});
 
 // De downloads van een kanaal, met de keuze van apparaten (vinkjes bij Signalen) erbij.
 function loxHref(file, cid) {
