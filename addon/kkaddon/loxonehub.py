@@ -4,8 +4,9 @@ Een **signaal** koppelt een bron aan een naam in een bericht (`kk.<id>=<getal>`,
 - `out`: de add-on leest een uitgang (`e:<apparaat>:<punt>` van een HUISDEV-apparaat, een timer of module, of `online:<apparaat>`) en stuurt de waarde als UDP naar de
   virtuele UDP-ingang van de Miniserver. Bij een verandering, elke minuut opnieuw (de Miniserver verliest zijn ingangen bij een herstart, UDP is niet gegarandeerd) en
   10 s na het starten (een volledige stand, uitgespreid). Een onbekende waarde (apparaat offline) wordt niet verstuurd: een verzonnen 0 is gevaarlijker dan niets.
+- `in` met een actie (`a:<slot>:<actie>`): Loxone start een actie van een Nuki-slot (vergrendelen, ontgrendelen). Strenger dan een punt, want het is een deur: zie `_apply_action`.
 - `in`: de Miniserver zet een punt van een HUISDEV-apparaat, over UDP of HTTP (GET/POST naar `/loxone`). Alleen absolute waarden, alleen van het IP van de Miniserver,
-  alleen punten die instelbaar zijn en niet `danger` (nooit een deur), binnen bereik en stap van het punt, en alleen als de waarde verandert.
+  alleen punten die instelbaar zijn en niet `danger` (een deur alleen via een actie, zie hieronder), binnen bereik en stap van het punt, en alleen als de waarde verandert.
 
 De Miniserver is een eerste generatie (waarschijnlijk): hij verwerkt UDP niet in een vloed. Daarom gaat er hoogstens één bericht per `GAP` de lijn op en nooit twee keer
 hetzelfde signaal binnen `MIN_GAP`.
@@ -28,7 +29,7 @@ from pathlib import Path
 from aiohttp import web
 
 from . import loxone as lx
-from .espdevhub import REF_RE, _snap
+from .espdevhub import ACTION_GAP, REF_RE, _snap
 from .model import SOURCE_RE, ModelError
 
 log = logging.getLogger("kk.loxone")
@@ -43,6 +44,7 @@ DEFAULT_IN_PORT = 47510  # waar de add-on luistert (UDP en HTTP)
 DEFAULT_OUT_PORT = 9100  # waar de Miniserver luistert (zijn virtuele UDP-ingang)
 HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,253}$")
 ONLINE_RE = re.compile(r"^online:([a-z0-9_]{1,40})$")
+ACT_RE = re.compile(r"^a:([a-z0-9_]{1,40}):([a-z][a-z0-9_]{0,23})$")  # een actie van een Nuki-slot: `a:<apparaat>:<actie>`
 KINDS = ("bool", "int", "float")
 NO_DEVICE = "-"  # de groep van signalen zonder apparaat (een timer of module als bron)
 
@@ -98,6 +100,8 @@ class LoxoneHub:
         self.sent: dict[str, dict] = {}  # id -> {"txt", "v", "t", "wall"} van het laatst verstuurde
         self.got: dict[str, dict] = {}  # id -> {"v", "wall", "result"} van het laatst ontvangene
         self.queue: OrderedDict[str, bytes] = OrderedDict()
+        self.act_mem: dict[str, bool] = {}  # de laatst ontvangen waarde van een actie-signaal sinds het starten (voor de overgang 0 naar 1)
+        self.act_last: dict[str, float] = {}  # wanneer een actie-signaal voor het laatst iets startte
         self.seen: set[str] = set()  # ingaande signalen waarvan sinds het starten al een waarde kwam (voor skip_first)
         self.stats = {"sent": 0, "received": 0, "refused": 0, "unknown": 0}
         self.changed = None
@@ -163,6 +167,8 @@ class LoxoneHub:
         transport = b.get("transport", self.transport)
         if transport not in ("http", "udp"):
             raise ModelError("verbinding naar de add-on: http of udp")
+        if transport == "udp" and any(self.is_danger(sg) for sg in self.signals.values()):
+            raise ModelError("er zijn gevaarlijke acties (ontgrendelen): die worden alleen over HTTP aangenomen. Haal ze eerst weg, of kies HTTP")
         self.miniserver, self.out_port, self.addon_host, self.transport = mini, port, host, transport
         self._save()
         self._poke()
@@ -174,6 +180,21 @@ class LoxoneHub:
         m = REF_RE.match(ref or "")
         dev = self.espdev.devices.get(m.group(1)) if m and self.espdev else None
         return (dev, next((p for p in dev["points"] if p["id"] == m.group(2)), None)) if dev else (None, None)
+
+    def _action(self, ref: str):
+        """(slot, actie) van een `a:<slot>:<actie>`, of (None, None). Alleen een actie zonder argumenten van een Nuki-slot: dat heeft een 0/1."""
+        m = ACT_RE.match(ref or "")
+        dev = self.espdev.devices.get(m.group(1)) if m and self.espdev else None
+        if not dev or dev.get("driver") != "nuki":
+            return None, None
+        return dev, next((a for a in dev["actions"] if a["id"] == m.group(2) and not a["args"]), None)
+
+    def is_danger(self, s: dict) -> bool:
+        """Een signaal dat een deur kan openen. Een actie die we niet kunnen nalezen (het slot is weg) telt ook, want dat is de veilige kant."""
+        if not ACT_RE.match(s.get("ref") or ""):
+            return False
+        _, a = self._action(s["ref"])
+        return a is None or a["danger"]
 
     def _clean(self, sid: str, raw) -> dict:
         if not isinstance(sid, str) or not lx.ID_RE.match(sid) or sid in lx.RESERVED:
@@ -187,8 +208,8 @@ class LoxoneHub:
         if not isinstance(ref, str):
             raise ModelError("kies een bron")
         if d == "in":
-            if not REF_RE.match(ref):
-                raise ModelError("van Loxone kan alleen een punt van een apparaat (e:<apparaat>:<punt>) worden gezet")
+            if not (REF_RE.match(ref) or ACT_RE.match(ref)):
+                raise ModelError("van Loxone kan alleen een punt van een apparaat (e:<apparaat>:<punt>) of een actie van een slot worden gezet")
         elif not (SOURCE_RE.match(ref) or ONLINE_RE.match(ref)):
             raise ModelError("onbekende bron")
         kind = raw.get("kind") if raw.get("kind") in KINDS else "float"
@@ -197,7 +218,7 @@ class LoxoneHub:
         if p:  # het punt bepaalt wat het is
             kind = "bool" if p["kind"] == "bool" else "float" if p["kind"] == "float" else "int"
             dec, lo, hi = p["decimals"], p["min"], p["max"]
-        elif ONLINE_RE.match(ref):
+        elif ONLINE_RE.match(ref) or ACT_RE.match(ref):
             kind, dec, lo, hi = "bool", 0, 0, 1
         dec = dec if isinstance(dec, int) and not isinstance(dec, bool) and 0 <= dec <= 6 else (1 if kind == "float" else 0)
         num = lambda x: x if isinstance(x, (int, float)) and not isinstance(x, bool) else None  # noqa: E731
@@ -207,7 +228,8 @@ class LoxoneHub:
         except (TypeError, ValueError):
             raise ModelError("dode band en herhaling zijn getallen") from None
         return {"dir": d, "ref": ref, "label": str(raw.get("label") or "")[:120], "kind": kind, "decimals": dec, "min": num(lo), "max": num(hi),
-                "deadband": deadband, "heartbeat": heartbeat, "skip_first": raw.get("skip_first") is True, "enabled": raw.get("enabled") is not False}
+                "deadband": deadband, "heartbeat": heartbeat, "skip_first": raw.get("skip_first") is True, "enabled": raw.get("enabled") is not False,
+                "ack": raw.get("ack") is True}  # ack: de gebruiker bevestigde dat Loxone hiermee een deur mag openen
 
     def add_signal(self, sid: str, raw: dict) -> None:
         if sid in self.signals:
@@ -245,6 +267,16 @@ class LoxoneHub:
     def _check_in(self, s: dict) -> None:
         """Wat Loxone mag zetten: een bestaand, instelbaar punt dat niet gevaarlijk is."""
         if s["dir"] != "in" or not self.espdev:
+            return
+        if ACT_RE.match(s["ref"]):
+            dev, a = self._action(s["ref"])
+            if not a:
+                raise ModelError("onbekende actie (alleen acties zonder argumenten van een Nuki-slot)")
+            if a["danger"]:
+                if not s["ack"]:
+                    raise ModelError(f"{a['label']} opent de deur: bevestig dat Loxone dit mag starten")
+                if self.transport != "http":
+                    raise ModelError(f"{a['label']} opent de deur en wordt alleen over HTTP aangenomen: zet de verbinding van Loxone naar de add-on eerst op HTTP")
             return
         dev, p = self._point(s["ref"])
         if not p:
@@ -375,14 +407,54 @@ class LoxoneHub:
             return False
         return ip == self.miniserver
 
-    async def apply(self, pairs: list[tuple[str, float]]) -> list[tuple[str, str]]:
-        """Waarden van Loxone toepassen. Per signaal een uitslag: 'ok', 'zelfde', 'onthouden' of de reden van de weigering."""
+    async def apply(self, pairs: list[tuple[str, float]], via: str = "udp") -> list[tuple[str, str]]:
+        """Waarden van Loxone toepassen (`via`: udp of http). Per signaal een uitslag: 'ok', 'zelfde', 'onthouden' of de reden van de weigering."""
         res = []
         for sid, value in pairs:
-            res.append((sid, await self._apply_one(sid, value)))
+            res.append((sid, await self._apply_one(sid, value, via)))
         return res
 
-    async def _apply_one(self, sid: str, value: float) -> str:
+    async def _apply_action(self, sid: str, s: dict, value: float, via: str, out: dict) -> str:
+        """Loxone start een actie van een slot. Strenger dan een punt, want het kan een deur zijn (dezelfde regels als de ingang op het blok, DESIGN §37):
+        - alleen een 1 start iets; een 0 niet (en een gevaarlijke actie start alleen bij de **overgang** van 0 naar 1: een herstarte Miniserver die zijn 1 nog eens stuurt
+          opent niets, en de eerste waarde na een start van de add-on wordt alleen onthouden);
+        - een gevaarlijke actie komt alleen over HTTP (TCP is niet zomaar te vervalsen; een UDP-pakket wel) en alleen als de gebruiker dat bevestigde (`ack`);
+        - hoogstens eens per `ACTION_GAP` per signaal, en nooit wachten: is het slot niet bereikbaar, dan vervalt de opdracht, nooit opnieuw proberen;
+        - elke gestarte actie staat in het logboek."""
+        prev, v = self.act_mem.get(sid), value >= 0.5
+        self.act_mem[sid] = v
+        try:
+            dev, a = self._action(s["ref"])
+            if not a:
+                raise ModelError("onbekende actie")
+            if not v:
+                out["result"] = "0: niets gedaan"
+                return "ok"
+            if a["danger"]:
+                if not s["ack"]:
+                    raise ModelError("niet bevestigd: deze actie opent de deur")
+                if via != "http":
+                    raise ModelError("deze actie opent de deur en wordt alleen over HTTP aangenomen")
+                if prev is not False:
+                    raise ModelError("geen overgang van 0 naar 1: niet uitgevoerd")
+            now = self.clock()
+            if now - self.act_last.get(sid, -1e9) < ACTION_GAP:
+                raise ModelError(f"te kort na de vorige keer (hoogstens eens per {ACTION_GAP:g} s)")
+            did = ACT_RE.match(s["ref"]).group(1)
+            if not self.espdev.is_online(did):
+                raise ModelError(f"{dev['name']} is niet bereikbaar: de opdracht vervalt")
+            self.act_last[sid] = now
+            log.warning("Loxone start %s op %s (signaal %s, via %s)", a["label"], dev["name"], sid, via)
+            await self.espdev.do(did, a["id"], None, confirm=True)
+        except ModelError as e:
+            self.stats["refused"] += 1
+            out["result"] = str(e)
+            log.warning("%s=%s geweigerd: %s", sid, value, e)
+            return str(e)
+        out["result"] = "gestart"
+        return "ok"
+
+    async def _apply_one(self, sid: str, value: float, via: str = "udp") -> str:
         self.stats["received"] += 1
         if sid == "sync":
             self.request_snapshot()
@@ -397,6 +469,8 @@ class LoxoneHub:
         if first and s["skip_first"]:
             out["result"] = "onthouden"
             return "onthouden"
+        if ACT_RE.match(s["ref"]):
+            return await self._apply_action(sid, s, value, via, out)
         dev, p = self._point(s["ref"])
         try:
             if not p or not self.espdev:
@@ -440,7 +514,7 @@ class LoxoneHub:
         pairs = lx.parse(text)
         if not pairs:
             return web.Response(status=400, text="geen geldig bericht (kk.<naam>=<getal>)\n")
-        res = await self.apply(pairs)
+        res = await self.apply(pairs, "http")
         bad = [f"{sid}: {r}" for sid, r in res if r not in ("ok", "zelfde", "onthouden")]
         return web.Response(status=400 if bad else 200, text=("\n".join(bad) if bad else "ok") + "\n")
 
@@ -488,7 +562,7 @@ class LoxoneHub:
         order = sorted(self.signals.items(), key=lambda kv: (self.group_name(self.group_of(kv[1])).lower(), kv[0]))
         for sid, s in order:
             g = self.group_of(s)
-            row = {"id": sid, **s, "key": lx.key(sid), "group": g, "group_name": self.group_name(g)}
+            row = {"id": sid, **s, "key": lx.key(sid), "group": g, "group_name": self.group_name(g), "action": bool(ACT_RE.match(s["ref"])), "danger": self.is_danger(s)}
             if s["dir"] == "out":
                 st = self.sent.get(sid)
                 try:
@@ -511,7 +585,7 @@ class LoxoneHub:
     @staticmethod
     def group_of(s: dict) -> str:
         """Bij welk apparaat een signaal hoort: het id van het apparaat, of `-` voor een bron zonder apparaat (timer, module)."""
-        m = REF_RE.match(s.get("ref") or "") or ONLINE_RE.match(s.get("ref") or "")
+        m = REF_RE.match(s.get("ref") or "") or ONLINE_RE.match(s.get("ref") or "") or ACT_RE.match(s.get("ref") or "")
         return m.group(1) if m else NO_DEVICE
 
     def group_name(self, g: str) -> str:

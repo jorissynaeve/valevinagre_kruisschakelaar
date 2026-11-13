@@ -567,6 +567,154 @@ def test_the_web_api_filters_the_downloads_by_device(tmp_path):
     run(go())
 
 
+# ------------------------------------------------------------ een slot vergrendelen en ontgrendelen vanuit Loxone
+
+
+def lock_rig(tmp_path):
+    """Een Nuki-slot met een gewone en een gevaarlijke actie, en een brug die over HTTP wordt aangeroepen."""
+    r, esp, hub = make(tmp_path)
+    esp.devices["slot"] = {"name": "Voordeur", "driver": "nuki", "shown": None, "points": [pt("locked", "bool")], "actions": [
+        {"id": "lock", "label": "Vergrendelen", "danger": False, "args": [], "confirm": ""},
+        {"id": "unlock", "label": "Ontgrendelen", "danger": True, "args": [], "confirm": "echt?"},
+        {"id": "timer", "label": "Met argument", "danger": False, "args": [{"id": "n", "label": "N", "kind": "int"}], "confirm": ""}]}
+    esp.online.add("slot")
+    esp.did = []
+
+    async def do(did, aid, args=None, confirm=False):
+        esp.did.append((did, aid, confirm))
+        return {"ok": True}
+
+    esp.do = do
+    return r, esp, hub
+
+
+def test_a_lock_action_must_be_confirmed_and_only_a_nuki_action_without_arguments_can_be_made(tmp_path):
+    _, esp, hub = lock_rig(tmp_path)
+    hub.add_signal("deur_lock", {"dir": "in", "ref": "a:slot:lock"})
+    with pytest.raises(ModelError, match="bevestig"):
+        hub.add_signal("deur_unlock", {"dir": "in", "ref": "a:slot:unlock"})
+    hub.add_signal("deur_unlock", {"dir": "in", "ref": "a:slot:unlock", "ack": True})
+    for n, ref in enumerate(("a:slot:nope", "a:slot:timer", "a:tuin:lock", "a:weg:lock")):
+        with pytest.raises(ModelError, match="onbekende actie"):
+            hub.add_signal(f"x{n}", {"dir": "in", "ref": ref, "ack": True})
+    with pytest.raises(ModelError):
+        hub.add_signal("uit", {"dir": "out", "ref": "a:slot:lock"})
+    s = hub.signals["deur_unlock"]
+    assert s["kind"] == "bool" and s["ack"] is True and hub.signals["deur_lock"]["ack"] is False
+    rows = {r["id"]: r for r in hub.view()["signals"]}
+    assert rows["deur_unlock"]["action"] and rows["deur_unlock"]["danger"] and rows["deur_unlock"]["group"] == "slot" and rows["deur_unlock"]["group_name"] == "Voordeur"
+    assert not rows["deur_lock"]["danger"]
+    hub.configure({"miniserver": "192.168.1.112", "addon_host": "192.168.1.5"})
+    vo = ET.fromstring(hub.vo())
+    assert {e.attrib["Title"] for e in vo.iter("VirtualOutCmd")} == {"kk.deur_lock", "kk.deur_unlock"}, "ook acties staan in het bestand voor Loxone"
+
+
+def test_unlocking_needs_http_a_rising_edge_and_a_confirmed_signal(tmp_path):
+    async def go():
+        _, esp, hub = lock_rig(tmp_path)
+        hub.add_signal("deur_unlock", {"dir": "in", "ref": "a:slot:unlock", "ack": True})
+        assert await hub.apply([("deur_unlock", 0.0)], "http") == [("deur_unlock", "ok")], "een 0 doet niets"
+        assert (await hub.apply([("deur_unlock", 1.0)], "udp"))[0][1] == "deze actie opent de deur en wordt alleen over HTTP aangenomen"
+        assert esp.did == []
+        # de laatste waarde was de 1 van de UDP-poging: daarna is er geen overgang meer
+        assert (await hub.apply([("deur_unlock", 1.0)], "http"))[0][1] == "geen overgang van 0 naar 1: niet uitgevoerd"
+        await hub.apply([("deur_unlock", 0.0)], "http")
+        assert await hub.apply([("deur_unlock", 1.0)], "http") == [("deur_unlock", "ok")]
+        assert esp.did == [("slot", "unlock", True)]
+        await hub.apply([("deur_unlock", 0.0)], "http")
+        assert "te kort" in (await hub.apply([("deur_unlock", 1.0)], "http"))[0][1], "hoogstens eens per ACTION_GAP"
+        assert len(esp.did) == 1
+        assert hub.got["deur_unlock"]["result"].startswith("te kort")
+
+    run(go())
+
+
+def test_the_first_value_after_a_start_is_only_remembered_for_an_action_that_opens_the_door(tmp_path):
+    async def go():
+        _, esp, hub = lock_rig(tmp_path)
+        hub.add_signal("deur_unlock", {"dir": "in", "ref": "a:slot:unlock", "ack": True})
+        assert "geen overgang" in (await hub.apply([("deur_unlock", 1.0)], "http"))[0][1], "een herstarte Miniserver die zijn 1 nog eens stuurt opent niets"
+        assert await hub.apply([("deur_unlock", 1.0)], "http") != [("deur_unlock", "ok")]
+        assert esp.did == []
+
+    run(go())
+
+
+def test_an_action_that_opens_the_door_does_not_wait_and_is_not_retried_when_the_lock_is_away(tmp_path):
+    async def go():
+        _, esp, hub = lock_rig(tmp_path)
+        hub.add_signal("deur_unlock", {"dir": "in", "ref": "a:slot:unlock", "ack": True})
+        await hub.apply([("deur_unlock", 0.0)], "http")
+        esp.online.discard("slot")
+        assert "niet bereikbaar" in (await hub.apply([("deur_unlock", 1.0)], "http"))[0][1]
+        esp.online.add("slot")
+        await asyncio.sleep(0.05)
+        assert esp.did == [], "een deur die later alsnog opengaat is erger dan een deur die dicht blijft"
+        hub.signals["deur_unlock"]["ack"] = False  # ook als de bevestiging uit het bestand verdwijnt
+        await hub.apply([("deur_unlock", 0.0)], "http")
+        assert "niet bevestigd" in (await hub.apply([("deur_unlock", 1.0)], "http"))[0][1]
+        assert esp.did == []
+
+    run(go())
+
+
+def test_locking_is_allowed_over_udp_but_not_more_than_once_every_few_seconds(tmp_path):
+    async def go():
+        _, esp, hub = lock_rig(tmp_path)
+        hub.add_signal("deur_lock", {"dir": "in", "ref": "a:slot:lock"})
+        assert await hub.apply([("deur_lock", 1.0)], "udp") == [("deur_lock", "ok")]
+        assert esp.did == [("slot", "lock", True)]
+        assert "te kort" in (await hub.apply([("deur_lock", 1.0)], "udp"))[0][1]
+        assert await hub.apply([("deur_lock", 0.0)], "udp") == [("deur_lock", "ok")] and len(esp.did) == 1
+
+    run(go())
+
+
+def test_door_actions_force_http_and_follow_the_connection_setting(tmp_path):
+    _, esp, hub = lock_rig(tmp_path)
+    hub.configure({"transport": "udp"})
+    with pytest.raises(ModelError, match="HTTP"):
+        hub.add_signal("deur_unlock", {"dir": "in", "ref": "a:slot:unlock", "ack": True})
+    hub.add_signal("deur_lock", {"dir": "in", "ref": "a:slot:lock"})
+    hub.configure({"transport": "http"})
+    hub.add_signal("deur_unlock", {"dir": "in", "ref": "a:slot:unlock", "ack": True})
+    with pytest.raises(ModelError, match="gevaarlijke acties"):
+        hub.configure({"transport": "udp"})
+    assert hub.transport == "http"
+    hub.remove_signal("deur_unlock")
+    hub.configure({"transport": "udp"})
+
+
+def test_an_action_arrives_over_the_real_http_and_udp_sockets(tmp_path):
+    async def go():
+        r, esp, hub = lock_rig(tmp_path)
+        mini = Mini()
+        _in(hub)
+        hub.add_signal("deur_lock", {"dir": "in", "ref": "a:slot:lock"})
+        hub.add_signal("deur_unlock", {"dir": "in", "ref": "a:slot:unlock", "ack": True})
+        await up(hub, mini)
+        base = f"http://127.0.0.1:{hub.http_port}"
+        try:
+            async with aiohttp.ClientSession() as http:
+                assert (await http.get(f"{base}/loxone?kk.deur_unlock=0")).status == 200
+                a = await http.get(f"{base}/loxone?kk.deur_unlock=1")
+                assert a.status == 200 and esp.did == [("slot", "unlock", True)]
+                a = await http.get(f"{base}/loxone?kk.deur_unlock=1")
+                assert a.status == 400 and "overgang" in await a.text()
+            mini.send(b"kk.deur_unlock=0", hub.udp_port)
+            await asyncio.sleep(0.1)
+            mini.send(b"kk.deur_unlock=1", hub.udp_port)
+            await asyncio.sleep(0.2)
+            assert esp.did == [("slot", "unlock", True)], "over UDP opent hij niet"
+            mini.send(b"kk.deur_lock=1", hub.udp_port)
+            await eventually(lambda: ("slot", "lock", True) in esp.did)
+        finally:
+            await hub.close()
+            mini.close()
+
+    run(go())
+
+
 # ------------------------------------------------------------ de web-API en de bestanden
 
 

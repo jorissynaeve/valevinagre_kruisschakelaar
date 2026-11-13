@@ -15,6 +15,7 @@ function loxSlug(name) {
 }
 
 function loxValue(s) {
+  if (s.action) return s.danger ? '<span style="color:var(--warn)">opent de deur</span>' : '<span class="sub">actie</span>';
   if (s.value === null || s.value === undefined) return '<span class="sub">onbekend</span>';
   if (s.kind === 'bool') return s.value ? 'aan (1)' : 'uit (0)';
   return esc(String(s.kind === 'float' ? (+s.value).toFixed(s.decimals) : s.value));
@@ -91,6 +92,7 @@ function viewLox() {
       <button class="btn small" type="button" data-lx="adddev" ${devs ? '' : 'disabled'}>Signalen maken</button></div>
     <div class="sub">De punten die op het blok van het apparaat staan, gaan naar Loxone; wat instelbaar is kan Loxone ook zetten (<code>…_set</code>); <code>…_ok</code> meldt of het apparaat bereikbaar is.
       Een gevaarlijk punt (zoals een deur) kan Loxone lezen, nooit zetten. Wil je andere punten, zet ze eerst op het blok van het apparaat.</div>
+    ${viewLoxLock()}
     <label>Voor Loxone Config</label>
     <div class="sub">${LX_PICK ? `Gekozen: ${LX_PICK.size} van ${groups.length} apparaten.` : 'Alle apparaten.'}${none ? ' Kies eerst minstens één apparaat.' : ''}</div>
     <div class="row">${ready && !none ? `<a class="btn" href="api/loxone/viu.xml${q}" download>Virtuele ingang (VIU)</a><a class="btn" href="api/loxone/vo.xml${q}" download>Virtuele uitgang (VO)</a>
@@ -100,6 +102,28 @@ function viewLox() {
       Commando's toevoegen aan een bestaande ingang of uitgang via een bestand lukt niet, en twee virtuele UDP-ingangen op dezelfde poort kunnen niet.
       Maak je later signalen bij: voor <b>naar Loxone</b> typ je de commando's over uit de tabel (kies alleen dat apparaat); een nieuwe virtuele <b>uitgang</b> mag wel naast de bestaande staan, importeer daarvoor het bestand van alleen dat apparaat.
       Loxone kan zelf alles opnieuw opvragen: stuur <code>kk.sync=1</code>.</div>`;
+}
+
+// Een slot bedienen vanuit Loxone: een signaal per actie. Alleen een Nuki-slot, alleen een actie zonder argument.
+function loxLockActions() {
+  const out = [];
+  for (const d of S.espdev || []) {
+    if (d.driver !== 'nuki') continue;
+    for (const a of d.actions || []) if (!(a.args && a.args.length)) out.push({ did: d.id, dev: d.name, aid: a.id, label: a.label, danger: !!a.danger });
+  }
+  return out;
+}
+
+function viewLoxLock() {
+  const acts = loxLockActions();
+  if (!acts.length) return '';
+  const opts = acts.map((a) => `<option value="${esc(a.did)}|${esc(a.aid)}">${esc(a.dev)}: ${esc(a.label)}${a.danger ? ' (opent de deur)' : ''}</option>`).join('');
+  return `<label>Een slot bedienen vanuit Loxone</label>
+    <div class="row"><select id="lxact">${opts}</select>
+      <input type="text" id="lxactname" maxlength="30" placeholder="naam, bv. voordeur" style="width:180px">
+      <button class="btn small" type="button" data-lx="addact">Signaal maken</button></div>
+    <label class="sub"><input type="checkbox" id="lxactack"> Ik begrijp dat Loxone hiermee de deur kan <b>ontgrendelen</b> (nodig voor een actie die de deur opent)</label>
+    <div class="sub">Loxone moet een puls sturen: 1 en daarna weer 0 (de uitgang in het bestand doet dat bij een digitale uitgang). Een actie die de deur opent start alleen bij de overgang van 0 naar 1, alleen over HTTP, hoogstens eens per 5 s en alleen als het slot bereikbaar is; zonder die overgang (bv. na een herstart van de Miniserver) gebeurt er niets. Elke start staat in het logboek van de add-on.</div>`;
 }
 
 const LX_ACTIONS = {
@@ -115,6 +139,14 @@ const LX_ACTIONS = {
     toast(r.made.length ? `${r.made.length} signalen gemaakt` : 'Er waren al signalen met deze namen');
   },
   sync: async () => { await api('POST', 'loxone/sync'); toast('Alles wordt opnieuw gestuurd'); },
+  addact: async () => {
+    const [did, aid] = ($('#lxact').value || '|').split('|');
+    const a = loxLockActions().find((x) => x.did === did && x.aid === aid);
+    if (!a) return;
+    const name = loxSlug($('#lxactname').value.trim() || a.dev);
+    await api('POST', 'loxone/signals', { id: `${name}_${aid}`.slice(0, 40), dir: 'in', ref: `a:${did}:${aid}`, label: `${a.dev}: ${a.label}`, ack: $('#lxactack').checked });
+    toast('Signaal gemaakt');
+  },
   openall: () => loxOpen(loxGroups().map((g) => g.id)),
   closeall: () => loxOpen([]),
   pickall: () => { LX_PICK = null; },
