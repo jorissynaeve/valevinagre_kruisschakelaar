@@ -29,6 +29,9 @@ struct SceneCfg {
   std::string checkReason;                          // "" = elke scene geldig
   std::string playResult = "applied", playReason;   // antwoord van onScenePlay
   std::string stopResult = "applied", stopReason;   // antwoord van onSceneStop
+  bool seek = false;                                // 1.2: onSceneSeek gezet (standaard uit: dan is de descriptor identiek aan 1.1)
+  std::string seekResult = "applied", seekReason;   // antwoord van onSceneSeek
+  std::string seekHook;                             // "idle" of "running": het device meldt dat zelf tijdens de seek-aanroep
 };
 static SceneCfg g_sc;
 static std::vector<std::string> g_scene_log;
@@ -126,6 +129,19 @@ static void register_all() {
   dev->actionState("flush", true, "pomp draait niet");
 }
 
+static void apply_seek() {
+  if (!g_sc.seek) {
+    dev->onSceneSeek(nullptr);
+    return;
+  }
+  dev->onSceneSeek([](int slot, const uint8_t* d, size_t n, uint32_t t) -> HdResult {
+    g_scene_log.push_back("seek|" + std::to_string(slot) + "|" + std::to_string(n) + "|" + std::to_string(t) + "|" + (d ? hex8(HuisDev::sceneHash(d, n)) : std::string("-")));
+    if (g_sc.seekHook == "idle") dev->sceneIdle();
+    if (g_sc.seekHook == "running") dev->sceneRunning(7, 0xdeadbeefu, 0);
+    return mkResult(g_sc.seekResult, g_sc.seekReason);
+  });
+}
+
 static void apply_scenes() {
   const char* f[2] = {"", ""};
   size_t nf = g_sc.formats.size() > 2 ? 2 : g_sc.formats.size();
@@ -145,6 +161,7 @@ static void apply_scenes() {
     g_scene_log.push_back("stop|" + std::to_string(slot));
     return mkResult(g_sc.stopResult, g_sc.stopReason);
   });
+  apply_seek();
 }
 
 static void boot(bool full) {
@@ -153,6 +170,7 @@ static void boot(bool full) {
   if (full) register_all();
   dev->begin("poolcontroller", "Zwembad", "0.3.1", &ws);
   if (full && g_sc.on) apply_scenes();
+  else if (full) apply_seek();
   if (full) {
     dev->setNum("ph", 7.2);
     dev->setNum("orp", 740);
@@ -242,6 +260,13 @@ static std::string run(const std::vector<std::string>& a) {
     bool routed = ws.dispatch(m, arg(2));  // false = onNotFound van de sketch
     return ok({std::to_string(ws.code), ws.ctype.c_str(), ws.cache.c_str(), ws.content.c_str(), routed ? "routed" : "notfound"});
   }
+  if (c == "ws_collect") {  // zoals een sketch die zelf collectHeaders aanroept (vervangt de lijst); ws_collect_all = collectAllHeaders()
+    std::vector<const char*> k;
+    for (size_t i = 1; i < a.size(); i++) k.push_back(a[i].c_str());
+    ws.collectHeaders(k.data(), k.size());
+    return ok();
+  }
+  if (c == "ws_collect_all") { ws.collectAllHeaders(); return ok(); }
   if (c == "ws_info") {
     std::string r, h;
     for (auto& rt : ws.routes) r += std::string(rt.glob ? "glob " : "exact ") + std::to_string((int)rt.method) + " " + rt.pattern + ",";
@@ -316,7 +341,14 @@ static std::string run(const std::vector<std::string>& a) {
     if (arg(1) == "check") g_sc.checkReason = arg(2);
     else if (arg(1) == "play") { g_sc.playResult = arg(2); g_sc.playReason = arg(3); }
     else if (arg(1) == "stop") { g_sc.stopResult = arg(2); g_sc.stopReason = arg(3); }
-    else return "ERR	scene_cfg: check|play|stop";
+    else if (arg(1) == "seek") { g_sc.seekResult = arg(2); g_sc.seekReason = arg(3); }
+    else if (arg(1) == "seekhook") { g_sc.seekHook = arg(2) == "-" ? "" : arg(2); }
+    else return "ERR	scene_cfg: check|play|stop|seek|seekhook";
+    return ok();
+  }
+  if (c == "seek_on" || c == "seek_off") {  // onSceneSeek (1.2) aan of uit; blijft zo na reboot
+    g_sc.seek = c == "seek_on";
+    apply_seek();  // ook zonder scenes(): dan doet de callback niets (het pad bestaat niet)
     return ok();
   }
   if (c == "scene_log") {  // callbacks sinds de vorige aanroep: check|n|hash, play|slot|n|elapsed|hash, stop|slot

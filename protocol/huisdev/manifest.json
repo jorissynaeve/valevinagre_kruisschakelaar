@@ -1,10 +1,10 @@
 {
   "files": {
-    "HUISDEV.md": "be847085b5711048eecbc1fa5ed0ce9c14ff84d8b4c1d6572dfb012a93feb795",
-    "huisdev.h": "4b5b17a00e69195ff5a339971a6ca33a97ec8c0aa2ba0129e39603a1666db9e5",
+    "HUISDEV.md": "0e0d6737cc36ad9e174b6ee6c951763f50ec4ca3afb1ef964f9a06c4c783bc39",
+    "huisdev.h": "4c23b072ce2b4d8f725c964b9a1ae6b6ee7a6cb468e8666a1230deea7414cd71",
     "huisdev_sync.py": "7d1d071ae15b4327c83ecae3fd9cbd4f94d66f7ac84f0240fd44d8926eef6a01"
   },
-  "header": "1.1.0",
-  "proto": "1.1",
+  "header": "1.2.0",
+  "proto": "1.2",
   "sync_version": 1
 }

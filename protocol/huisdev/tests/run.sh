@@ -11,6 +11,8 @@ in_gcc() { docker run --rm -v "${WIN_PATH}:/w" -w /w gcc:14 bash -c "$1"; }
 BUILD='mkdir -p build tests/fixtures
 FLAGS="-std=gnu++17 -DESP32 -Wall -Wextra -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -Itests/shim -I."
 g++ $FLAGS tests/driver.cpp -o build/driver
+# de compiler van een sketch (arduino-cli --warnings all) ziet bij optimalisatie meer dan -O0: huisdev.h moet daar stil blijven (bv. -Wformat-truncation)
+g++ -std=gnu++17 -DESP32 -Os -Wall -Wextra -Werror=format-truncation -Itests/shim -I. -c tests/driver.cpp -o build/driver_os.o && echo "-Os -Wall -Wextra: geen waarschuwingen"
 g++ $FLAGS -DHUISDEV_NO_WEBSERVER tests/nows.cpp -o build/nows && build/nows && echo "nows: ok (HUISDEV_NO_WEBSERVER compileert zonder WebServer.h)"'
 
 TEST='ASAN_OPTIONS=detect_leaks=1 HUISDEV_DRIVER=build/driver python3 -m unittest discover -s tests -p "test_*.py" -v 2>&1'

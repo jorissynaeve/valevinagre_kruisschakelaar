@@ -1,7 +1,7 @@
 // huisdev.h - referentie-implementatie van het HUISDEV-protocol.
 //
-// Protocol : 1.1   (zie HUISDEV.md, de spec is leidend)
-// Header   : 1.1.0 (wijzigt de header zonder dat het protocol wijzigt: patch/minor ophogen)
+// Protocol : 1.2   (zie HUISDEV.md, de spec is leidend)
+// Header   : 1.2.0 (wijzigt de header zonder dat het protocol wijzigt: patch/minor ophogen)
 //
 // Header-only, alleen ESP32 (Arduino-ESP32 3.x). Geen ArduinoJson, geen async server.
 // De kern (`HuisDev::handle`) kent geen webserver. `begin(..., &server)` koppelt de blokkerende `WebServer`.
@@ -33,8 +33,8 @@
 #include <functional>
 #include <math.h>
 
-#define HUISDEV_PROTO "1.1"
-#define HUISDEV_HEADER_VERSION "1.1.0"
+#define HUISDEV_PROTO "1.2"
+#define HUISDEV_HEADER_VERSION "1.2.0"
 #define HUISDEV_UDP_PORT 47500
 #define HUISDEV_MAX_POINTS 64
 #define HUISDEV_MAX_ACTIONS 16
@@ -49,6 +49,7 @@
 #define HUISDEV_SCENE_TIME_MIN 1700000000UL     // een klok is geldig als hij hierboven staat
 #define HUISDEV_SCENE_AHEAD_S (14UL * 86400UL)  // `at` mag hoogstens zo ver vooruit
 #define HUISDEV_SCENE_LATE_S 86400UL            // een geplande start die langer geleden is wordt genegeerd
+#define HUISDEV_SCENE_SEEK_MAX_MS 86400000UL    // grootste `t` van scene/seek (1.2): 24 uur
 // De klok (epoch, seconden). Een sketch met een eigen klokbron mag dit vóór de include herdefiniëren.
 #ifndef HUISDEV_NOW
 #define HUISDEV_NOW() ((int64_t)time(nullptr))
@@ -73,6 +74,9 @@ typedef std::function<HdResult(const String& body)> HdDoFn;                // bo
 typedef std::function<String(const uint8_t* data, size_t n)> HdSceneCheckFn;  // "" = geldig, anders de reden van weigering
 typedef std::function<HdResult(int slot, const uint8_t* data, size_t n, uint32_t elapsedS)> HdScenePlayFn;  // slot 0 = rechtstreeks; elapsedS > 0: start op positie
 typedef std::function<HdResult(int slot)> HdSceneStopFn;                      // slot 0 = elke scene
+// 1.2: toon het beeld van de scene op tijdstip tMs en houd het vast. slot > 0: uit dat slot (data/n = de bytes van het slot); slot 0: rechtstreeks
+// (data/n = de bytes uit het verzoek); slot -1: dezelfde scene als de vorige seek (data == nullptr, n == 0).
+typedef std::function<HdResult(int slot, const uint8_t* data, size_t n, uint32_t tMs)> HdSceneSeekFn;
 
 struct HdOption {
   int v;
@@ -501,6 +505,15 @@ class HuisDev {
   void onScenePlay(HdScenePlayFn fn) { _onPlay = fn; }
   // Stopt de scene van `slot` (0 = elke scene, ook als de header denkt dat er niets speelt). Na een niet-geweigerd antwoord meldt de header `run` als afwezig.
   void onSceneStop(HdSceneStopFn fn) { _onStop = fn; }
+  // Scrubben (1.2, HUISDEV.md §16): toon het beeld van de scene op tMs en houd het vast (volle sterkte, de tijd loopt niet door); een volgende aanroep
+  // verplaatst alleen het tijdstip. `data` is alleen geldig tijdens de aanroep. Slot -1 (data == nullptr): dezelfde scene als de vorige aanroep.
+  // Het device beeindigt het vasthouden zelf (300 s na de laatste seek) en meldt dat met sceneIdle(); de header doet dat niet.
+  // Na een niet-geweigerd antwoord meldt de header zelf `run` met `seek` (zonder `until`), tenzij het device tijdens de aanroep sceneRunning() of
+  // sceneIdle() aanriep. Zonder deze functie staat `seek` niet in de descriptor en bestaat het pad niet (404 unknown_path).
+  void onSceneSeek(HdSceneSeekFn fn) {
+    _onSeek = fn;
+    dirty = true;  // `"seek":true` in de descriptor hoort bij de rev
+  }
   // Meld wat er speelt (`run` in de state). hash = sceneHash() van de bytes, untilEpoch = einde (epoch, 0 = onbegrensd of onbekend).
   // Roep sceneIdle() aan als de scene eindigt. Is `until` bereikt (met een geldige klok), dan meldt de header zelf niets meer.
   void sceneRunning(int slot, uint32_t hash, uint32_t untilEpoch = 0) {
@@ -508,10 +521,12 @@ class HuisDev {
     _run.slot = slot;
     _run.h = hash;
     _run.until = untilEpoch;
+    _run.seek = false;
     _runGen++;
   }
   void sceneIdle() {
     _run.active = false;
+    _run.seek = false;
     _runGen++;
   }
   // Leest de bytes van een slot (bv. na een herstart, om de scene weer af te spelen). Geeft het aantal bytes, 0 als het slot leeg is of
@@ -537,10 +552,12 @@ class HuisDev {
     if (!path.startsWith("/huisdev/")) return 0;
     refresh();
     const bool isGet = path == "/huisdev/descriptor" || path == "/huisdev/state";
-    const bool isScene = path == "/huisdev/scene/store" || path == "/huisdev/scene/play" || path == "/huisdev/scene/stop" || path == "/huisdev/scene/schedule";
+    const bool isSeek = path == "/huisdev/scene/seek";
+    const bool isScene = isSeek || path == "/huisdev/scene/store" || path == "/huisdev/scene/play" || path == "/huisdev/scene/stop" || path == "/huisdev/scene/schedule";
     const bool isPost = isScene || path == "/huisdev/claim" || path == "/huisdev/unclaim" || path == "/huisdev/set" || path == "/huisdev/do";
     if (!isGet && !isPost) return err(out, 404, "unknown_path", "");
     if (isScene && !_scOn) return err(out, 404, "unknown_path", "");  // zonder dev.scenes() bestaan deze paden niet
+    if (isSeek && !_onSeek) return err(out, 404, "unknown_path", "");  // zonder dev.onSceneSeek() bestaat scene/seek niet (1.2)
     if (method != (isGet ? "GET" : "POST")) return err(out, 405, "method", "");
     if (path == "/huisdev/descriptor") {
       out = desc;
@@ -585,7 +602,11 @@ class HuisDev {
   }
 
 #ifndef HUISDEV_NO_WEBSERVER
-  // ---- blokkerende WebServer koppelen. Roep collectHeaders maar een keer aan: voeg anders X-Huisdev-Token toe aan uw eigen lijst. ----
+  // ---- blokkerende WebServer koppelen ----
+  // attach() roept srv.collectHeaders() aan met X-Huisdev-Token. Volgens de bron van Arduino-ESP32 core 3.3.7 (gelezen, niet op hardware gemeten) begint elke
+  // aanroep van collectHeaders opnieuw en telt dus niet op: een latere aanroep door de sketch verdringt X-Huisdev-Token (elk token is dan leeg en een
+  // geclaimd device geeft 401). Heeft de sketch zelf een header nodig, roep dan NA begin()/attach() `server.collectAllHeaders()` aan (die verzamelt alle
+  // headers, ook de onze) en niet collectHeaders. Zie HUISDEV.md §12.
   void attach(WebServer& srv) {
     _srv = &srv;
     static const char* hdrs[] = {"X-Huisdev-Token"};
@@ -625,6 +646,8 @@ class HuisDev {
     bool active = false;
     int slot = 0;
     uint32_t h = 0, until = 0;
+    bool seek = false;   // 1.2: het device toont een seek-beeld (vastgehouden)
+    uint32_t seekT = 0;  // en dit is de laatste t (ms)
   };
   bool _scOn = false;
   int _scSlots = 0, _scMax = 0, _scSched = 0;
@@ -639,6 +662,7 @@ class HuisDev {
   HdSceneCheckFn _onCheck;
   HdScenePlayFn _onPlay;
   HdSceneStopFn _onStop;
+  HdSceneSeekFn _onSeek;
 
   HdPoint* find(const char* id) {
     for (auto& p : points)
@@ -665,7 +689,7 @@ class HuisDev {
         o += c;
       } else if ((uint8_t)c < 0x20) {
         char b[8];
-        snprintf(b, sizeof b, "\\u%04x", c);
+        snprintf(b, sizeof b, "\\u%04x", (unsigned)(uint8_t)c);
         o += b;
       } else {
         o += c;
@@ -801,7 +825,9 @@ class HuisDev {
         jesc(body, _scFormats[i]);
         body += '"';
       }
-      body += "],\"slots\":" + String(_scSlots) + ",\"max_bytes\":" + String(_scMax) + ",\"sched\":" + String(_scSched) + "}";
+      body += "],\"slots\":" + String(_scSlots) + ",\"max_bytes\":" + String(_scMax) + ",\"sched\":" + String(_scSched);
+      if (_onSeek) body += ",\"seek\":true";  // 1.2: alleen met onSceneSeek(); zonder callback is de descriptor (en dus de rev) identiek aan 1.1
+      body += "}";
     }
     char rb[9];
     snprintf(rb, sizeof rb, "%08x", (unsigned)fnv(body));
@@ -962,8 +988,8 @@ class HuisDev {
       return p != nullptr;
     }
   };
-  static const char* scKey(int slot, char* b, size_t cap) {
-    snprintf(b, cap, "s%d", slot);
+  static const char* scKey(uint8_t slot, char* b, size_t cap) {  // "s1".."s8"; uint8_t: hoogstens "s255", past altijd in de buffer van 8
+    snprintf(b, cap, "s%u", (unsigned)slot);
     return b;
   }
   static void hex8(String& o, uint32_t v) {
@@ -1064,7 +1090,7 @@ class HuisDev {
   }
   // ---- afspelen ----
   HdResult scenePlayCore(int slot, const uint8_t* d, size_t n, uint32_t h, uint32_t elapsedS) {
-    if (_run.active && _run.h == h) return HdResult::applied();  // dezelfde scene speelt al: niets doen
+    if (_run.active && !_run.seek && _run.h == h) return HdResult::applied();  // dezelfde scene speelt al: niets doen (een seek-beeld telt niet: play vervangt het vasthouden)
     if (!_onPlay) return HdResult::rejected("niet beschikbaar");
     const uint32_t gen = _runGen;
     HdResult r = _onPlay(slot, d, n, elapsedS);
@@ -1108,6 +1134,7 @@ class HuisDev {
       hex8(out, _run.h);
       out += "\",\"until\":";
       out += (_run.until && now) ? String(_run.until) : String("null");
+      if (_run.seek) out += ",\"seek\":" + String(_run.seekT);
       out += "}";
     }
     out += ",\"sched\":[";
@@ -1183,6 +1210,7 @@ class HuisDev {
     if (path == "/huisdev/scene/store") return sceneStore(body, out);
     if (path == "/huisdev/scene/play") return scenePlay(body, out);
     if (path == "/huisdev/scene/stop") return sceneStop(body, out);
+    if (path == "/huisdev/scene/seek") return sceneSeek(body, out);
     return sceneSchedule(body, out);
   }
   int sceneStore(const String& body, String& out) {
@@ -1229,12 +1257,55 @@ class HuisDev {
     } else {
       if (int c = sceneDecode(body, b, out)) return c;
       if (b.n == 0) return err(out, 422, "bad_data", "lege scene");
-      if (_run.active && _run.h == sceneHash(b.p, b.n)) return sceneReply(out, HdResult::applied(), true, _run.h);  // speelt al: ook de check overslaan
+      if (_run.active && !_run.seek && _run.h == sceneHash(b.p, b.n)) return sceneReply(out, HdResult::applied(), true, _run.h);  // speelt al: ook de check overslaan
       String why = _onCheck ? _onCheck(b.p, b.n) : String();
       if (why.length()) return sceneReply(out, HdResult::rejected(why));
     }
     const uint32_t h = sceneHash(b.p, b.n);
     HdResult r = scenePlayCore(slot, b.p, b.n, h, 0);
+    return sceneReply(out, r, true, h);
+  }
+  // scene/seek (1.2): syntax (422) vóór inhoud (200 rejected), zoals bij play. Geen schrijfinterval, geen NVS-schrijfactie, `sched` blijft ongemoeid.
+  int sceneSeek(const String& body, String& out) {
+    const bool hasData = hdJsonHas(body, "data"), hasSlot = hdJsonHas(body, "slot");
+    if (hasData && hasSlot) return err(out, 422, "bad_value", "slot of data, niet allebei");
+    const double tv = hdJsonNum(body, "t", NAN);
+    if (isnan(tv) || fabs(tv - round(tv)) > 1e-9 || tv < 0 || tv > (double)HUISDEV_SCENE_SEEK_MAX_MS) return err(out, 422, "bad_value", "t buiten bereik");
+    const uint32_t t = (uint32_t)lround(tv);
+    ScBuf b;
+    int slot = -1;  // -1 = dezelfde scene als de vorige seek
+    uint32_t h = _run.h;
+    if (hasSlot) {
+      slot = sceneSlotArg(body);
+      if (slot < 1) return err(out, 422, "bad_slot", "slot buiten bereik");
+      if (!_scHave[slot].have) return sceneReply(out, HdResult::rejected("slot leeg"));
+      if (!b.alloc(_scHave[slot].n)) return sceneReply(out, HdResult::rejected("geen geheugen"));
+      if (scGet(slot, b.p, b.n) != b.n) return sceneReply(out, HdResult::rejected("slot onleesbaar"));
+      h = sceneHash(b.p, b.n);
+    } else if (hasData) {
+      slot = 0;
+      if (int c = sceneDecode(body, b, out)) return c;
+      if (b.n == 0) return err(out, 422, "bad_data", "lege scene");
+      h = sceneHash(b.p, b.n);
+      const bool same = _run.active && _run.seek && _run.h == h;  // deze scene wordt al getoond: de check is al gedaan
+      String why = (!same && _onCheck) ? _onCheck(b.p, b.n) : String();
+      if (why.length()) return sceneReply(out, HdResult::rejected(why));
+    } else if (!(_run.active && _run.seek)) {
+      return sceneReply(out, HdResult::rejected("geen scène om te tonen"));
+    }
+    const uint32_t gen = _runGen;
+    HdResult r = _onSeek(slot, b.p, b.n, t);
+    if (String(r.result) != "rejected" && _runGen == gen) {  // een sceneRunning/sceneIdle van het device tijdens de aanroep wint
+      _run.active = true;
+      if (slot >= 0) {  // bij {"t"} alleen blijven slot en hash zoals ze waren
+        _run.slot = slot;
+        _run.h = h;
+      }
+      _run.until = 0;
+      _run.seek = true;
+      _run.seekT = t;
+      _runGen++;
+    }
     return sceneReply(out, r, true, h);
   }
   int sceneStop(const String& body, String& out) {

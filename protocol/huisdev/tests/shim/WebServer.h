@@ -30,6 +30,7 @@ class WebServer {
   };
   std::vector<Route> routes;
   std::vector<std::string> collected;
+  bool collectAll = false;
   String plain, tok, ctype, content, cache;
   int code = 0;
   HTTPMethod curMethod = HTTP_GET;
@@ -37,15 +38,21 @@ class WebServer {
 
   void on(const char* uri, HTTPMethod m, std::function<void()> f) { routes.push_back({uri, false, m, f}); }
   void on(const Uri& uri, HTTPMethod m, std::function<void()> f);  // UriGlob.h
-  // zoals de echte: collectHeaders vervangt de lijst
+  // zoals de echte (core 3.3.7, bron gelezen): collectHeaders begint opnieuw (telt niet op bij een eerdere aanroep)
   void collectHeaders(const char* keys[], size_t n) {
+    collectAll = false;
     collected.clear();
     for (size_t i = 0; i < n; i++) collected.push_back(keys[i]);
+  }
+  void collectAllHeaders() {
+    collectAll = true;
+    collected.clear();
   }
   HTTPMethod method() { return curMethod; }
   String uri() { return String(curUri.c_str()); }
   String arg(const String& name) { return name == "plain" ? plain : String(); }
   String header(const char* name) {
+    if (collectAll) return tok;  // alle headers worden verzameld (de test kent alleen X-Huisdev-Token)
     for (auto& c : collected)
       if (c == name) return tok;
     return String();  // niet verzamelde headers zijn leeg

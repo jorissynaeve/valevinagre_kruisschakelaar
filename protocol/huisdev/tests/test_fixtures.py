@@ -128,6 +128,40 @@ class TestFixtures(Base):
         self.assertEqual(post("error_422_too_large.json", "/huisdev/scene/store", {"slot": 1, "data": b64(bytes(769))}), 422)
         self.assertEqual(post("error_422_bad_data.json", "/huisdev/scene/store", {"slot": 1, "data": "###"}), 422)
 
+    def test_write_seek_fixtures(self):
+        """Het scenes-device van de scene-fixtures, nu met onSceneSeek (1.2): scene/seek en `run.seek`."""
+        d = self.d
+        now = 1760000123
+        d.scenes_on(8, 768, 8, "ledscene/1")
+        d.cmd("seek_on")
+        d.claim()
+        d.settime(now)
+        txt, j = d.descriptor()
+        self.write("descriptor_seek.json", txt)
+        self.assertEqual(j["scenes"], {"formats": ["ledscene/1"], "slots": 8, "max_bytes": 768, "sched": 8, "seek": True})
+
+        # een seek zonder scene om te tonen
+        st, txt = d.handle("POST", "/huisdev/scene/seek", TOKEN, json.dumps({"t": 5000}))
+        self.assertEqual(st, 200)
+        self.assertEqual(json.loads(txt)["result"], "rejected")
+        self.write("scene_seek_rejected_noscene.json", txt)
+
+        a = bytes((i * 7 + 3) & 255 for i in range(424))
+        b = bytes((i * 11 + 5) & 255 for i in range(122))
+        d.advance(2500)
+        d.sc("store", {"slot": 1, "data": b64(a)})
+        d.advance(2500)
+        d.sc("store", {"slot": 3, "data": b64(b)})
+        d.advance(2500)
+        self.assertEqual(d.sc("schedule", {"entries": [{"slot": 1, "at": 1760000400}, {"slot": 1, "at": 1760086800}]})[1]["result"], "applied")
+        st, txt = d.handle("POST", "/huisdev/scene/seek", TOKEN, json.dumps({"slot": 1, "t": 123456}))
+        self.assertEqual(st, 200)
+        self.assertEqual(json.loads(txt)["hash"], fnv1a(a))
+        self.write("scene_seek_applied.json", txt)
+        st, txt = d.handle("GET", "/huisdev/state", TOKEN)
+        self.write("state_seek.json", txt)
+        self.assertEqual(json.loads(txt)["scenes"]["run"], {"slot": 1, "h": fnv1a(a), "until": None, "seek": 123456})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,5 @@
 // Compileertest: huisdev.h met HUISDEV_NO_WEBSERVER mag WebServer.h niet nodig hebben (de shim geeft #error als hij toch binnenkomt).
-// Ook de scenes (1.1) horen zo te werken. Hier staat HUISDEV_NOW niet gedefinieerd: dit compileert en draait het standaard time(nullptr).
+// Ook de scenes (1.1) en scene/seek (1.2) horen zo te werken. Hier staat HUISDEV_NOW niet gedefinieerd: dit compileert en draait het standaard time(nullptr).
 #ifndef HUISDEV_NO_WEBSERVER
 #define HUISDEV_NO_WEBSERVER
 #endif
@@ -21,6 +21,12 @@ int main() {
   dev.onSceneCheck([](const uint8_t*, size_t) -> String { return ""; });
   dev.onScenePlay([](int, const uint8_t*, size_t, uint32_t) -> HdResult { return HdResult::applied(); });
   dev.onSceneStop([](int) -> HdResult { return HdResult::applied(); });
+  if (dev.handle("POST", "/huisdev/scene/seek", "{\"t\":0}", "tok", out) != 404) return 10;  // zonder onSceneSeek bestaat het pad niet
+  uint32_t seekT = 0;
+  dev.onSceneSeek([&seekT](int, const uint8_t*, size_t, uint32_t t) -> HdResult {
+    seekT = t;
+    return HdResult::applied();
+  });
   dev.sceneRunning(1, 0, 0);
   dev.sceneIdle();
   uint8_t buf[8];
@@ -29,6 +35,8 @@ int main() {
   if (dev.handle("POST", "/huisdev/claim", String("{\"token\":\"") + tok + "\"}", "", out) != 200) return 4;
   if (dev.handle("POST", "/huisdev/scene/store", "{\"slot\":1,\"data\":\"AQID\"}", tok, out) != 200) return 5;
   if (dev.handle("POST", "/huisdev/scene/play", "{\"slot\":1}", tok, out) != 200) return 6;
+  if (dev.handle("POST", "/huisdev/scene/seek", "{\"slot\":1,\"t\":1500}", tok, out) != 200 || seekT != 1500) return 11;
+  if (dev.handle("POST", "/huisdev/scene/seek", "{\"t\":2500}", tok, out) != 200 || seekT != 2500) return 12;
   if (dev.handle("POST", "/huisdev/scene/stop", "{}", tok, out) != 200) return 7;
   if (dev.handle("GET", "/huisdev/state", "", tok, out) != 200) return 8;
   dev.loop();

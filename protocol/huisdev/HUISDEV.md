@@ -1,8 +1,8 @@
 # HUISDEV: protocol voor zelfbeschrijvende ESP-apparaten
 
 ```yaml
-huisdev-protocol: "1.1"      # MAJOR.MINOR, zie "Versiebeheer"
-huisdev-header:   "1.1.0"    # versie van huisdev.h (referentie-implementatie)
+huisdev-protocol: "1.2"      # MAJOR.MINOR, zie "Versiebeheer"
+huisdev-header:   "1.2.0"    # versie van huisdev.h (referentie-implementatie)
 status: voorstel             # nog niet geimplementeerd in de add-on
 ```
 
@@ -132,6 +132,7 @@ Basispoort: `port` uit de ontdekking (standaard 80). Alle antwoorden zijn `appli
 | `POST /huisdev/set` | token | een instelbaar punt wijzigen |
 | `POST /huisdev/do` | token | een actie uitvoeren |
 | `POST /huisdev/scene/store`, `/scene/play`, `/scene/stop`, `/scene/schedule` | token | scènes (1.1, alleen bij een device met `scenes`, zie §16) |
+| `POST /huisdev/scene/seek` | token | een scène op een tijdstip tonen en vasthouden (1.2, alleen bij `scenes.seek`, zie §16) |
 
 **Foutcodes.** Protocolfouten krijgen een HTTP-status en `{"ok":false,"error":"<code>","reason":"<tekst>"}`:
 
@@ -410,6 +411,11 @@ Een device is conform als alles hieronder klopt. Claude toont dit lijstje ingevu
 - [ ] Onbegrensde scènes worden door het device begrensd (nooit langer dan 24 uur) en dat staat in zijn documentatie
 - [ ] Getest: `store` tweemaal met dezelfde bytes schrijft niets, `play` tweemaal start één keer, een herstart houdt `have` en de geplande lijst
 
+### Scène-seek (1.2, alleen bij een device met `dev.onSceneSeek(...)`)
+
+- [ ] `onSceneSeek` toont het beeld op `tMs` op volle sterkte, houdt het vast zonder dat de tijd doorloopt, en verplaatst bij een volgende aanroep alleen het tijdstip (geen flits, geen fade); slot -1 betekent "dezelfde scène als de vorige aanroep"
+- [ ] Het device beëindigt het vasthouden zelf (300 s na de laatste seek, met fade-out volgens de scène) en meldt `sceneIdle()`; `stop`, `play` en een geplande start vervangen het vasthouden; er wordt niets bewaard (geen hervat-record, geen flash)
+
 Controle met `curl` (vervang het adres):
 
 ```
@@ -449,6 +455,15 @@ dev.begin("type", "naam", "1.0.0");   // zonder server
 en roep `dev.handle(method, path, body, token, out)` aan vanuit de eigen routes. Dat geeft de HTTP-status (0 = niet
 van HUISDEV) en de JSON in `out`. De body van een POST moet u in de async-handler zelf verzamelen. **Deze route is niet getest
 op hardware**, alleen dat de header compileert met `HUISDEV_NO_WEBSERVER`.
+
+### Eigen headers bij de blokkerende `WebServer`
+
+`attach()` (dus ook `dev.begin(..., &server)`) roept `server.collectHeaders()` aan zodat `X-Huisdev-Token` bij het verzoek komt. Heeft uw sketch zelf een
+tweede header nodig, roep dan **niet** nog een keer `collectHeaders` aan: volgens de bron van Arduino-ESP32 core 3.3.7 (`WebServer.cpp`) begint elke aanroep
+opnieuw (hij roept `collectAllHeaders()` aan en bouwt de lijst opnieuw op) en telt dus niet op. Een latere aanroep door de sketch verdringt `X-Huisdev-Token`:
+elk token is dan leeg en een geclaimd device antwoordt overal 401. Roep na `begin()` in plaats daarvan `server.collectAllHeaders()` aan; die verzamelt alle
+headers, ook de onze. `attach()` doet daarom niets anders dan voorheen. **Dit komt uit het lezen van de core-bron en is niet op hardware gemeten**; de host-test
+(`test_http.py`) toont alleen dat de stub zich zo gedraagt.
 
 ---
 
@@ -520,6 +535,7 @@ een bestaand veld anders interpreteren.
 | 1.0 | 2026-11-12 | eerste versie |
 | 1.0 (verduidelijking) | 2026-11-12 | Richtlijn voor `stale` aangepast (§5, §10): alleen voor periodiek ververste waarden. Bevinding op echte hardware: de poolcontroller stuurt waarden alleen bij wijziging. Geen protocolwijziging, geen upgrade nodig. |
 | 1.1 | 2026-11-18 | Scènes (§16): optioneel `scenes` in descriptor en state, endpoints `/huisdev/scene/store`, `play`, `stop`, `schedule`, foutcodes `bad_slot`, `too_large`, `bad_data`. Nieuwe foutcodes bij **nieuwe endpoints** zijn een MINOR. Een device zonder scènes verandert niet. |
+| 1.2 | 2026-11-18 | Scène-seek (§16): endpoint `/huisdev/scene/seek` (een scène op tijdstip `t` tonen en vasthouden, om door een scène te scrubben), optioneel `seek` in het `scenes`-object van de descriptor en in `run` van de state. Geen nieuwe foutcodes. Een device zonder seek (ook een 1.1-device met scènes) verandert niet. |
 
 ### Wijzigingslogboek van de header (`huisdev.h`)
 
@@ -533,6 +549,7 @@ Een device hoeft pas te upgraden als een header-bugfix het device raakt; vervang
 
 | 1.0.2 | 1.0 | Gevonden bij de eerste test op echte hardware (poolcontroller): zie hieronder. Vervang alleen `huisdev.h`. |
 | 1.1.0 | 1.1 | Scènes (§16): `dev.scenes(...)` en de scene-endpoints. Een device zonder scènes gedraagt zich identiek aan 1.0.2, op `proto` (`"1.1"` in descriptor, state en ontdekking) en `lib` (`"1.1.0"`) na; de `rev` is gelijk gebleven. |
+| 1.2.0 | 1.2 | Scène-seek (§16): `dev.onSceneSeek(...)` en `/huisdev/scene/seek`. Een device zonder `onSceneSeek` gedraagt zich identiek aan 1.1.0 (zelfde descriptor en `rev`, zelfde state), op `proto` (`"1.2"`) en `lib` (`"1.2.0"`) na. Een `play` of geplande start van de scène die als seek-beeld vastgehouden wordt, telt niet meer als "speelt al" (het vervangt het vasthouden). Ook: de compilerwaarschuwing `-Wformat-truncation` bij het sleutelformaat van een slot is opgelost (geen gedragswijziging), en de commentaar bij `attach()` over `collectHeaders` is gecorrigeerd (zie §12). |
 
 Header 1.0.2 repareert: op de echte `WebServer` registreerde `attach()` zes aparte routes (een per pad en methode). Een verkeerde methode
 (`DELETE /huisdev/unclaim`, `GET /huisdev/set`) of een onbekend pad onder `/huisdev/` viel daardoor door naar de `onNotFound` van de sketch
@@ -575,6 +592,12 @@ Een sprong over meerdere versies voert alle tussenliggende stappen in volgorde u
 - Nieuwe velden die een bestaand device kan gebruiken: `dev.scenes(...)` met `onSceneCheck`, `onScenePlay`, `onSceneStop`.
 - Breekt dit iets bij een oudere add-on? Nee: een 1.0-add-on negeert `scenes` in descriptor en state.
 
+**1.2** (van 1.1):
+- Wat is nieuw: `scene/seek` (§16): een scène op een tijdstip tonen en vasthouden, om er in de huisconfig doorheen te scrollen.
+- Moet de sketch iets aanpassen? Nee. Geen wijziging nodig: vervang `huisdev.h` en zet de marker op 1.2; het device, zijn descriptor en `rev` blijven gelijk.
+- Nieuwe velden die een bestaand device kan gebruiken: `dev.onSceneSeek(...)` (zet `"seek":true` in de descriptor, dus een nieuwe `rev`).
+- Breekt dit iets bij een oudere add-on? Nee: een 1.1-add-on negeert `seek` in descriptor en state, en roept het endpoint niet aan.
+
 **Sjabloon voor een volgende versie** (kopieer, vul in):
 
 ```
@@ -600,10 +623,11 @@ Alleen devices die dit willen, doen het. Een device zonder scènes verandert nie
 Optioneel topniveau-object `scenes` (naast `points` en `actions`):
 
 ```json
-"scenes": {"formats":["ledscene/1"],"slots":8,"max_bytes":768,"sched":8}
+"scenes": {"formats":["ledscene/1"],"slots":8,"max_bytes":768,"sched":8,"seek":true}
 ```
 
 `formats`: de talen die het device begrijpt. `slots`: aantal opslagplaatsen, genummerd 1..`slots`. `max_bytes`: grootste scène. `sched`: grootste geplande lijst.
+`seek` (1.2, optioneel): `true` als het device `scene/seek` kent (zie "Seek"); ontbreekt het, dan bestaat dat pad niet. Het veld zit in het object en telt dus mee in de `rev`; een device zonder seek houdt exact de descriptor en `rev` van 1.1.
 Normatieve grenzen: `slots` ≤ 8, `max_bytes` ≤ 1024, `slots * max_bytes` ≤ 6144, `sched` ≤ 8. De `rev` rekent het object mee (§5).
 `huisdev.h` klemt wat het device opgeeft op die grenzen (is `slots * max_bytes` te groot, dan verlaagt hij `max_bytes`; `sched` mag 0 zijn, dan is alleen `[]` toegestaan) en de descriptor meldt wat geldt.
 
@@ -621,7 +645,7 @@ Optioneel `scenes` naast `points` en `actions`:
 ```
 
 * `have`: per gevuld slot de FNV-1a-32 (8 hexcijfers) en de lengte in bytes van wat er staat. De add-on vergelijkt met zijn bibliotheek en uploadt alleen bij verschil.
-* `run`: wat nu speelt. `slot` is 0 voor een scène die zonder slot is afgespeeld (`play` met `data`). `until`: epoch waarop het afspelen eindigt, of `null` als hij onbegrensd is of het device geen geldige tijd heeft. Afwezig als er niets speelt.
+* `run`: wat nu speelt. `slot` is 0 voor een scène die zonder slot is afgespeeld (`play` met `data`). `until`: epoch waarop het afspelen eindigt, of `null` als hij onbegrensd is of het device geen geldige tijd heeft. Afwezig als er niets speelt. Toont het device een seek-beeld (1.2), dan heeft `run` een extra veld `"seek": t` (ms, de laatste `t`) en is `until` `null`: `"run":{"slot":1,"h":"a1b2c3d4","until":null,"seek":123456}`. `seek` is afwezig bij een gewoon spelende scène.
 * `sched`: de geplande starts die nog moeten komen, oplopend op `at`. Leeg of afwezig: geen.
 * `time`: de klok van het device (epoch, UTC), of `null` zolang hij niet geldig is (geldig is: groter dan 1 700 000 000). `time` verandert elke poll en telt voor de add-on niet als wijziging.
 
@@ -636,9 +660,10 @@ POST /huisdev/scene/store     {"slot":1,"data":"<base64>"}        slot vullen; "
 POST /huisdev/scene/play      {"slot":1}   of   {"data":"<base64>"}     nu starten (uit een slot, of rechtstreeks zonder slot)
 POST /huisdev/scene/stop      {}   of   {"slot":1}                      stoppen (met `slot`: alleen als dat slot speelt)
 POST /huisdev/scene/schedule  {"entries":[{"slot":1,"at":1760000400}, ...]}     de hele lijst geplande starts vervangen; [] wist hem
+POST /huisdev/scene/seek      {"slot":1,"t":123456}   of   {"data":"<base64>","t":123456}   of   {"t":123456}     (1.2) het beeld op tijdstip t tonen en vasthouden
 ```
 
-Antwoord: `{"ok":true,"result":"applied","reason":"","hash":"a1b2c3d4"}` (`hash` bij `store` met inhoud en bij `play`, alleen als het niet `rejected` is; niet bij het wissen van een slot). Inhoudelijke weigering is HTTP 200 met `"ok":false,"result":"rejected"` en een `reason`
+Antwoord: `{"ok":true,"result":"applied","reason":"","hash":"a1b2c3d4"}` (`hash` bij `store` met inhoud, bij `play` en bij `seek`, alleen als het niet `rejected` is; niet bij het wissen van een slot). Inhoudelijke weigering is HTTP 200 met `"ok":false,"result":"rejected"` en een `reason`
 (scène ongeldig voor dit device, geen vrij geheugen, "geen tijd", "te vaak"). 422 alleen voor de syntaxis: `bad_slot` (buiten 1..`slots`, geen geheel getal, of ontbrekend bij `store` en bij `play` zonder `data`), `too_large` (de body, of de gedecodeerde scène is groter dan `max_bytes`), `bad_data` (geen base64, `data` ontbreekt of is geen tekst, of is leeg bij `play`),
 `bad_value` (`schedule` met meer dan `sched` regels, een slecht gevormde `entries`, `at` geen geheel getal of buiten 1 700 000 000 .. nu + 14 dagen; `play` met zowel `slot` als `data`).
 Een geheel getal mag als `1.0` of `1e0` geschreven zijn. Base64 is strikt: padding verplicht, geen witruimte, niet het url-veilige alfabet, restbits nul. Een `at` in het verleden maar binnen dat venster is geldig (het device start hem met `elapsedS`);
@@ -660,7 +685,28 @@ Regels:
 * **Flash.** `store` en `schedule` schrijven naar niet-vluchtig geheugen (tientallen ms). Een add-on doet dat alleen bij een afwijkende `h` of lijst en nooit in een lus; een device mag een minimuminterval tussen schrijfacties afdwingen (`rejected`, "te vaak"). `huisdev.h` doet dat: 2 s tussen schrijfacties, voor `store` met afwijkende inhoud (ook wissen) en `schedule` met een afwijkende lijst. `play`, `stop` en identieke `store`/`schedule` tellen niet.
 * **Foutpad bij vol geheugen:** `rejected` ("geen geheugen"), `have` ongewijzigd.
 
-### Header (`huisdev.h` 1.1.0)
+### Seek (1.2)
+
+Doel: in de huisconfig door een scène heen kunnen scrollen met een tijdschuif, **live op de echte strip**: het device toont het beeld op tijdstip `t` van de scène en houdt het vast.
+Alleen als de descriptor `scenes.seek` meldt; anders bestaat het pad niet (404 `unknown_path`, zoals bij een device zonder scènes).
+
+```
+POST /huisdev/scene/seek   {"slot":1,"t":123456}              het beeld van slot 1 op t ms
+                           {"data":"<base64>","t":123456}     idem voor een scène zonder slot (nog niet opgeslagen: de editor)
+                           {"t":123456}                       dezelfde scène als de vorige seek (houdt de body klein)
+```
+
+* `t`: geheel getal in ms, 0..86 400 000; ontbreekt het, of is het geen geheel getal of buiten dat bereik, dan 422 `bad_value`. Het device behandelt `t` als de tijd sinds de start van de scène, precies zoals het die zou afspelen (voorbij het einde: het eindbeeld; een lus wikkelt). `1.0` of `1e3` mag.
+* Het device toont dat beeld **op volle sterkte en houdt het vast** (de tijd loopt niet door) en vervangt elke lopende scène. Elke volgende `seek` verplaatst alleen het tijdstip (geen flits, geen fade ertussen).
+* Het vasthouden eindigt **door het device zelf, 300 s na de laatste `seek`** (fade-out volgens de scène; het device meldt dat met `sceneIdle()`), en direct bij `stop` of `play`. `huisdev.h` beëindigt het niet. Een geplande start die intussen afgaat vervangt het vasthouden; ook een `play` van dezelfde scène die vastgehouden wordt, speelt echt (hij is geen no-op, want het device toont dan een stilstaand beeld).
+  Het vasthouden wordt nooit bewaard: geen hervat-record, geen flash, geen schrijfinterval, de lijst van geplande starts blijft ongemoeid, een herstart wist het.
+* `{"t":...}` zonder `slot` en `data`: alleen als het device nu een seek-beeld toont (`run.seek` aanwezig); anders HTTP 200 `rejected` ("geen scène om te tonen"). Een lopende gewone scène telt niet: dan is er geen seek-beeld.
+* Validatie en volgorde zoals bij `play`: pad en methode, claim en token, lengte van de body (de gewone limiet), syntaxis (422), inhoud (200 `rejected`). Syntaxis: `slot` én `data` is `bad_value`; `t` fout is `bad_value`; een `slot` buiten 1..`slots` (of geen geheel getal) is `bad_slot`;
+  een slechte `data` is `bad_data`/`too_large` (ook een lege). Inhoud: een leeg slot is `rejected` ("slot leeg"), een scène die `onSceneCheck` weigert is `rejected` met de reden (niet bij een slot en niet als diezelfde scène al als seek-beeld getoond wordt: dan is hij al gecontroleerd), een weigering door het device is `rejected`.
+* Antwoord `{"ok":true,"result":"applied","reason":"","hash":"..."}` (`hash` van de scène; bij `{"t"}` alleen die van de vorige seek). Er is geen schrijfinterval ("te vaak" geldt hier niet): een schuif stuurt tot ~10 verzoeken per seconde.
+* State: na een niet-geweigerd antwoord (`applied` of `queued`) heeft `run` het veld `seek` (zie State): `slot` is het slot, 0 bij `data`, en bij `{"t"}` alleen blijven `slot` en `h` zoals ze waren. Een `play`, `stop`, geplande start of `sceneIdle()`/`sceneRunning()` van het device haalt `seek` weer uit `run`; een weigering laat `run` zoals het was.
+
+### Header (`huisdev.h` 1.1.0, seek vanaf 1.2.0)
 
 Optioneel, alleen actief als het device `dev.scenes(...)` aanroept:
 
@@ -669,11 +715,13 @@ dev.scenes({"ledscene/1"}, /*slots*/ 8, /*max_bytes*/ 768, /*sched*/ 8);        
 dev.onSceneCheck([](const uint8_t* d, size_t n) -> String { return ""; });          // "" = geldig, anders de reden (gebruik de validatie van het formaat)
 dev.onScenePlay ([](int slot, const uint8_t* d, size_t n, uint32_t elapsedS) -> HdResult { ... });   // slot 0 = rechtstreeks; elapsedS > 0: start op positie (geplande start te laat)
 dev.onSceneStop ([](int slot) -> HdResult { ... });                                  // slot 0 = elke scène
+dev.onSceneSeek ([](int slot, const uint8_t* d, size_t n, uint32_t tMs) -> HdResult { ... });         // (1.2) beeld op tMs tonen en vasthouden. slot > 0: uit dat slot (d/n = de bytes), 0: rechtstreeks (d/n = de bytes), -1: dezelfde scène als de vorige aanroep (d == nullptr, n == 0)
 dev.sceneRunning(slot, hash, untilEpoch);  dev.sceneIdle();                          // meldt `run` in de state (hash = HuisDev::sceneHash(d, n), untilEpoch 0 = onbegrensd)
 size_t n = dev.sceneRead(slot, buf, cap);                                            // bytes van een slot (bij een herstart); buf == nullptr: alleen de lengte
 ```
 
 De header doet de routes, base64, limieten, opslag (`Preferences`, namespace `huisdev_sc`: `s1`..`s8` en `sched`, een blob van (slot u8, `at` u32 little-endian)-paren), hashing en de geplande starts in `loop()`; het device valideert en speelt af.
 Na een `applied` of `queued` van `onScenePlay` meldt de header zelf `run` (met `until` null); roept het device tijdens die aanroep `sceneRunning` of `sceneIdle` aan, dan geldt dat. Is `until` bereikt (met een geldige klok), dan haalt de header `run` zelf weg.
-Een play van de scène die al draait (zelfde hash) is een no-op en roept het device niet aan, ook niet voor `onSceneCheck`. `play` met `data` schrijft niets en valt niet onder het schrijfinterval. De klok is `time(nullptr)`; een sketch met een andere klokbron definieert vóór de include `HUISDEV_NOW()`.
+Een play van de scène die al draait (zelfde hash) is een no-op en roept het device niet aan, ook niet voor `onSceneCheck` (behalve als die scène als seek-beeld wordt vastgehouden: dan vervangt de play het vasthouden).
+Na een `applied` of `queued` van `onSceneSeek` meldt de header zelf `run` met `seek` (en `until` null; bij slot -1 blijven `slot` en hash zoals ze waren); roept het device tijdens die aanroep `sceneRunning` of `sceneIdle` aan, dan geldt dat en is er geen `seek`. De header beëindigt het vasthouden niet (geen timer): het device doet dat zelf na 300 s en meldt `sceneIdle()`. `seek` schrijft niets, valt niet onder het schrijfinterval en raakt `sched` niet. `play` met `data` schrijft niets en valt niet onder het schrijfinterval. De klok is `time(nullptr)`; een sketch met een andere klokbron definieert vóór de include `HUISDEV_NOW()`.
 Alles draait vanuit `loop()` en de webserver-taak (geen eigen taken, geen `delay`).

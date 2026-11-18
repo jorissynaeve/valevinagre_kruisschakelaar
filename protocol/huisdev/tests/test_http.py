@@ -357,6 +357,17 @@ class TestWebServerAdapter(Base):
             j = json.loads(body)
             self.assertEqual((j["ok"], j["error"]), (False, code), (method, path))
 
+    def test_a_second_collectheaders_by_the_sketch_replaces_the_token_header(self):
+        # Zo gedraagt de core zich volgens zijn bron (Arduino-ESP32 3.3.7, gelezen, niet op hardware gemeten): collectHeaders begint opnieuw en telt niet op.
+        # attach() verandert hierdoor niets; HUISDEV.md §12 en de commentaar in huisdev.h wijzen de sketch naar collectAllHeaders().
+        self.call("POST", "/huisdev/claim", "", json.dumps({"token": TOKEN}))
+        self.assertEqual(self.call("GET", "/huisdev/state", TOKEN)[0], 200)
+        self.d.cmd("ws_collect", "X-Eigen-Header")
+        self.assertEqual(self.d.cmd("ws_info")[1], "X-Eigen-Header,")
+        self.assertEqual(self.call("GET", "/huisdev/state", TOKEN)[0], 401)  # het token komt niet meer binnen
+        self.d.cmd("ws_collect_all")  # de aanbevolen weg voor een sketch met een eigen header
+        self.assertEqual(self.call("GET", "/huisdev/state", TOKEN)[0], 200)
+
     def test_paths_outside_huisdev_still_reach_the_sketch(self):
         r = self.d.cmd("ws_call", "GET", "/api/state", "", "")
         self.assertEqual((r[0], r[4]), ("404", "notfound"))
