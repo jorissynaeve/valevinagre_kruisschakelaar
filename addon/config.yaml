@@ -1,5 +1,5 @@
 name: Huisconfig
-version: "0.41.1"
+version: "0.42.0"
 slug: kruisschakelaars
 description: Configuratie van het huis in blokken (schakelaars en lampen over ESP-NOW en Home Assistant, timers, tijd- en logicamodules)
 url: https://github.com/jorissynaeve/valevinagre_kruisschakelaar
@@ -31,6 +31,7 @@ options:
   ha_dashboard: true
   link_port: 47490
   loxone_port: 47510
+  webhook_port: 47520
   log_level: info
 schema:
   network_key: password?
@@ -48,4 +49,5 @@ schema:
   ha_dashboard: bool?
   link_port: port?
   loxone_port: port?
+  webhook_port: port?
   log_level: list(debug|info|warning|error)?

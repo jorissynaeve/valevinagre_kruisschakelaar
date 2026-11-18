@@ -598,6 +598,18 @@ function scEspProto(b) {
       ${br && br.cert ? `<div class="row"><button class="btn small danger" type="button" data-sc="huetrust" data-bridge="${esc(b.bridge)}">Certificaat opnieuw vertrouwen</button></div>` : ''}
       <div class="row"><label class="chk" title="Hue staat in Home Assistant al via zijn eigen integratie. Zet dit alleen aan als je dit apparaat ook via deze add-on wilt, dan staat het dubbel."><input type="checkbox" data-esha ${b.ha ? 'checked' : ''}> ook als entiteiten in Home Assistant (dubbel als de Hue-integratie daar al draait)</label></div>`;
   }
+  if (b.driver === 'reolink') {
+    const r = b.reolink || {};
+    const caps = r.caps || {};
+    const last = r.hook_last ? `Laatste webhook ${esc(ago(r.hook_last.t))}: <code>${esc(r.hook_last.body)}</code>` : 'Nog geen webhook ontvangen.';
+    return `<div class="sub">Camera <code>${esc(b.host)}</code>${b.port !== 80 ? `:${esc(b.port)}` : ''}${caps.model ? ` · ${esc(caps.model)}` : ''}${b.fw ? ` · firmware ${esc(b.fw)}` : ''}. Geef de camera een vast IP in je router.
+      ${caps.led ? '' : 'Deze camera meldt geen schijnwerper (of hij kent de opdracht niet): er is dus geen licht-punt. '}${(caps.ai || []).length ? '' : 'Geen slimme detectie (persoon, voertuig) gemeld. '}</div>
+      <h2>Webhook (sneller)</h2>
+      <div class="sub">Zonder webhook vraagt de add-on elke 2 seconden de stand op. Met een webhook merkt hij een gebeurtenis meteen en vraagt hij zelf zelden. Vul dit adres in op de camera: <b>Instellingen → Surveillance → Push → Webhook</b> (alleen in de webinterface van de camera, nieuwere firmware):</div>
+      <div class="row"><input type="text" readonly value="${esc(r.hook || '')}" onclick="this.select()" style="flex:1;min-width:220px"></div>
+      <div class="sub">Methode POST, standaardinhoud. De add-on neemt alleen verzoeken aan van het IP van de camera en met dit geheim in het adres. ${r.hook_seen ? '<span class="badge ok">webhook ontvangen</span>' : '<span class="badge">nog niets ontvangen</span>'} ${last}</div>
+      <div class="row"><label class="chk" title="Staat meestal al in Home Assistant via de Reolink-integratie. Zet dit alleen aan als je de entiteiten ook via deze add-on wilt, dan staan ze dubbel."><input type="checkbox" data-esha ${b.ha ? 'checked' : ''}> ook als entiteiten in Home Assistant (dubbel als de camera daar al via Reolink staat)</label></div>`;
+  }
   if (b.driver === 'esphome') {
     const skipped = (b.skipped || []).length ? `<div class="sub">Niet ondersteund en dus overgeslagen: ${esc(b.skipped.join(', '))}.</div>` : '';
     return `<div class="sub">Adres <code>${esc(b.host)}</code>${b.port !== 80 ? `:${esc(b.port)}` : ''}. Het toestel moet een vast IP hebben (reserveer het in je router).</div>${skipped}
@@ -680,6 +692,8 @@ function scEspdevPanel(b, props) {
     ? `Een Nuki-slot, gelezen en bediend via de Nuki-cloud. <b>Vergrendelen</b> kan hier en vanuit Home Assistant; wat de deur opent (<b>ontgrendelen</b>, <b>deur vrijgeven</b>, <b>lock 'n' go</b>) met de hand, hier, na een bevestiging, of via een <b>ingang</b> op het blok (▶): sluit er een timer of module op aan, dan opent het slot als die van 0 naar 1 gaat. In Home Assistant staan alleen de stand en Vergrendelen.${b.ha ? ` In Home Assistant staat de stand (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
     : b.driver === 'hue'
     ? `Een Philips Hue-apparaat, gelezen en bediend via de bridge. De stand hier komt altijd uit wat de bridge meldt; een lamp die uit de netspanning is, heeft geen bekende stand.${b.ha ? ` In Home Assistant staat het (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
+    : b.driver === 'reolink'
+    ? `Een Reolink-camera, gelezen en bediend via zijn eigen API. <b>Beweging</b>, <b>persoon</b> en <b>voertuig</b> zijn metingen van de camera zelf; de <b>schijnwerper</b> kun je hier en via een ingang op het blok aan- en uitzetten en dimmen (helderheid 0 is uit). De camera zet de schijnwerper zelf na een tijd weer uit.${b.ha ? ` In Home Assistant staat het (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
     : b.driver === 'esphome'
     ? `Een ESPHome-toestel, gelezen via zijn eigen webserver. De entiteiten van het toestel zijn hier punten en acties; komt er een entiteit bij of valt er een weg, dan past dit blok zich aan.${b.ha ? ` In Home Assistant staan ze (ook) als <code>kk_esp_${esc(b.id)}_…</code>.` : ''}`
     : `Een zelfbouwapparaat met het HUISDEV-protocol. Het beschrijft zichzelf: komt er een punt bij of valt er een weg, dan past dit blok zich aan. In Home Assistant staan de punten als entiteiten <code>kk_esp_${esc(b.id)}_…</code>.`}</div>${scEspProto(b)}${props}
@@ -1312,7 +1326,7 @@ const SC_MENU = [
 function scEspFound() { // zelfbouwapparaten die zich meldden maar nog niet gekoppeld zijn (HUISDEV)
   const found = S.espdev_found || [];
   const item = (f) => `<button class="scmenuitem" type="button" data-sc="esclaim" data-hid="${esc(f.hid)}" ${f.claimable ? '' : 'disabled'}><b>${esc(f.name)}</b><span class="sub">${esc(f.type || 'apparaat')} · ${esc(f.ip)}${f.claimed ? ' · al geclaimd: wis de claim op het apparaat' : f.proto_state === 'unsupported' ? ` · protocol ${esc(f.proto)} niet ondersteund` : ''}</span></button>`;
-  return `<div class="scmenugroup"><h2>Zelfbouw (HUISDEV) en ESPHome</h2>${found.map(item).join('') || '<div class="sub">Nog niets gevonden.</div>'}<button class="scmenuitem" type="button" data-sc="esscan"><b>Zoeken op het netwerk</b><span class="sub">ESP's met huisdev.h melden zich vanzelf</span></button><button class="scmenuitem" type="button" data-sc="esadd"><b>ESPHome-toestel toevoegen</b><span class="sub">met het IP-adres; de YAML hoeft niet te veranderen, wel <code>web_server:</code></span></button></div>`;
+  return `<div class="scmenugroup"><h2>Zelfbouw (HUISDEV) en ESPHome</h2>${found.map(item).join('') || '<div class="sub">Nog niets gevonden.</div>'}<button class="scmenuitem" type="button" data-sc="esscan"><b>Zoeken op het netwerk</b><span class="sub">ESP's met huisdev.h melden zich vanzelf</span></button><button class="scmenuitem" type="button" data-sc="esadd"><b>ESPHome-toestel toevoegen</b><span class="sub">met het IP-adres; de YAML hoeft niet te veranderen, wel <code>web_server:</code></span></button><button class="scmenuitem" type="button" data-sc="reoadd"><b>Reolink-camera toevoegen</b><span class="sub">met het IP-adres en een eigen gebruiker op de camera</span></button></div>`;
 }
 
 function scHueMenu() { // Hue-bridges: wat ze aanbieden en nog niet op een pagina staat
@@ -2025,6 +2039,22 @@ const SC_ACTIONS = {
     await refresh();
     toast('Gekoppeld. De punten staan in de zijbalk; kies welke als rij op het blok staan.', 5000);
   },
+  reoadd: async () => {
+    const menu = $('#scmenu');
+    if (menu) menu.open = false;
+    if (!SC.page) throw new Error('Maak eerst een ruimte met de + bij de tabbladen.');
+    smallDialog(`<h3>Reolink-camera toevoegen</h3>
+      <p class="sub">Maak op de camera een eigen gebruiker voor de add-on (Instellingen → Systeem → Gebruikersbeheer). Het wachtwoord komt alleen in de configuratie van de add-on, nooit op een pagina of in een log.</p>
+      <label for="reohost">IP-adres van de camera</label><input type="text" id="reohost" placeholder="192.168.1.55" autocomplete="off">
+      <label for="reouser">Gebruikersnaam</label><input type="text" id="reouser" autocomplete="off">
+      <label for="reopw">Wachtwoord</label><input type="password" id="reopw" autocomplete="new-password">
+      <label for="reoname">Naam (leeg: die van de camera)</label><input type="text" id="reoname" maxlength="60">`, async () => {
+      const r = await api('POST', 'espdev/reolink', { host: $('#reohost').value.trim(), user: $('#reouser').value.trim(), password: $('#reopw').value, name: $('#reoname').value.trim(), page: SC.page, ...scFreeSpot('module') });
+      SC.sel = SC.reveal = r.key;
+      SC.force = true;
+      toast('Toegevoegd. Het adres voor het webhook staat in de zijbalk van het blok.', 6000);
+    });
+  },
   esadd: async () => {
     const menu = $('#scmenu');
     if (menu) menu.open = false;
@@ -2244,6 +2274,7 @@ const SC_ACTIONS = {
       : es && es.driver === 'brink' ? 'Deze ventilatie-unit van de pagina halen? Bij Brink verandert niets; je vindt hem weer terug in het menu (+ Module → Brink Home).'
       : es && es.driver === 'nuki' ? 'Dit slot van de pagina halen? Het slot zelf verandert niet; je vindt het weer terug in het menu (+ Module → Nuki).'
       : es && es.driver === 'hue' ? 'Dit Hue-apparaat van de pagina halen? Op de bridge verandert niets; je vindt het weer terug in het menu (+ Module → Philips Hue).'
+      : es && es.driver === 'reolink' ? 'Deze camera uit de Huisconfig halen? De camera zelf verandert niet; haal ook het webhook weg in de camera als je dat had ingesteld.'
       : es && es.driver === 'esphome' ? 'Dit ESPHome-toestel uit de Huisconfig halen? Het toestel zelf verandert niet; entiteiten die de add-on in Home Assistant maakte verdwijnen.'
       : 'Dit apparaat loskoppelen? De claim op het apparaat wordt gewist en zijn entiteiten verdwijnen uit Home Assistant.')) return;
     await api('DELETE', `espdev/${d.id}`);

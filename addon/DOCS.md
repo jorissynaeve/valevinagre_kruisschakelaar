@@ -526,6 +526,21 @@ Het model zit in `/data/network.json` (zit in de HA-back-up) en kan geëxporteer
   gemaakte Overview laat de add-on met rust en meldt dat in het logboek. Het aparte dashboard *Lampen* uit versie 0.18.0 ruimt de add-on zelf op. Heb je airco's (zie *Airco*), dan zet de add-on daar een tweede tab *Airco* naast, met een thermostaat per airco. Ook die volgt
   vanzelf: een airco toevoegen, hernoemen of verwijderen werkt hem bij, en zonder airco's is er geen tab. Zet de optie `ha_dashboard` uit als je dit niet wilt.
 
+### Reolink-camera: beweging, persoon, voertuig en schijnwerper
+
+*+ Module → Reolink-camera toevoegen*: tik het IP-adres van de camera in en de gebruikersnaam en het wachtwoord van een **eigen gebruiker** die je op de camera voor de add-on maakt (Instellingen → Systeem → Gebruikersbeheer). Het wachtwoord komt alleen in de configuratie van de add-on, nooit op een pagina of in een log. De add-on logt in, kijkt wat de camera kan en maakt een blok:
+
+| Rij | Wanneer |
+|---|---|
+| *Beweging* | altijd |
+| *Persoon*, *Voertuig* | als de camera slimme detectie meldt |
+| *Schijnwerper* (aan of uit) en *Helderheid schijnwerper* (0 tot 100, 0 is uit): beide uitgang en ingang | als de camera een schijnwerper kent |
+
+De camera heeft een vast IP nodig (reserveer het in je router). Zonder webhook vraagt de add-on elke 2 seconden de stand op. Met het **webhook** van de camera (Instellingen → Surveillance → Push → Webhook in de webinterface van de camera, alleen op nieuwere firmware, niet achter een NVR) merkt de add-on een gebeurtenis meteen: vul daar het adres in dat in de zijbalk van het blok staat (`http://<add-on>:47520/reolink/<camera>/<geheim>`, methode POST, standaardinhoud). Het webhook zegt alleen dat er iets is; de stand blijft die van de camera. De add-on neemt alleen verzoeken aan met het geheim in het adres en van het IP van de camera. De poort stel je in met de optie `webhook_port`.
+
+* De camera zet de schijnwerper na een tijd zelf weer uit.
+* Er is niets tegen een echte camera geprobeerd: meld wat jouw camera doet.
+
 ## Loxone (in plaats van JavaLox)
 
 Instellingen → **Loxone** koppelt de add-on aan een Loxone Miniserver. Elk signaal is een kort bericht `kk.<naam>=<getal>`; een aan/uit is 1 of 0 en een keuze (scene, ventilatiestand) is het nummer ervan.
@@ -539,7 +554,7 @@ Instellingen → **Loxone** koppelt de add-on aan een Loxone Miniserver. Elk sig
 
 **Een Nuki-slot bedienen** (Instellingen → Loxone → *Een slot bedienen vanuit Loxone*): maak een signaal per actie, bijvoorbeeld `voordeur_lock` en `voordeur_unlock`, en importeer de uitgang in Loxone Config. Vergrendelen werkt gewoon. Een actie die de deur **opent** moet je bevestigen met een vinkje en werkt alleen over **HTTP** (kies dat bij *Loxone roept de add-on aan via*); hij start alleen bij een puls van 0 naar 1, hoogstens eens per 5 seconden en alleen als het slot bereikbaar is. Na een herstart van de add-on wordt de eerste 1 genegeerd (je drukt dan nog een keer). De add-on controleert alleen het IP van de Miniserver; wie op het netwerk dat IP kan nabootsen, kan ontgrendelen. Elke start en elke weigering staat in het logboek van de add-on.
 
-Laat de commando's in Loxone Config **analoog** (zo maakt de import ze): een digitaal commando geeft bij elke ontvangst, ook van een 0, een korte puls van 1. De add-on stuurt een waarde bij een verandering en elke minuut opnieuw, en alles 10 s na het starten. Een apparaat dat offline is geeft niets (nooit een verzonnen 0). Van Loxone neemt de add-on alleen berichten aan van het IP van de Miniserver, alleen punten die instelbaar zijn en niet gevaarlijk (nooit een deur), en alleen als de waarde verandert. `kk.sync=1` vanuit Loxone vraagt om alles opnieuw. Gebruik je **HTTP** (aanbevolen: je krijgt een bevestiging), dan roept Loxone `http://<add-on>:<poort>/loxone?kk.<naam>=<waarde>` aan; bij **UDP** stuurt het `kk.<naam>=<waarde>` naar de poort `loxone_port`.
+Laat de commando's in Loxone Config **analoog** (zo maakt de import ze): een digitaal commando geeft bij elke ontvangst, ook van een 0, een korte puls van 1. De add-on stuurt een waarde bij een verandering en elke minuut opnieuw, en alles 10 s na het starten. Een apparaat dat offline is geeft niets (nooit een verzonnen 0). Van Loxone neemt de add-on alleen berichten aan van het IP van de Miniserver, alleen punten die instelbaar zijn en niet gevaarlijk (een deur alleen via een slot-actie), en alleen als de waarde verandert. `kk.sync=1` vanuit Loxone vraagt om alles opnieuw. Gebruik je **HTTP** (aanbevolen: je krijgt een bevestiging), dan roept Loxone `http://<add-on>:<poort>/loxone?kk.<naam>=<waarde>` aan; bij **UDP** stuurt het `kk.<naam>=<waarde>` naar de poort `loxone_port`.
 
 ## Opties
 
@@ -552,6 +567,7 @@ Laat de commando's in Loxone Config **analoog** (zo maakt de import ze): een dig
 | `mqtt_host` e.a. | Leeg: de broker van Home Assistant. |
 | `ha_dashboard` | Standaard aan: de add-on houdt de tabs *Lampen* en *Airco* in de Overview van HA bij. |
 | `loxone_port` | Standaard 47510 (UDP en TCP): waar de add-on luistert naar de Loxone Miniserver. |
+| `webhook_port` | Standaard 47520 (TCP): waar de add-on luistert naar het webhook van een Reolink-camera. |
 
 ## Beperkingen (versie 0.1)
 

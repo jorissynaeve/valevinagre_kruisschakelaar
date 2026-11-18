@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hmac
 import json
 import logging
 import os
@@ -31,6 +32,7 @@ import time
 from pathlib import Path
 
 import aiohttp
+import aiohttp.web
 
 from . import discovery as d
 from . import esphome as esp
@@ -38,6 +40,7 @@ from . import hue
 from . import brink
 from . import model as _model
 from . import nuki
+from . import reolink
 from . import smappee
 from .engine import Engine
 from .logic import BOOL, NUMBER
@@ -74,6 +77,11 @@ MAX_ACCOUNTS = 3
 NUKI_POLL = 30.0  # s: Nuki laat 100 verzoeken per minuut en 1000 per uur toe per token, en de token is misschien ook van iets anders; 120 per uur is zuinig genoeg
 NUKI_BURST = (2.0, 6.0, 15.0)  # s: na een opdracht (die Nuki asynchroon uitvoert) snel nog een paar keer kijken
 NUKI_BACKOFF = 90.0  # s wachten na "te veel verzoeken"
+REO_FAST = 1.0  # s tussen twee vragen aan een Reolink zolang er beweging is of net een webhook kwam
+REO_SLOW = 2.0  # s tussen twee vragen zolang de camera nog geen webhook stuurde
+REO_HOOKED = 30.0  # s tussen twee vragen als de camera zijn webhook gebruikt (die wekt de taak bij een gebeurtenis)
+REO_HOLD = 20.0  # s na een webhook of een opdracht blijven we snel vragen
+WEBHOOK_PORT = 47520  # TCP: hier luistert de add-on naar het webhook van een camera
 LID_RE = re.compile(r"^[0-9]{1,20}$")
 MAX_BRINK = 3
 BRINK_POLL = 30.0  # s: de module meldt zich ongeveer elke 8 s bij Brink; de API heeft geen gepubliceerde limiet, en dit is zuinig
@@ -296,7 +304,7 @@ def _slug(hid: str) -> str:
 
 
 class EspDevHub:
-    def __init__(self, data_dir: Path, engine: Engine, port: int | None = None, poll: float | None = None) -> None:
+    def __init__(self, data_dir: Path, engine: Engine, port: int | None = None, poll: float | None = None, webhook_port: int | None = None) -> None:
         self.path = Path(data_dir) / "espdev.json"
         self.engine = engine
         self.port = port  # alleen voor tests: een andere UDP-poort dan 47500 (0 = een vrije)
@@ -332,6 +340,9 @@ class EspDevHub:
         self.smappee_desc: dict[str, dict] = {}  # did -> de descriptor van een laadpunt volgens de laatste lijst van Smappee
         self._smappee_sent: dict[tuple[str, str], float] = {}
         self._pub_budgets: dict[str, smappee.Budget] = {}  # client-id -> hoeveel verzoeken aan de officiele API er dit uur zijn gedaan (bewaard in smappee_budget.json)
+        self.reo: dict[str, dict] = {}  # did -> wat een Reolink-camera tot nu bracht: {token, exp, desc, led, hook_t, hook_seen, hook_last} (reolink.py)
+        self.webhook_port = WEBHOOK_PORT if webhook_port is None else webhook_port  # 0: een vrije poort (tests)
+        self.hook_port = 0  # de poort waarop het webhook echt luistert
         self._hue_locks: dict[str, asyncio.Lock] = {}
         self._hue_sent: dict[str, float] = {}
         self._listen = None
@@ -406,7 +417,7 @@ class EspDevHub:
         ins = v.get("inputs") if isinstance(v.get("inputs"), dict) else {}
         shown = v.get("shown")
         port = v.get("port")
-        driver = v["driver"] if v.get("driver") in ("esphome", "hue", "nuki", "brink", "smappee") else "huisdev"
+        driver = v["driver"] if v.get("driver") in ("esphome", "hue", "nuki", "brink", "smappee", "reolink") else "huisdev"
         emap, skipped = v.get("emap"), v.get("skipped")
         scenes = v.get("scenes")
         rid = v.get("rid")
@@ -421,7 +432,9 @@ class EspDevHub:
                 "lid": str(v["lid"]) if driver == "nuki" and LID_RE.match(str(v.get("lid") or "")) else "",  # nuki: het smartlockId
                 "sid": str(v["sid"]) if (driver == "brink" and LID_RE.match(str(v.get("sid") or ""))) or (driver == "smappee" and SERIAL_RE.match(str(v.get("sid") or ""))) else "",  # brink: het systemShareId; smappee: het serienummer van het laadstation
                 "cid": str(v["cid"]) if (driver == "brink" and LID_RE.match(str(v.get("cid") or ""))) or (driver == "smappee" and smappee.ID_RE.match(str(v.get("cid") or ""))) else "",  # brink: het componentId van de unit; smappee: het id van het smart device van het laadpunt
-                "auth": _text(v.get("auth"), 200) if driver == "esphome" else "",  # gebruiker:wachtwoord van web_server: auth, alleen in dit bestand
+                "auth": _text(v.get("auth"), 200) if driver in ("esphome", "reolink") else "",  # gebruiker:wachtwoord van web_server: auth (of van een Reolink-camera), alleen in dit bestand
+                "reo": reolink.clean_caps(v.get("reo")) if driver == "reolink" else {},  # reolink: wat de camera kan (beweging, persoon, voertuig, schijnwerper)
+                "hook": _text(v.get("hook"), 64) if driver == "reolink" else "",  # reolink: het geheim in het adres van het webhook
                 "emap": {k: x for k, x in emap.items() if isinstance(k, str) and isinstance(x, str)} if isinstance(emap, dict) else {},  # punt-id -> ESPHome-id, voor altijd vast
                 "skipped": [x for x in skipped if isinstance(x, str)][:100] if isinstance(skipped, list) else [],
                 # hue, een kamer: het vaste nummer van elke scène (id van de scène -> 1, 2, ...), zodat Loxone een scène als getal kan onthouden
@@ -657,7 +670,7 @@ class EspDevHub:
         for a in dev["actions"]:
             self._retire(did, dev, action=a["id"])
         del self.devices[did]
-        for x in (self.values, self.off, self.seen, self.last, self.fails, self.errors, self.es, self.hue_desc, self.nuki_desc, self.brink_desc, self.smappee_desc):
+        for x in (self.values, self.off, self.seen, self.last, self.fails, self.errors, self.es, self.reo, self.hue_desc, self.nuki_desc, self.brink_desc, self.smappee_desc):
             x.pop(did, None)
         self.online.discard(did)
         self._save()
@@ -727,6 +740,7 @@ class EspDevHub:
         for aid in self.smappee_accounts:
             self._start_smappee(aid)
         self.tasks["_tick"] = loop.create_task(self._ticker())
+        self._ensure_hook()
         self.tasks["_scan"] = loop.create_task(self._scanner())
 
     async def _scanner(self) -> None:
@@ -794,7 +808,7 @@ class EspDevHub:
         if did in self.tasks or self.devices[did]["driver"] in ("hue", "nuki", "brink", "smappee"):  # een Hue-apparaat, Nuki-slot, Brink-unit of Smappee-laadpunt heeft geen eigen taak: zijn bridge of account volgt ze allemaal
             return
         self.wake[did] = asyncio.Event()
-        run = self._run_esphome if self.devices[did]["driver"] == "esphome" else self._run
+        run = {"esphome": self._run_esphome, "reolink": self._run_reolink}.get(self.devices[did]["driver"], self._run)
         self.tasks[did] = asyncio.get_running_loop().create_task(run(did))
 
     def _stop(self, did: str) -> None:
@@ -1322,6 +1336,188 @@ class EspDevHub:
             out.append({"id": bid, "name": br["name"], "host": br["host"], "port": br["port"], "bridge_id": br["bridge_id"], "online": st["online"], "error": st["error"], "cert": st["cert"],
                         "devices": [{**o, "id": have.get(o["rid"]), "claimed": o["rid"] in have} for o in hue.devices(st["store"])], "skipped": hue.skipped(st["store"])})
         return out
+
+    # ------------------------------------------------------------ Reolink: een camera met een eigen API, gepold, met een webhook als wekker
+
+    def _reo_new(self) -> dict:
+        return {"token": "", "exp": 0.0, "desc": None, "led": {}, "hook_t": 0.0, "hook_seen": False, "hook_last": None, "active_t": 0.0, "relogin": 0}
+
+    async def _reo_call(self, dev: dict, cmds: list[dict], token: str = "", cmd: str | None = None) -> list:
+        """Een array opdrachten naar `api.cgi` van de camera; het antwoord is een array in dezelfde volgorde."""
+        url = f"http://{dev['host']}:{dev['port']}{reolink.API}"
+        params = {"cmd": cmd or cmds[0]["cmd"]}
+        if token:
+            params["token"] = token
+        try:
+            async with self._session().post(url, params=params, json=cmds, timeout=aiohttp.ClientTimeout(total=reolink.TIMEOUT)) as r:
+                body = await r.content.read(1 << 20)
+                status = r.status
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+            raise reolink.ReoError("net", f"geen verbinding met {dev['host']}: {e or 'time-out'}") from None
+        if status != 200:
+            raise reolink.ReoError("http", f"{dev['host']} antwoordt met HTTP {status}")
+        try:
+            data = json.loads(body)
+        except ValueError:
+            raise reolink.ReoError("token" if b"login" in body.lower() else "http", f"{dev['host']} geeft geen Reolink-antwoord") from None
+        return data
+
+    async def _reo_login(self, dev: dict, st: dict) -> None:
+        user, _, pw = (dev.get("auth") or "").partition(":")
+        data = await self._reo_call(dev, reolink.login_body(user, pw))
+        st["token"], lease = reolink.parse_login(data)
+        st["exp"] = time.monotonic() + max(60.0, lease - 120.0)
+
+    async def add_reolink(self, host: str, port=80, user: str = "", password: str = "", name: str = "") -> str:
+        """Een Reolink-camera toevoegen: inloggen, kijken wat hij kan (beweging, persoon, voertuig, schijnwerper) en er een blok van maken. Het wachtwoord komt alleen in dit bestand."""
+        host = _text(host, 253)
+        if not HOST_RE.match(host):
+            raise ModelError("ongeldig adres: geef het IP (of de naam) van de camera, zonder http://")
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ModelError("ongeldige poort")
+        user = _text(user, 64)
+        if not user or ":" in user or not isinstance(password, str) or not password:
+            raise ModelError("een gebruikersnaam (zonder dubbele punt) en een wachtwoord zijn nodig: maak op de camera een eigen gebruiker voor de add-on")
+        if len(self.devices) >= MAX_DEVICES:
+            raise ModelError(f"maximaal {MAX_DEVICES} apparaten")
+        if any(x["host"] == host and x["port"] == port for x in self.devices.values()):
+            raise ModelError("dit apparaat staat er al")
+        tmp, st = {"host": host, "port": port, "auth": f"{user}:{password}"}, self._reo_new()
+        try:
+            await self._reo_login(tmp, st)
+            caps = reolink.caps_from_probe(await self._reo_call(tmp, reolink.probe_commands(), st["token"]))
+        except reolink.ReoError as e:
+            raise ModelError(e.reason) from None
+        title = caps["name"] or caps["model"] or "Reolink"
+        hid = ("reolink-" + esp.slug(caps["serial"].lower() or host, "camera"))[:32].rstrip("-")
+        did = _slug(hid)
+        if did in self.devices:
+            raise ModelError(f"deze camera staat er al ({self.devices[did]['name']})")
+        dev = self._defaults({"hid": hid, "name": _text(name, 60) or title, "host": host, "port": port, "driver": "reolink", "type": reolink.KIND, "fw": caps["fw"], "auth": tmp["auth"], "reo": caps,
+                              "hook": secrets.token_hex(12), "ha": False})
+        self.devices[did] = dev
+        st["desc"] = reolink.describe(dev["reo"], hid, dev["name"])
+        self.reo[did] = st
+        self._apply_desc(did, st["desc"])
+        self._save()
+        self._start(did)
+        self._ensure_hook()
+        self._poke()
+        return did
+
+    @staticmethod
+    def _reo_wait(st: dict, active: bool) -> float:
+        """Hoe lang tot de volgende vraag: snel zolang er iets gebeurt of net een webhook kwam, langzaam als de camera zijn webhook gebruikt, anders steeds twee seconden."""
+        if active or time.monotonic() - st["hook_t"] < REO_HOLD:
+            return REO_FAST
+        return REO_HOOKED if st["hook_seen"] else REO_SLOW
+
+    async def _reo_cycle(self, did: str, dev: dict, st: dict) -> bool:
+        """Eén ronde: zo nodig inloggen, de standen opvragen en als HUISDEV-state verwerken. Geeft of er beweging of een detectie is."""
+        if not st["token"] or time.monotonic() >= st["exp"]:
+            await self._reo_login(dev, st)
+        caps = dev["reo"]
+        data = await self._reo_call(dev, reolink.poll_commands(caps), st["token"])
+        vals, led = reolink.values(data, caps)
+        if led:
+            st["led"] = led
+        desc = st["desc"] = reolink.describe(caps, dev["hid"], dev["name"])
+        pts = {p["id"]: ({"v": vals.get(p["id"]), "age": 0} if vals.get(p["id"]) is not None else {"v": None}) for p in desc["points"]}
+        st["relogin"] = 0
+        await self._on_state(did, {"proto": "1.0", "rev": desc["rev"], "points": pts, "actions": {}})
+        return any(vals.get(k) is True for k in ("motion", "person", "vehicle"))
+
+    async def _run_reolink(self, did: str) -> None:
+        st = self.reo.setdefault(did, self._reo_new())
+        while True:
+            dev = self.devices.get(did)
+            if not dev:
+                return
+            active = False
+            try:
+                active = await self._reo_cycle(did, dev, st)
+            except reolink.ReoError as e:
+                st["token"] = ""
+                if e.kind == "token" and st["relogin"] < 2:
+                    st["relogin"] += 1  # een verlopen sessie: meteen opnieuw inloggen, geen reden om offline te gaan
+                    continue
+                self._miss(did, e.reason, hard=e.kind == "auth")
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - een raar antwoord mag het volgen van deze camera niet voorgoed stilleggen
+                log.exception("%s: antwoord van de camera niet te verwerken", dev["name"])
+                self._miss(did, "onbegrijpelijk antwoord", hard=True)
+                st["token"] = ""
+            if active:
+                st["active_t"] = time.monotonic()
+            ev = self.wake.get(did)
+            wait = self._reo_wait(st, active)
+            try:
+                await asyncio.wait_for(ev.wait(), wait) if ev else await asyncio.sleep(wait)
+            except asyncio.TimeoutError:
+                pass
+            if ev:
+                ev.clear()
+
+    async def _reo_send(self, did: str, dev: dict, pid: str, v) -> dict:
+        st = self.reo.get(did)
+        if not st or did not in self.online or not st["token"]:
+            raise ModelError("niet verstuurd: geen verbinding met de camera")
+        try:
+            body = reolink.point_request(dev["reo"], pid, v, st["led"])
+        except ValueError as e:
+            raise ModelError(str(e)) from None
+        try:
+            why = reolink.command_error(await self._reo_call(dev, [body], st["token"]))
+        except reolink.ReoError as e:
+            st["token"] = ""
+            raise ModelError(e.reason) from None
+        if why:
+            raise ModelError(why)
+        st["hook_t"] = time.monotonic()  # snel kijken wat de camera ervan maakte
+        self._kick(did)
+        return {"ok": True, "result": "applied"}
+
+    def _reo_view(self, did: str, dev: dict) -> dict:
+        """Voor de zijbalk: het adres dat je in de camera als webhook invult, en wat de camera de laatste keer stuurde."""
+        st = self.reo.get(did) or self._reo_new()
+        ip = reolink.local_ip(dev["host"]) or "<ip van de add-on>"
+        return {"hook": f"http://{ip}:{self.hook_port or self.webhook_port}/reolink/{did}/{dev['hook']}", "hook_seen": st["hook_seen"], "hook_last": st["hook_last"], "caps": dict(dev["reo"])}
+
+    def _ensure_hook(self) -> None:
+        if "_hook" not in self.tasks and any(v["driver"] == "reolink" for v in self.devices.values()):
+            self.tasks["_hook"] = asyncio.get_running_loop().create_task(self._webhook_server())
+
+    async def _webhook_server(self) -> None:
+        """Een camera die een webhook kan, roept dit adres aan bij een gebeurtenis (`POST /reolink/<apparaat>/<geheim>`): dat wekt zijn taak, die meteen de standen opvraagt."""
+        app = aiohttp.web.Application()
+        app.router.add_route("*", "/reolink/{did}/{secret}", self._reo_hook)
+        runner = aiohttp.web.AppRunner(app, access_log=None)
+        try:
+            await runner.setup()
+            site = aiohttp.web.TCPSite(runner, "0.0.0.0", self.webhook_port)
+            await site.start()
+            self.hook_port = site._server.sockets[0].getsockname()[1]
+            await asyncio.Event().wait()
+        except OSError as e:
+            log.warning("webhook voor camera's niet mogelijk op poort %s: %s", self.webhook_port, e)
+        finally:
+            await runner.cleanup()
+
+    async def _reo_hook(self, request: "aiohttp.web.Request") -> "aiohttp.web.Response":
+        did, secret = request.match_info["did"], request.match_info["secret"]
+        dev = self.devices.get(did)
+        if not dev or dev["driver"] != "reolink" or not hmac.compare_digest(secret.encode(), dev["hook"].encode()):
+            return aiohttp.web.Response(status=404, text="onbekend\n")  # dezelfde melding voor een verkeerd geheim en een onbekende camera
+        if request.remote != dev["host"]:
+            return aiohttp.web.Response(status=403, text="niet toegestaan\n")
+        body = (await request.content.read(2048)).decode("utf-8", "replace")
+        st = self.reo.setdefault(did, self._reo_new())
+        st["hook_t"], st["hook_seen"] = time.monotonic(), True
+        st["hook_last"] = {"t": time.time(), "body": body[:600]}
+        self._kick(did)
+        self._poke()
+        return aiohttp.web.Response(text="ok\n")
 
     # ------------------------------------------------------------ Nuki: een account (token) dat gepold wordt, en een blok per slot
 
@@ -2247,8 +2443,8 @@ class EspDevHub:
 
     async def _refetch(self, did: str) -> None:
         dev = self.devices[did]
-        if dev["driver"] in ("esphome", "hue", "nuki", "brink", "smappee"):  # de beschrijving komt uit de eventstroom of de poll en is al in `_es_flush`, `_hue_flush`, `_nuki_flush` of `_brink_flush` gemaakt
-            self._apply_desc(did, {"esphome": lambda: self.es[did]["desc"], "hue": lambda: self.hue_desc[did], "nuki": lambda: self.nuki_desc[did], "brink": lambda: self.brink_desc[did], "smappee": lambda: self.smappee_desc[did]}[dev["driver"]]())
+        if dev["driver"] in ("esphome", "hue", "nuki", "brink", "smappee", "reolink"):  # de beschrijving komt uit de eventstroom of de poll en is al in `_es_flush`, `_hue_flush`, `_nuki_flush` of `_brink_flush` gemaakt
+            self._apply_desc(did, {"reolink": lambda: self.reo[did]["desc"], "esphome": lambda: self.es[did]["desc"], "hue": lambda: self.hue_desc[did], "nuki": lambda: self.nuki_desc[did], "brink": lambda: self.brink_desc[did], "smappee": lambda: self.smappee_desc[did]}[dev["driver"]]())
             self._save()
             self._poke()
             return
@@ -2367,6 +2563,8 @@ class EspDevHub:
         if p["danger"] and not confirm:
             raise ModelError(p["confirm"] or "bevestiging nodig")
         v = check_value(p, value)
+        if dev["driver"] == "reolink":
+            return await self._reo_send(did, dev, pid, v)
         if dev["driver"] == "hue":
             return await self._hue_send(did, dev, pid, v)
         if dev["driver"] == "brink":
@@ -2541,7 +2739,7 @@ class EspDevHub:
                         "proto_state": self.proto_state_of(dev), "current": f"{CURRENT[0]}.{CURRENT[1]}", "rev": dev["rev"], "online": did in self.online, "error": self.errors.get(did, ""),
                         "configured": True, "driver": dev["driver"], "ha": dev["ha"], "skipped": list(dev["skipped"]), "shown": self.shown(dev), "points": pts,
                         "actions": [{**a, "disabled": a["id"] in self.off.get(did, {}), "reason": self.off.get(did, {}).get(a["id"], "")} for a in dev["actions"]],
-                        "inputs": dict(dev["inputs"]), "last": dict(self.last.get(did, {}))})
+                        "inputs": dict(dev["inputs"]), "last": dict(self.last.get(did, {})), "reolink": self._reo_view(did, dev) if dev["driver"] == "reolink" else None})
         return out
 
     def found_view(self) -> list[dict]:
@@ -2606,8 +2804,8 @@ class EspDevHub:
             if not dev["ha"]:
                 continue
             drv = dev["driver"]
-            device = {"identifiers": [f"kk_esp_{did}"], "name": dev["name"], "manufacturer": {"esphome": "ESPHome", "hue": "Signify", "nuki": "Nuki", "brink": "Brink", "smappee": "Smappee"}.get(drv, "Zelfbouw"),
-                      "model": {"esphome": "ESPHome (webserver)", "hue": dev["type"] or "Hue", "nuki": "Smart Lock", "brink": "Ventilatie-unit", "smappee": "Laadpaal (EV Wall)"}.get(drv) or f"{dev['type'] or 'apparaat'} (HUISDEV)", "sw_version": dev["fw"] or None}
+            device = {"identifiers": [f"kk_esp_{did}"], "name": dev["name"], "manufacturer": {"esphome": "ESPHome", "reolink": "Reolink", "hue": "Signify", "nuki": "Nuki", "brink": "Brink", "smappee": "Smappee"}.get(drv, "Zelfbouw"),
+                      "model": {"esphome": "ESPHome (webserver)", "reolink": dev["reo"].get("model") or "Camera", "hue": dev["type"] or "Hue", "nuki": "Smart Lock", "brink": "Ventilatie-unit", "smappee": "Laadpaal (EV Wall)"}.get(drv) or f"{dev['type'] or 'apparaat'} (HUISDEV)", "sw_version": dev["fw"] or None}
             device = {k: v for k, v in device.items() if v}
             for p in dev["points"]:
                 domain, extra = self._entity(did, p)

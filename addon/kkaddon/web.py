@@ -833,6 +833,17 @@ async def espdev_esphome(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "id": did, "key": f"e:{did}"})
 
 
+async def espdev_reolink(request: web.Request) -> web.Response:
+    """Een Reolink-camera toevoegen (inloggen en kijken wat hij kan) en als blok op een pagina zetten. Het wachtwoord staat alleen in de body, nooit in een URL, en komt nergens terug."""
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    port = b.get("port", 80)
+    did = await _espdev(request).add_reolink(str(b.get("host") or ""), 80 if port in (None, "") else port, str(b.get("user") or ""), str(b.get("password") or ""), str(b.get("name") or ""))
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"e:{did}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "id": did, "key": f"e:{did}"})
+
+
 async def hue_bridge_add(request: web.Request) -> web.Response:
     """Een Hue-bridge koppelen: zonder `key` na het indrukken van de ronde knop op de bridge, met `key` met een bestaande applicatiesleutel."""
     b = await _body(request)
@@ -1290,6 +1301,7 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/espdev/claim", espdev_claim)
     r.add_post("/api/espdev/scan", espdev_scan)
     r.add_post("/api/espdev/esphome", espdev_esphome)
+    r.add_post("/api/espdev/reolink", espdev_reolink)
     r.add_post("/api/espdev/hue/bridge", hue_bridge_add)
     r.add_put("/api/espdev/hue/bridge/{bid}", hue_bridge_put)
     r.add_delete("/api/espdev/hue/bridge/{bid}", hue_bridge_delete)
