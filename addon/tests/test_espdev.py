@@ -30,6 +30,7 @@ async def eventually(cond, timeout=5.0):
 async def rig(tmp_path, esp=None, claim=True, monkeypatch=None):
     if monkeypatch:
         monkeypatch.setattr(eh, "TICK", 3600)  # de tests tikken zelf
+        monkeypatch.setattr(eh, "CURRENT", (1, 0))  # deze tests gaan over een 1.0-apparaat bij een 1.0-add-on; 1.1 (scenes, "upgrade beschikbaar" voor 1.0) staat in test_scenehub.py
     r = Rig(tmp_path)
     hub = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)
     esp = esp or pool()
@@ -107,6 +108,7 @@ def test_values_are_checked_against_type_options_range_and_step():
 
 
 def test_versions(monkeypatch):
+    monkeypatch.setattr(eh, "CURRENT", (1, 0))  # zie rig(): de huidige versie van de add-on is 1.1, dit test de regels zelf
     assert [proto_state(x) for x in ("1.0", "1.7", "2.0", "0.9", "x", None)] == ["ok", "ok", "unsupported", "unsupported", "unsupported", "unsupported"]
     monkeypatch.setattr(eh, "CURRENT", (1, 2))
     assert [proto_state(x) for x in ("1.0", "1.1", "1.2", "1.3")] == ["upgrade", "upgrade", "ok", "ok"], "een lagere minor: upgrade beschikbaar; een nieuwere minor lezen we gewoon"

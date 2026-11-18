@@ -539,7 +539,7 @@ function scEspdev(b) {
       <circle class="pt v-${o.type} ${users.length ? '' : 'free'} ${o.value === true ? 'on' : ''}" cx="${b.x + w}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="acout" data-i="${i}"><title>Uitgang ${esc(o.label)}: sleep naar een ingang van een module${o.type === 'bool' ? ' (En, Of), een routine of een ander apparaat' : ' (Groter dan, Kleiner dan)'}</title></circle>
       ${users.map((u, n) => `<text class="stub" x="${b.x + w + 11}" y="${y + 4 + n * 13}" data-sc="go" data-k="${esc(u.key)}">→ ${esc(scCut(u.text, 24))}<title>${esc(u.text)}</title></text>`).join('')}`;
   }).join('');
-  const lone = b.ports.filter((p) => !b.outs.some((o) => o.row === p.row)).map((p) => `<text class="bkt ${p.danger ? 'act-danger' : ''}" x="${b.x + w - 11}" y="${rowY(b, p.row) + 4}" text-anchor="end">${p.action ? '▶ ' : ''}${esc(scCut(p.label, 26))}<title>${p.action ? `Actie ${esc(p.label)}: wordt gestart als de aangesloten bron van 0 naar 1 gaat${p.danger ? ' (dit opent de deur)' : ''}` : esc(p.label)}</title></text>`).join('');
+  const lone = b.ports.filter((p) => !b.outs.some((o) => o.row === p.row)).map((p) => `<text class="bkt ${p.danger ? 'act-danger' : ''}" x="${b.x + w - 11}" y="${rowY(b, p.row) + 4}" text-anchor="end">${p.action ? '▶ ' : ''}${esc(scCut(p.label, 26))}<title>${p.scene ? `Scène ${esc(p.label)}: start als de aangesloten bron van 0 naar 1 gaat, en stopt (als hij zo is ingesteld) als ze naar 0 gaat` : p.action ? `Actie ${esc(p.label)}: wordt gestart als de aangesloten bron van 0 naar 1 gaat${p.danger ? ' (dit opent de deur)' : ''}` : esc(p.label)}</title></text>`).join('');
   const note = b.proto_state === 'unsupported' ? 'niet ondersteund' : b.proto_state === 'upgrade' ? 'upgrade' : scHueOut(b) ? 'onbereikbaar' : '';
   return `<g class="bk ac t-espdev ${SC.sel === b.key ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${w}" height="${scH(b)}" rx="8"/>
@@ -700,8 +700,10 @@ function scEspdevPanel(b, props) {
     <h2>Waarden en instellingen</h2>${values || '<div class="sub">Nog geen punten.</div>'}
     ${b.online ? '<div class="sub">Een wijziging gaat meteen naar het apparaat; de stand hier komt altijd uit zijn antwoord.</div>' : ''}
     ${actions ? `<h2>Acties</h2>${actions}` : ''}
+    ${typeof scnSection === 'function' ? scnSection(b) : ''}
     <h2>Ingangen</h2>${ins || '<div class="sub">Geen instelbare punten.</div>'}
     <div class="sub">Een ingang doet pas iets als ze <b>verandert</b>: na een herstart of als de bron weer bekend wordt, onthoudt ze alleen de stand. Gevaarlijke punten (reset, kalibratie) kun je alleen hier met de hand bedienen.${b.driver === 'nuki' ? ' Een <b>actie</b> (▶) start alleen als de bron van <b>0 naar 1</b> gaat, wacht nooit (is er geen verbinding, dan vervalt hij), wordt niet opnieuw geprobeerd en komt hoogstens eens per 5 seconden. Wat een actie startte staat in het logboek van de add-on.' : ''}</div>
+    ${typeof scnHint === 'function' ? scnHint(b) : ''}
     <h2>Uitgangen gaan naar</h2>${users.map((u) => `<div class="sub">${esc(u.label)} → <a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.text)}</a></div>`).join('') || '<div class="sub">Nog nergens. Sleep een uitgang (rechts) naar Groter dan, Kleiner dan, En, Of of een routine.</div>'}
     ${diag.length ? `<h2>Diagnose</h2>${diag.map((p) => `<div class="sub">${esc(p.label)}: ${esc(scEspText(p))}</div>`).join('')}` : ''}
     <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="esdel" data-id="${esc(b.id)}">${b.driver === 'hue' || b.driver === 'nuki' || b.driver === 'brink' || b.driver === 'smappee' ? 'Van de pagina halen' : 'Loskoppelen'}</button></div>`;

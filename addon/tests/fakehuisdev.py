@@ -1,13 +1,22 @@
-"""Een nagebootst HUISDEV-apparaat (protocol/huisdev/HUISDEV.md 1.0): echte UDP en echte HTTP (aiohttp), gebouwd naar de spec en niet naar de add-on.
+"""Een nagebootst HUISDEV-apparaat (protocol/huisdev/HUISDEV.md 1.0 en, na `scenes(...)`, de scènes van 1.1 §16): echte UDP en echte HTTP (aiohttp), gebouwd naar de spec en niet naar de add-on.
 
 Wat de tests ermee kunnen: punten en acties toevoegen en weghalen (de `rev` volgt), waarden zetten, het apparaat uitzetten en weer aan, en
 zien welke verzoeken er kwamen. De foutcodes zijn die van HUISDEV §4.
+
+Scènes (`scenes(...)`, of de fabriek `kidswekker()`): slots, `store/play/stop/schedule` met `bad_slot`, `too_large`, `bad_data`, de FNV-hash van `scenes.hash_hex`,
+`have/run/sched/time` in de state en een klok die de test zelf verzet (`now`; `None` is de echte tijd, `time_valid=False` een klok die nog niet gezet is). Een
+geplande start waarvan de tijd gekomen is, start zodra de klok hem bereikt (`_advance`), zoals de header in `loop()` doet.
 """
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
+import time
 
 from aiohttp import web
+
+from kkaddon import scenes as sc
 
 
 class FakeEsp:
@@ -27,6 +36,17 @@ class FakeEsp:
         self.udp_port = 0
         self.udp_seen: list[bytes] = []
         self.hits = {"state": 0, "descriptor": 0}
+        # scènes (HUISDEV §16)
+        self.scene_cap: dict | None = None  # {"formats", "slots", "max_bytes", "sched"} of None: dit apparaat heeft geen scènes
+        self.slots: dict[int, bytes] = {}
+        self.run: dict | None = None  # {"slot", "h", "until"}
+        self.sched: list[dict] = []
+        self.now: float | None = None  # de klok van het apparaat (epoch); None = de echte tijd
+        self.time_valid = True
+        self.scene_calls: list[tuple[str, dict]] = []  # (store/play/stop/schedule, body) van elke scene-aanroep die tot het ontleden kwam
+        self.writes: list[tuple[str, object]] = []  # ("store", slot) / ("schedule", lijst): wat er daadwerkelijk naar "flash" ging
+        self.wrong_hash = False  # een apparaat dat een andere hash meldt dan wat we stuurden, en niets opslaat
+        self.play_started: list[tuple[int, str]] = []  # (slot, hash) van elke start (ook een geplande)
 
     # ------------------------------------------------------------ wat het apparaat heeft
 
@@ -39,6 +59,12 @@ class FakeEsp:
         self.actions[aid] = {"def": {"id": aid, "label": label, **kw}}
         return self
 
+    def scenes(self, formats=("ledscene/1",), slots=8, max_bytes=768, sched=8):
+        """Dit apparaat ondersteunt scènes (HUISDEV 1.1): het `scenes`-object in de descriptor; de `rev` rekent het mee."""
+        self.scene_cap = {"formats": list(formats), "slots": slots, "max_bytes": max_bytes, "sched": sched}
+        self.proto = "1.1"
+        return self
+
     def remove_point(self, pid):
         self.points.pop(pid, None)
 
@@ -47,18 +73,152 @@ class FakeEsp:
 
     @property
     def rev(self) -> str:
-        body = json.dumps([[p["def"] for p in self.points.values()], [a["def"] for a in self.actions.values()]], sort_keys=True)
+        body = json.dumps([[p["def"] for p in self.points.values()], [a["def"] for a in self.actions.values()]] + ([self.scene_cap] if self.scene_cap else []), sort_keys=True)
         return hashlib.sha1(body.encode()).hexdigest()[:8]
 
     def descriptor(self) -> dict:
-        return {"proto": self.proto, "rev": self.rev, "device": {"id": self.hid, "type": self.type, "name": self.name, "fw": self.fw, "mac": "AA:BB:CC:A1:B2:C3", "lib": "1.0.0"},
-                "points": [p["def"] for p in self.points.values()], "actions": [a["def"] for a in self.actions.values()]}
+        d = {"proto": self.proto, "rev": self.rev, "device": {"id": self.hid, "type": self.type, "name": self.name, "fw": self.fw, "mac": "AA:BB:CC:A1:B2:C3", "lib": "1.0.0"},
+             "points": [p["def"] for p in self.points.values()], "actions": [a["def"] for a in self.actions.values()]}
+        if self.scene_cap:
+            d["scenes"] = dict(self.scene_cap)
+        return d
 
     def state(self) -> dict:
         pts = {}
         for pid, p in self.points.items():
             pts[pid] = {"v": p["v"], "age": p["age"]} if p["v"] is not None else {"v": None}
-        return {"proto": self.proto, "rev": self.rev, "up": self.up, "points": pts, "actions": {a: {"disabled": True, "reason": r} for a, r in self.disabled.items()}}
+        out = {"proto": self.proto, "rev": self.rev, "up": self.up, "points": pts, "actions": {a: {"disabled": True, "reason": r} for a, r in self.disabled.items()}}
+        if self.scene_cap:
+            self._advance()
+            sce = {"have": {str(n): {"h": sc.hash_hex(d), "n": len(d)} for n, d in sorted(self.slots.items())}, "time": int(self.epoch()) if self.time_valid else None}
+            if self.run:
+                sce["run"] = dict(self.run)
+            if self.sched:
+                sce["sched"] = [dict(e) for e in self.sched]
+            out["scenes"] = sce
+        return out
+
+    # ------------------------------------------------------------ scènes (§16)
+
+    def epoch(self) -> float:
+        return time.time() if self.now is None else self.now
+
+    def _start(self, slot: int, data: bytes) -> str:
+        """Een scène laten spelen (een slot, of rechtstreeks met slot 0). Dezelfde scène die al speelt: niets."""
+        h = sc.hash_hex(data)
+        if self.run and self.run["h"] == h:
+            return h
+        s = sc.parse(data)
+        total = sc.total_ms(s)
+        self.run = {"slot": slot, "h": h, "until": int(self.epoch() + total / 1000) if total is not None and self.time_valid else None}
+        self.play_started.append((slot, h))
+        return h
+
+    def _advance(self):
+        """De klok van het apparaat: een scène die klaar is verdwijnt uit `run`, een geplande start waarvan de tijd gekomen is, start (en verdwijnt uit de lijst)."""
+        if not self.time_valid:
+            return
+        now = self.epoch()
+        if self.run and self.run["until"] is not None and now >= self.run["until"]:
+            self.run = None
+        for e in [e for e in self.sched if e["at"] <= now]:
+            self.sched.remove(e)
+            if e["slot"] in self.slots:
+                self._start(e["slot"], self.slots[e["slot"]])
+
+    def _scene_limit(self) -> int:
+        return -(-self.scene_cap["max_bytes"] // 3) * 4 + 256
+
+    @staticmethod
+    def _slot_ok(cap, v) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= cap["slots"]
+
+    @staticmethod
+    def _decode(v):
+        if not isinstance(v, str):
+            return None
+        try:
+            return base64.b64decode(v, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+
+    def _scene(self, op: str, body: dict):
+        cap = self.scene_cap
+        self.scene_calls.append((op, body))
+        ok = lambda **kw: web.json_response({"ok": True, "result": "applied", "reason": "", **kw})  # noqa: E731
+        no = lambda reason: web.json_response({"ok": False, "result": "rejected", "reason": reason})  # noqa: E731
+        if self.reject:
+            return no(self.reject)
+        self._advance()
+        if op == "store":
+            if not self._slot_ok(cap, body.get("slot")):
+                return self._err(422, "bad_slot", "slot buiten 1..%d" % cap["slots"])
+            data = self._decode(body.get("data"))
+            if data is None:
+                return self._err(422, "bad_data", "geen base64")
+            n = body["slot"]
+            if data == b"":
+                if n in self.slots:
+                    del self.slots[n]
+                    self.writes.append(("store", n))
+                if self.run and self.run["slot"] == n:
+                    self.run["slot"] = 0
+                return ok()
+            try:
+                sc.parse(data, cap["max_bytes"])
+            except sc.SceneError as e:
+                return no(str(e))
+            h = sc.hash_hex(data)
+            if self.wrong_hash:
+                return ok(hash="deadbeef")
+            if self.slots.get(n) != data:  # dezelfde bytes: niets schrijven
+                self.slots[n] = data
+                self.writes.append(("store", n))
+            if self.run and self.run["slot"] == n:
+                self.run["slot"] = 0  # het apparaat speelt zijn eigen kopie
+            return ok(hash=h)
+        if op == "play":
+            if "slot" in body:
+                if not self._slot_ok(cap, body["slot"]):
+                    return self._err(422, "bad_slot")
+                if body["slot"] not in self.slots:
+                    return no("slot is leeg")
+                return ok(hash=self._start(body["slot"], self.slots[body["slot"]]))
+            data = self._decode(body.get("data"))
+            if data is None:
+                return self._err(422, "bad_data", "geen base64")
+            try:
+                sc.parse(data, cap["max_bytes"])
+            except sc.SceneError as e:
+                return no(str(e))
+            return ok(hash=self._start(0, data))
+        if op == "stop":
+            if "slot" in body:
+                if not self._slot_ok(cap, body["slot"]):
+                    return self._err(422, "bad_slot")
+                if self.run and self.run["slot"] == body["slot"]:
+                    self.run = None
+            else:
+                self.run = None
+            return ok()
+        # schedule
+        entries = body.get("entries")
+        if not isinstance(entries, list):
+            return self._err(422, "bad_value", "entries")
+        if len(entries) > cap["sched"]:
+            return self._err(422, "bad_value", "te veel regels")
+        now = self.epoch()
+        for e in entries:
+            if not isinstance(e, dict) or not self._slot_ok(cap, e.get("slot")):
+                return self._err(422, "bad_slot")
+            at = e.get("at")
+            if not isinstance(at, int) or isinstance(at, bool) or not 1_700_000_000 <= at <= now + 14 * 86400:
+                return self._err(422, "bad_value", "at")
+        new = sorted(({"slot": e["slot"], "at": e["at"]} for e in entries), key=lambda e: e["at"])
+        if new != self.sched:  # dezelfde lijst: niets schrijven
+            self.sched = new
+            self.writes.append(("schedule", [dict(e) for e in new]))
+        return ok()
 
     def discovery(self) -> dict:
         return {"huisdev": self.proto, "id": self.hid, "type": self.type, "name": self.name, "fw": self.fw, "rev": self.rev, "port": self.http_port, "claimed": bool(self.token)}
@@ -70,11 +230,14 @@ class FakeEsp:
 
     async def _handle(self, r: web.Request) -> web.Response:
         body = {}
-        if r.method == "POST":
+        raw = await r.read() if r.method == "POST" else b""
+        if raw:
             try:
-                body = await r.json()
+                body = json.loads(raw)
             except ValueError:
                 body = {}
+        if not isinstance(body, dict):
+            body = {}
         tok = r.headers.get("X-Huisdev-Token", "")
         path = r.path
         self.calls.append((r.method, path, body, tok))
@@ -114,6 +277,14 @@ class FakeEsp:
             if not ok_tok:
                 return self._err(401, "token")
             return await (self._set(body) if path.endswith("set") else self._do(body))
+        if self.scene_cap and path in ("/huisdev/scene/store", "/huisdev/scene/play", "/huisdev/scene/stop", "/huisdev/scene/schedule"):
+            if not self.token:
+                return self._err(403, "not_claimed", "eerst claimen")
+            if not ok_tok:
+                return self._err(401, "token")
+            if len(raw) > self._scene_limit():
+                return self._err(422, "too_large")  # voor het ontleden
+            return self._scene(path.rsplit("/", 1)[1], body)
         return self._err(404, "unknown_path")
 
     def _check(self, d: dict, value, key="value"):
@@ -217,6 +388,16 @@ class FakeEsp:
 
     def announce(self, port: int):
         self.udp.sendto(json.dumps(self.discovery()).encode(), ("127.0.0.1", port))
+
+
+def kidswekker(slots=8, max_bytes=768, sched=8) -> FakeEsp:
+    """Een ledstrip-wekker met scènes (HUISDEV 1.1 §16): een paar punten en `ledscene/1` in acht slots."""
+    e = FakeEsp(hid="kidswekker-1a2b3c", type="kidswekker", name="Kidswekker", fw="1.0.0", proto="1.1")
+    e.point("brightness", "Helderheid", "int", 80, unit="%", min=0, max=100, step=1, writable=True)
+    e.point("armed", "Wekker aan", "bool", True)
+    e.point("rssi", "WiFi-signaal", "int", -55, unit="dBm", diag=True)
+    e.scenes(slots=slots, max_bytes=max_bytes, sched=sched)
+    return e
 
 
 def pool() -> FakeEsp:

@@ -41,6 +41,7 @@ from . import brink
 from . import model as _model
 from . import nuki
 from . import reolink
+from . import scenehub
 from . import smappee
 from .engine import Engine
 from .logic import BOOL, NUMBER
@@ -49,7 +50,7 @@ from .model import ModelError, fits, source_type
 log = logging.getLogger("kk.espdev")
 
 UDP_PORT = 47500
-CURRENT = (1, 0)  # het protocol zoals de add-on het kent (protocol/huisdev/HUISDEV.md); een lagere minor van een apparaat toont "upgrade beschikbaar"
+CURRENT = (1, 1)  # het protocol zoals de add-on het kent (protocol/huisdev/HUISDEV.md); een lagere minor van een apparaat toont "upgrade beschikbaar"
 SUPPORTED_MAJORS = (1,)
 MAX_DEVICES = 80  # een Hue-installatie alleen al heeft gauw dertig lampen
 MAX_BRIDGES = 4
@@ -132,6 +133,7 @@ ERRORS = {  # foutcodes van het protocol (HUISDEV §4) in gewoon Nederlands
     "unknown_action": "het apparaat kent deze actie niet", "disabled": "deze actie kan nu niet", "confirm_required": "bevestiging nodig",
     "missing_value": "geen waarde", "missing_arg": "een argument ontbreekt", "bad_value": "ongeldige waarde", "bad_option": "geen toegestane keuze",
     "range": "buiten het bereik", "step": "past niet op de stap", "already_claimed": "het apparaat is al geclaimd (wis de claim op het apparaat zelf)",
+    "bad_slot": "dat slot bestaat niet op het apparaat", "too_large": "de scène is te groot voor het apparaat", "bad_data": "de scène is geen geldige base64",
 }
 
 
@@ -149,12 +151,13 @@ def parse_proto(raw) -> tuple[int, int] | None:
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
-def proto_state(raw) -> str:
-    """ok, upgrade (een lagere minor dan de add-on kent: zie de upgrade-gids) of unsupported (onbekende major)."""
+def proto_state(raw, driver: str = "huisdev") -> str:
+    """ok, upgrade (een lagere minor dan de add-on kent: zie de upgrade-gids) of unsupported (onbekende major). Alleen een HUISDEV-apparaat kan upgraden:
+    Hue, Nuki, Brink, Smappee, Reolink en ESPHome zeggen vast 1.0 en hebben geen firmware van ons."""
     v = parse_proto(raw)
     if not v or v[0] not in SUPPORTED_MAJORS:
         return "unsupported"
-    return "upgrade" if v[0] == CURRENT[0] and v[1] < CURRENT[1] else "ok"
+    return "upgrade" if driver == "huisdev" and v[0] == CURRENT[0] and v[1] < CURRENT[1] else "ok"
 
 
 def _text(x, n: int) -> str:
@@ -228,7 +231,7 @@ def clean_descriptor(raw) -> dict | None:
         seen.add(r["id"])
         danger = r.get("danger") is True
         actions.append({"id": r["id"], "label": _text(r.get("label"), 60) or r["id"], "danger": danger, "confirm": _text(r.get("confirm"), 200) if danger else "", "args": args})
-    return {"proto": raw["proto"], "rev": raw["rev"], "id": dev["id"], "type": _text(dev.get("type"), 40), "name": _text(dev.get("name"), 60), "fw": _text(dev.get("fw"), 40),
+    return {**scenehub.cap_field(raw.get("scenes")), "proto": raw["proto"], "rev": raw["rev"], "id": dev["id"], "type": _text(dev.get("type"), 40), "name": _text(dev.get("name"), 60), "fw": _text(dev.get("fw"), 40),
             "lib": _text(dev.get("lib"), 20), "points": points, "actions": actions}
 
 
@@ -351,6 +354,7 @@ class EspDevHub:
         self._stream_http: aiohttp.ClientSession | None = None  # zonder totaaltijd: een eventstroom duurt zolang het toestel leeft
         self.udp_port = port or UDP_PORT
         self._load()
+        self.scn = scenehub.SceneHub(self)  # HUISDEV-scènes: bibliotheek, slots, ingangen en geplande starts
         engine.espdev_view = self.status
         engine.espdev_found = self.found_view
         engine.espdev_value = self.output
@@ -439,6 +443,7 @@ class EspDevHub:
                 "skipped": [x for x in skipped if isinstance(x, str)][:100] if isinstance(skipped, list) else [],
                 # hue, een kamer: het vaste nummer van elke scène (id van de scène -> 1, 2, ...), zodat Loxone een scène als getal kan onthouden
                 "scenes": {k: n for k, n in scenes.items() if isinstance(k, str) and hue.UUID_RE.match(k) and isinstance(n, int) and not isinstance(n, bool) and n > 0} if driver == "hue" and isinstance(scenes, dict) else {},
+                "scn": scenehub.clean_scn(v.get("scn")),  # HUISDEV-scènes (scenehub.py): welke scènes op dit apparaat staan, hun slots en wat het apparaat aankan
                 # een ESPHome-toestel of Hue-lamp staat meestal al via zijn eigen integratie in HA: dubbele entiteiten alleen als de gebruiker dat wil
                 "ha": v["ha"] if isinstance(v.get("ha"), bool) else driver == "huisdev"}
 
@@ -555,6 +560,13 @@ class EspDevHub:
         new = dict(dev["inputs"])
         m = self.engine.model
         for pid, ref in b.items():
+            if isinstance(pid, str) and pid.startswith(scenehub.KEY):  # een scène (scenehub.py): een 0/1-bron start hem
+                if ref in (None, ""):
+                    new.pop(pid, None)
+                else:
+                    self.scn.check_input(did, dev, pid, ref)
+                    new[pid] = ref
+                continue
             act = self._wired_action(dev, pid) if isinstance(pid, str) else None
             p = {"id": pid, "label": act["label"], "kind": "bool", "writable": True, "danger": False} if act else self._by_id(dev, pid) if isinstance(pid, str) else None
             if ref in (None, ""):
@@ -670,6 +682,7 @@ class EspDevHub:
         for a in dev["actions"]:
             self._retire(did, dev, action=a["id"])
         del self.devices[did]
+        self.scn.drop_device(did)
         for x in (self.values, self.off, self.seen, self.last, self.fails, self.errors, self.es, self.reo, self.hue_desc, self.nuki_desc, self.brink_desc, self.smappee_desc):
             x.pop(did, None)
         self.online.discard(did)
@@ -847,6 +860,7 @@ class EspDevHub:
                 if status != 200:
                     raise EspError(status, "http", f"het apparaat antwoordt met {status}")
                 await self._on_state(did, data)
+                await self.scn.sync(did)  # scènes: slots vullen en geplande starts (vangt zijn eigen fouten)
             except EspError as e:
                 self._miss(did, str(e), hard=e.status == 401)
             except asyncio.CancelledError:
@@ -897,6 +911,7 @@ class EspDevHub:
         self.fails[did] = 0
         self.errors[did] = ""
         self.online.add(did)
+        changed = self.scn.on_state(did, data.get("scenes")) or changed  # `time` en `run.until` tellen daar niet mee
         if changed:
             self._poke()
 
@@ -2491,6 +2506,7 @@ class EspDevHub:
             dev["skipped"] = desc.get("skipped", [])
         if dev["shown"] is not None:
             dev["shown"] = [i for i in dev["shown"] if any(p["id"] == i for p in points)]
+        self.scn.on_desc(did, desc)  # wat het apparaat aan scènes kan (HUISDEV 1.1)
 
     def _poke(self) -> None:
         if self.changed:
@@ -2523,7 +2539,7 @@ class EspDevHub:
         return self._value_of(m.group(1), p)
 
     def proto_state_of(self, dev: dict) -> str:
-        return proto_state(dev["proto"])
+        return proto_state(dev["proto"], dev["driver"])
 
     # ------------------------------------------------------------ bedienen
 
@@ -2623,6 +2639,9 @@ class EspDevHub:
         for did, dev in self.devices.items():
             mem = self.seen.setdefault(did, {})
             for pid, ref in list(dev["inputs"].items()):
+                if pid.startswith(scenehub.KEY):  # een scène: een eigen tak met een eigen verzender (scenehub.py)
+                    self.scn.tick_input(did, dev, pid, ref, mem)
+                    continue
                 act = self._wired_action(dev, pid)
                 if act is not None:
                     self._tick_action(did, dev, pid, act, ref, mem, now)
@@ -2740,6 +2759,7 @@ class EspDevHub:
                         "configured": True, "driver": dev["driver"], "ha": dev["ha"], "skipped": list(dev["skipped"]), "shown": self.shown(dev), "points": pts,
                         "actions": [{**a, "disabled": a["id"] in self.off.get(did, {}), "reason": self.off.get(did, {}).get(a["id"], "")} for a in dev["actions"]],
                         "inputs": dict(dev["inputs"]), "last": dict(self.last.get(did, {})), "reolink": self._reo_view(did, dev) if dev["driver"] == "reolink" else None})
+            out[-1]["scn"] = self.scn.view(did, dev)  # scènes (scenehub.py): selectie, slots, wat speelt en de geplande starts
         return out
 
     def found_view(self) -> list[dict]:

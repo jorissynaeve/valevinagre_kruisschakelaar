@@ -15,6 +15,7 @@ from .engine import Engine
 from .link import LinkError
 from .model import ENTITY_RE, Model, ModelError
 from .settings import Settings, key_header
+from . import scenesweb  # HUISDEV-scènes (scenehub.py)
 
 log = logging.getLogger("kk.web")
 
@@ -1298,6 +1299,7 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_get("/api/loxone/viu.xml", loxone_viu)
     r.add_get("/api/loxone/vo.xml", loxone_vo)
     r.add_get("/api/loxone/table.txt", loxone_table)
+    scenesweb.add_routes(r, CTX, _body)  # HUISDEV-scènes: /api/scenes en /api/espdev/<id>/scene... (scenesweb.py)
     r.add_post("/api/espdev/claim", espdev_claim)
     r.add_post("/api/espdev/scan", espdev_scan)
     r.add_post("/api/espdev/esphome", espdev_esphome)
