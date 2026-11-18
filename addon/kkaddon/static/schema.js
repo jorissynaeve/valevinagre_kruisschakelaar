@@ -26,7 +26,7 @@ const SC_GANGED = ['switch', 'panel', 'tuya', 'remote']; // blokken met gangen: 
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
 const scW = (b) => (b.kind === 'lamp' ? LAMP_W : b.kind === 'tuya' || (b.kind === 'remote' && b.sub === 'tuya') ? TUYA_W : SW_W);
-const scRows = (b) => (b.kind === 'card' || b.kind === 'remote' || b.kind === 'action' || b.kind === 'airco' || b.kind === 'solar' || b.kind === 'charge' || b.kind === 'espdev' ? b.rows : b.kind === 'panel' || b.kind === 'screen' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
+const scRows = (b) => (b.kind === 'card' || b.kind === 'remote' || b.kind === 'action' || b.kind === 'scenes' || b.kind === 'airco' || b.kind === 'solar' || b.kind === 'charge' || b.kind === 'espdev' ? b.rows : b.kind === 'panel' || b.kind === 'screen' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
 const scH = (b) => SC_HEAD + scRows(b) * SC_ROW + SC_FOOT;
 const rowY = (b, i) => b.y + SC_HEAD + i * SC_ROW + SC_ROW / 2;
 const scPageName = (id) => (S.schema.pages.find((p) => p.id === id) || {}).name || '';
@@ -49,7 +49,7 @@ const scSame = (x) => x.sw && x.sw.page && x.sw.page === x.lamp.page;
 function scType(b) { // bepaalt de kleur van het blok
   if (b.kind === 'lamp' || b.kind === 'timer') return b.kind;
   if (b.kind === 'module') return b.out === 'bool' ? 'logic' : 'time';
-  if (b.kind === 'sprinkler' || b.kind === 'action') return 'spr';
+  if (b.kind === 'sprinkler' || b.kind === 'action' || b.kind === 'scenes') return 'spr';
   if (b.kind === 'charge') return 'tuya';
   if (b.kind === 'panel' || b.kind === 'screen' || b.kind === 'tuya' || b.kind === 'airco' || b.kind === 'solar' || b.kind === 'espdev' || b.kind === 'card' || b.kind === 'remote') return b.kind;
   if (b.source === 'node') return 'node';
@@ -352,7 +352,7 @@ function scAcOuts(type) { // de uitgangen van alle airco's van deze soort, als b
   return scBlocks().filter((b) => b.kind === 'airco' || b.kind === 'solar' || b.kind === 'espdev').flatMap((b) => (b.all || b.outs).filter((o) => o.type === type).map((o) => ({ key: o.ref, block: b.key, name: `${b.name} · ${o.label}`, out: scAcOutText(o) })));
 }
 function scAcUsers(ref) { // wie deze uitgang van een airco gebruikt
-  return scBlocks().filter((u) => ['module', 'sprinkler', 'action', 'airco', 'espdev'].includes(u.kind) && u.ports.some((p) => p.ref === ref)).map((u) => ({ key: u.key, text: u.name }));
+  return scBlocks().filter((u) => ['module', 'sprinkler', 'action', 'scenes', 'airco', 'espdev'].includes(u.kind) && u.ports.some((p) => p.ref === ref)).map((u) => ({ key: u.key, text: u.name }));
 }
 
 function scAirco(b) {
@@ -449,8 +449,9 @@ async function scWireAirco(a, b) { // een airco: een bron naar een ingang, of ee
     SC.sel = ac.key;
   } else {
     const sink = out === a ? b : a, ac = scBlock(out.b), to = scBlock(sink.b), ref = ac.outs[+out.i].ref;
-    if (sink.role !== 'min' || !['module', 'sprinkler', 'action'].includes(to.kind)) throw new Error('Een uitgang van een airco sluit je aan op een ingang van een module, een sprinkler, een routine of een andere airco.');
+    if (sink.role !== 'min' || !['module', 'sprinkler', 'action', 'scenes'].includes(to.kind)) throw new Error('Een uitgang van een airco sluit je aan op een ingang van een module, een sprinkler, een routine, een blok Scènes of een andere airco.');
     if (to.kind === 'action') await api('PUT', `actions/${to.id}`, { inputs: { trigger: ref } });
+    else if (to.kind === 'scenes') await api('PUT', `scenerules/${to.id}`, { refs: { [to.ports[+sink.i].name]: ref } });
     else await api('PUT', `${to.kind === 'module' ? 'modules' : 'sprinklers'}/${to.id}`, { inputs: { [to.ports[+sink.i].name]: ref } });
     SC.sel = to.key;
   }
@@ -700,10 +701,9 @@ function scEspdevPanel(b, props) {
     <h2>Waarden en instellingen</h2>${values || '<div class="sub">Nog geen punten.</div>'}
     ${b.online ? '<div class="sub">Een wijziging gaat meteen naar het apparaat; de stand hier komt altijd uit zijn antwoord.</div>' : ''}
     ${actions ? `<h2>Acties</h2>${actions}` : ''}
-    ${typeof scnSection === 'function' ? scnSection(b) : ''}
+    ${typeof scnPointer === 'function' ? scnPointer(b) : ''}
     <h2>Ingangen</h2>${ins || '<div class="sub">Geen instelbare punten.</div>'}
     <div class="sub">Een ingang doet pas iets als ze <b>verandert</b>: na een herstart of als de bron weer bekend wordt, onthoudt ze alleen de stand. Gevaarlijke punten (reset, kalibratie) kun je alleen hier met de hand bedienen.${b.driver === 'nuki' ? ' Een <b>actie</b> (▶) start alleen als de bron van <b>0 naar 1</b> gaat, wacht nooit (is er geen verbinding, dan vervalt hij), wordt niet opnieuw geprobeerd en komt hoogstens eens per 5 seconden. Wat een actie startte staat in het logboek van de add-on.' : ''}</div>
-    ${typeof scnHint === 'function' ? scnHint(b) : ''}
     <h2>Uitgangen gaan naar</h2>${users.map((u) => `<div class="sub">${esc(u.label)} → <a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.text)}</a></div>`).join('') || '<div class="sub">Nog nergens. Sleep een uitgang (rechts) naar Groter dan, Kleiner dan, En, Of of een routine.</div>'}
     ${diag.length ? `<h2>Diagnose</h2>${diag.map((p) => `<div class="sub">${esc(p.label)}: ${esc(scEspText(p))}</div>`).join('')}` : ''}
     <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="esdel" data-id="${esc(b.id)}">${b.driver === 'hue' || b.driver === 'nuki' || b.driver === 'brink' || b.driver === 'smappee' ? 'Van de pagina halen' : 'Loskoppelen'}</button></div>`;
@@ -720,7 +720,7 @@ function scOut(b) { // wat een timer of module nu geeft, als tekst
   return b.out === 'time' ? scClock(b.value) : b.value ? '1' : '0';
 }
 function scUsers(b) { // wie deze uitgang gebruikt
-  return scBlocks().filter((u) => (u.kind === 'lamp' && [u.disable, u.control].some((s) => s && scDisKey(s) === b.key)) || (['module', 'sprinkler', 'action', 'airco', 'espdev'].includes(u.kind) && u.ports.some((p) => p.ref === b.key)));
+  return scBlocks().filter((u) => (u.kind === 'lamp' && [u.disable, u.control].some((s) => s && scDisKey(s) === b.key)) || (['module', 'sprinkler', 'action', 'scenes', 'airco', 'espdev'].includes(u.kind) && u.ports.some((p) => p.ref === b.key)));
 }
 
 // ---------------------------------------------------------------- Tuya-datapunten: kiezen bij een module, een routine of een kaart
@@ -905,6 +905,29 @@ function scActionPanel(b, props) {
     <label>Hoogstens elke (seconden)</label><input type="number" min="10" max="86400" step="1" data-acfield="interval" value="${b.interval}">
     <div class="sub">Voorzichtig met een lader: de routine doet nooit iets bij het opstarten of als de ingang weer bekend wordt; ze onthoudt die eerste stand en zet pas iets als de ingang daarna verandert. Een onbekende ingang doet niets. Een mislukt bevel wordt na de wachttijd opnieuw geprobeerd.</div>
     <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="delaction" data-id="${esc(b.id)}">Routine verwijderen</button></div>`;
+}
+
+function scSceneDevice() { // het eerste apparaat met scènes dat nog geen blok Scènes heeft: een nieuw blok hoort er meestal bij
+  const used = new Set(scBlocks().filter((b) => b.kind === 'scenes').map((b) => b.device));
+  const free = scBlocks().filter((b) => b.kind === 'espdev' && b.scn && b.scn.cap && !used.has(b.id));
+  return free.length ? free[0].id : '';
+}
+
+function scScenes(b) {
+  const rows = b.ports.map((p, i) => {
+    const y = rowY(b, i), src = scSrc(p.ref);
+    return `<circle class="pt v-${p.type} ${src ? '' : 'free'}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="min" data-i="${i}"><title>Ingang ${esc(p.label)}: ${p.type === 'time' ? 'een tijd' : 'een 0 of 1'}</title></circle>
+      ${src ? `<text class="bkt away" x="${b.x + 11}" y="${y + 4}" data-sc="go" data-k="${esc(src.key)}">${esc(scCut(p.label, 9))}: ${esc(scCut(src.name, 13))} (${esc(src.out)})<title>${esc(src.name)} geeft nu ${esc(src.out)}</title></text>`
+    : `<text class="ptl" x="${b.x + 11}" y="${y + 4}">+ ${esc(scCut(p.label, 22))}</text>`}`;
+  }).join('');
+  const badge = !b.device ? 'geen apparaat' : b.ready ? scCut(b.device_name, 14) : 'geen scènes';
+  return `<g class="bk scn t-spr ${SC.sel === b.key ? 'sel' : ''}" data-block="${esc(b.key)}">
+    <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
+    <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
+    <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 20))}</text>
+    <text class="bkbadge ${b.ready ? 'ok' : ''}" x="${b.x + SW_W - 12}" y="${b.y + 18}" text-anchor="end">${esc(badge)}</text>
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Scènes${b.unsure ? ' · onzeker' : ''}</text>${rows}
+    <text class="bkt" x="${b.x + 11}" y="${rowY(b, b.ports.length) + 4}">▶ ${esc(b.active_name ? scCut(b.active_name, 28) : 'geen scène')}<title>${b.rules.length} regels, de eerste die klopt bepaalt de scène</title></text></g>`;
 }
 
 const SC_HELP = {
@@ -1320,7 +1343,7 @@ const SC_MENU = [
   ['Rekenen', [['add', 'Optellen', 'tijd + tijd'], ['sub', 'Aftrekken', 'tijd − tijd']]],
   ['Vergelijken', [['between', 'Tussen', '1 tussen twee tijden'], ['after', 'Na', '1 na een tijd'], ['before', 'Voor', '1 voor een tijd'], ['above', 'Groter dan', '1 boven een grens'], ['below', 'Kleiner dan', '1 onder een grens']]],
   ['Logica', [['and', 'En', '1 als beide 1 zijn'], ['or', 'Of', '1 als een van beide 1 is']]],
-  ['Routines', [['sprinkler', 'Sprinkler', 'zones na elkaar, in cycli'], ['action', 'Tuya instellen', 'een 0/1 zet een datapunt']]],
+  ['Routines', [['sprinkler', 'Sprinkler', 'zones na elkaar, in cycli'], ['action', 'Tuya instellen', 'een 0/1 zet een datapunt'], ['scenes', 'Scènes', 'regels die een scène op een ledstrip kiezen']]],
   ['Kaarten', [['card-grid', 'Knoppen', 'lampen, schakelaars, subpagina\'s'], ['card-charger', 'Laadpaal', 'start/stop, kWh en prijs'], ['card-saver', 'Screensaver', 'klok en weer'], ['card-airco', 'Airco', 'thermostaat voor het paneel'],
     ['card-power', 'Energie', 'verbruik en opbrengst'], ['card-qr', 'Wifi (QR)', 'gastnetwerk']]],
 ];
@@ -1421,7 +1444,7 @@ function scInner(list) {
   const shown = new Set(list.map((b) => b.key));
   const wires = !SC_WIRES ? '' : conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
   const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b)
-    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'airco' ? scAirco(b) : b.kind === 'charge' ? scCharge(b) : b.kind === 'solar' ? scSolar(b) : b.kind === 'espdev' ? scEspdev(b) : b.kind === 'card' ? scCard(b) : b.kind === 'action' ? scAction(b) : b.kind === 'remote' ? scRemote(b, tags) : b.kind === 'panel' || b.kind === 'screen' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
+    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'airco' ? scAirco(b) : b.kind === 'charge' ? scCharge(b) : b.kind === 'solar' ? scSolar(b) : b.kind === 'espdev' ? scEspdev(b) : b.kind === 'card' ? scCard(b) : b.kind === 'action' ? scAction(b) : b.kind === 'scenes' ? scScenes(b) : b.kind === 'remote' ? scRemote(b, tags) : b.kind === 'panel' || b.kind === 'screen' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
   return `<g class="wires">${wires}</g>${blocks}<path id="sctemp" class="wire temp"/>`; // draden onder de blokken: anders liggen ze over de poorten
 }
 
@@ -1455,6 +1478,7 @@ function scPortPos(p) {
   if (b.kind === 'sprinkler') return p.role === 'min' ? [b.x, rowY(b, +p.i)] : [b.x + SW_W, rowY(b, +p.i)];
   if (b.kind === 'module') return p.role === 'min' ? [b.x, rowY(b, +p.i)] : [b.x + SW_W, rowY(b, 0)];
   if (b.kind === 'action') return [b.x, rowY(b, 0)];
+  if (b.kind === 'scenes') return [b.x, rowY(b, +p.i)];
   if (b.kind === 'airco' || b.kind === 'solar') return [p.role === 'acout' ? b.x + SC_AC_W : b.x, rowY(b, +p.i)];
   if (b.kind === 'espdev') return [p.role === 'acout' ? b.x + SC_AC_W : b.x, rowY(b, (p.role === 'acout' ? b.outs : b.ports)[+p.i].row)];
   if (p.role === 'pval' || p.role === 'pset') return [p.role === 'pval' ? b.x + TUYA_W : b.x, rowY(b, +p.i)];
@@ -1484,7 +1508,7 @@ function scTray() {
     all.sort((a, b) => (!!a.page - !!b.page));
     return `<h2>${title}</h2>${all.map(item).join('') || '<div class="sub">Geen.</div>'}`;
   };
-  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Tuya instellen', 'action') + part('Panelen', 'panel')
+  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Tuya instellen', 'action') + part('Scènes', 'scenes') + part('Panelen', 'panel')
     + part('Kaarten', 'card') + part('Schermen', 'screen') + part('Tuya', 'tuya') + part('Airco', 'airco') + part('Laadpaal', 'charge') + part('Omvormer', 'solar') + part('Zelfbouw, ESPHome en Hue', 'espdev') + part('Andere installaties', 'remote');
 }
 
@@ -1498,7 +1522,7 @@ function scPanel() {
   const pages = `<label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
   const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'switch' ? b.alias : b.name)}" placeholder="${esc(b.tech)}">
     <div class="sub">Technische naam: <code>${esc(b.tech)}</code></div>${pages}`;
-  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : b.kind === 'tuya' ? scTuyaPanel(b, props) : b.kind === 'airco' ? scAircoPanel(b, props) : b.kind === 'charge' ? scChargePanel(b, props) : b.kind === 'solar' ? scSolarPanel(b, props) : b.kind === 'espdev' ? scEspdevPanel(b, props) : b.kind === 'card' ? scCardPanel(b, props) : b.kind === 'action' ? scActionPanel(b, props) : b.kind === 'remote' ? scRemotePanel(b) : scSwitchPanel(b, props);
+  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : b.kind === 'tuya' ? scTuyaPanel(b, props) : b.kind === 'airco' ? scAircoPanel(b, props) : b.kind === 'charge' ? scChargePanel(b, props) : b.kind === 'solar' ? scSolarPanel(b, props) : b.kind === 'espdev' ? scEspdevPanel(b, props) : b.kind === 'card' ? scCardPanel(b, props) : b.kind === 'action' ? scActionPanel(b, props) : b.kind === 'scenes' ? scScenesPanel(b, props) : b.kind === 'remote' ? scRemotePanel(b) : scSwitchPanel(b, props);
 }
 
 function scConnRow(b, c, i, dir) {
@@ -1738,7 +1762,8 @@ async function scWireLogic(a, b) { // van de uitgang van een timer of module naa
   else if (to.kind === 'sprinkler' && sink.role === 'min') await api('PUT', `sprinklers/${to.id}`, { inputs: { [to.ports[+sink.i].name]: from.key } });
   else if (to.kind === 'module' && sink.role === 'min') await api('PUT', `modules/${to.id}`, { inputs: { [to.ports[+sink.i].name]: from.key } });
   else if (to.kind === 'action' && sink.role === 'min') await api('PUT', `actions/${to.id}`, { inputs: { trigger: from.key } });
-  else throw new Error('Een uitgang sluit je aan op een ingang van een module of een ingang (aan/uit of disable) van een lamp.');
+  else if (to.kind === 'scenes' && sink.role === 'min') await api('PUT', `scenerules/${to.id}`, { refs: { [to.ports[+sink.i].name]: from.key } });
+  else throw new Error('Een uitgang sluit je aan op een ingang van een module, een blok Scènes of een ingang (aan/uit of disable) van een lamp.');
   SC.sel = to.key;
   SC.force = true;
   await refresh();
@@ -1895,6 +1920,7 @@ const SC_ACTIONS = {
     const r = d.type.startsWith('card-') ? await api('POST', 'cards', { type: d.type.slice(5), page: SC.page, ...scFreeSpot('module') })
       : d.type === 'sprinkler' ? await api('POST', 'sprinklers', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'action' ? await api('POST', 'actions', { page: SC.page, ...scFreeSpot('module') })
+      : d.type === 'scenes' ? await api('POST', 'scenerules', { page: SC.page, device: scSceneDevice(), ...scFreeSpot('module') })
       : d.type === 'panel' ? await api('POST', 'panels', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'screen' ? await api('POST', 'screens', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'tuya' ? await api('POST', 'tuya', { page: SC.page, ...scFreeSpot('module') })
@@ -1988,6 +2014,12 @@ const SC_ACTIONS = {
   delcharge: async (d) => {
     if (!confirm('Deze laadpaal verwijderen? De log gaat niet weg, maar kaarten en andere installaties verliezen hem.')) return;
     await api('DELETE', `charge/${d.id}`);
+  },
+  delscenes: async (d) => {
+    if (!confirm('Dit blok Scènes verwijderen? De scènes zelf blijven bewaard; het apparaat start ze niet meer vanzelf en zijn slots worden gewist.')) return;
+    await api('DELETE', `scenerules/${d.id}`);
+    SC.sel = null;
+    await refresh();
   },
   delaction: async (d) => {
     if (!confirm('Deze routine verwijderen? Wat ze al gezet heeft blijft zo staan.')) return;
@@ -2629,6 +2661,7 @@ document.addEventListener('change', (ev) => {
         else if (b.kind === 'espdev') await api('PUT', `espdev/${b.id}`, { name });
         else if (b.kind === 'card') await api('PUT', `cards/${b.id}`, { name });
         else if (b.kind === 'action') await api('PUT', `actions/${b.id}`, { name });
+        else if (b.kind === 'scenes') await api('PUT', `scenerules/${b.id}`, { name });
         else if (b.kind === 'timer') await api('PUT', `timers/${b.id}`, { name, days: b.days });
         else if (!name) throw new Error('Een lamp heeft een naam nodig');
         else if (b.source === 'ha') await api('PUT', `groups/${b.id}`, { name });

@@ -17,7 +17,6 @@ import re
 from collections import Counter
 
 from . import cards as _cards
-from . import scenehub
 from .link import split_ref
 from .logic import MODULE_TYPES, SPRINKLER_INPUTS, disable_ref
 from .model import MAX_SWITCH_GANGS, Model, ModelError, panel_relay_entity
@@ -376,12 +375,18 @@ def _espdev_blocks(snap: dict) -> list[dict]:
         # een slot: elke actie zonder argument is een rij met een ingang (0 naar 1 start hem), onder de punten; `act_in` is wat er nu op aangesloten staat
         acts = [x for x in a["actions"] if a.get("driver") == "nuki" and not x["args"]]
         ports += [{"name": f"do_{x['id']}", "type": "bool", "label": x["label"], "ref": a["inputs"].get(f"do_{x['id']}"), "row": len(rows) + i, "action": True, "danger": x["danger"]} for i, x in enumerate(acts)]
-        scn_rows = scenehub.block_ports(a, len(rows) + len(acts), ports)  # HUISDEV-scènes: een rij met een 0/1-ingang per scène op dit apparaat (scenehub.py)
         res.append({**{k: v for k, v in a.items() if k not in ("inputs", "points", "shown")}, "points": a["points"], "shown": a["shown"], "key": f"e:{a['id']}", "kind": "espdev",
                     "source": "espdev", "tech": {"esphome": "ESPHome · webserver", "hue": f"{a['type'] or 'Apparaat'} · Philips Hue", "nuki": f"{a['type'] or 'Slot'} · Nuki", "brink": f"{a['type'] or 'Ventilatie'} · Brink Home", "smappee": f"{a['type'] or 'Laadpaal'} · Smappee"}.get(a.get("driver"), f"{a['type'] or 'Apparaat'} · HUISDEV"), "alias": "", "room": "", "rows": max(len(rows) + len(acts), 1), "ports": ports,
                     "outs": [out(p, i) for i, p in enumerate(rows)], "all": every})
-        res[-1]["rows"] = max(len(rows) + len(acts) + scn_rows, 1)
     return res
+
+
+def _scene_blocks(snap: dict) -> list[dict]:
+    """Een blok Scènes (scenehub.py): links de ingangen (een 0/1 of een tijd), onderaan de scène die de regels nu kiezen. De regels zelf staan in de zijbalk."""
+    return [{"key": f"q:{b['id']}", "kind": "scenes", "source": "scenes", "id": b["id"], "name": b["name"], "tech": "Scènes", "alias": "", "room": "", "online": b["online"],
+             "device": b["device"], "device_name": b["device_name"], "ready": b["ready"], "active": b["active"], "active_rule": b["active_rule"], "active_name": next((r["scene_name"] for r in b["rules"] if r["on"]), ""),
+             "unsure": b["unsure"], "defs": b["inputs"], "rules": b["rules"], "inext": b["inext"], "rows": len(b["inputs"]) + 1,
+             "ports": [{"name": i["id"], "type": i["kind"], "label": i["name"], "ref": i["ref"], "value": i["value"]} for i in b["inputs"]]} for b in snap.get("scenerules", [])]
 
 
 def view(model: Model, snap: dict) -> dict:
@@ -390,7 +395,7 @@ def view(model: Model, snap: dict) -> dict:
     owners = _gang_owners(model, snap)
     lamps = _lamp_blocks(model, snap, owners)
     blocks = (_switch_blocks(model, snap, owners, states) + lamps + _timer_blocks(snap) + _module_blocks(snap) + _sprinkler_blocks(snap) + _panel_blocks(model, snap)
-              + _screen_blocks(model, snap) + _tuya_blocks(snap) + _airco_blocks(snap) + _charge_blocks(snap) + _solar_blocks(snap) + _espdev_blocks(snap) + _remote_blocks(snap) + _action_blocks(snap))
+              + _screen_blocks(model, snap) + _tuya_blocks(snap) + _airco_blocks(snap) + _charge_blocks(snap) + _solar_blocks(snap) + _espdev_blocks(snap) + _scene_blocks(snap) + _remote_blocks(snap) + _action_blocks(snap))
     blocks += _card_blocks(model, snap, {b["key"] for b in lamps})
     names = {b["key"]: b for b in blocks if b["kind"] in ("switch", "panel", "tuya") or (b["kind"] == "remote" and b["sub"] == "gang")}
     for b in blocks:

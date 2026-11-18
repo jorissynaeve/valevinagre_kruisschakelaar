@@ -181,6 +181,7 @@ class Engine:
         self.charge_view: Callable[[], list[dict]] | None = None  # de laadpalen met hun sessies (chargehub.py)
         self.solar_value: Callable[[str], Any] | None = None  # een uitgang van een omvormer: o:<id>:pv|load|grid|batt|soc|today
         self.espdev_view: Callable[[], list[dict]] | None = None  # de HUISDEV-apparaten met hun punten (espdevhub.py)
+        self.scenerules_view: Callable[[], list[dict]] | None = None  # de blokken Scènes: ingangen en regels voor ledstrips (scenehub.py)
         self.espdev_found: Callable[[], list[dict]] | None = None  # gevonden maar nog niet geclaimde HUISDEV-apparaten
         self.espdev_value: Callable[[str], Any] | None = None  # een uitgang van een HUISDEV-apparaat: e:<id>:<punt>
         self.hue_view: Callable[[], list[dict]] | None = None  # de Hue-bridges met wat ze aanbieden, zonder sleutel (espdevhub.py)
@@ -860,6 +861,7 @@ class Engine:
             "airco": self.airco_view() if self.airco_view else [],
             "solar": self.solar_view() if self.solar_view else [],
             "espdev": self.espdev_view() if self.espdev_view else [],
+            "scenerules": self.scenerules_view() if self.scenerules_view else [],
             "espdev_found": self.espdev_found() if self.espdev_found else [],
             "hue": self.hue_view() if self.hue_view else [],
             "nuki": self.nuki_view() if self.nuki_view else [],

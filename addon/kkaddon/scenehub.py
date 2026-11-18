@@ -4,12 +4,13 @@ Een scène is een kleine binaire beschrijving van een lichtverloop (protocol/led
 opslaat en afspeelt. Dit bestand is alles wat de add-on daarvoor doet; espdevhub.py roept het op een handvol plaatsen aan (zie DESIGN.md §42).
 
   bibliotheek   /data/scenes.json: id (s1, s2, ... nooit hergebruikt), naam, definitie (kind static, fade, sunrise, wake, rainbow, raw) en `release`
-  per apparaat  dev["scn"] = {"sel": [ids], "slots": {id: slot}, "cap": wat het apparaat in zijn descriptor meldt}; de rij van een scène is een
-                bool-ingang `scene:<id>` in dev["inputs"] (een punt-id mag geen `:` hebben, dus dit botst nooit met een punt)
-  ingang        0 naar 1 start, 1 naar 0 stopt (alleen bij `release` stop). Een verzender per apparaat; een start vervalt na 60 s zonder verbinding,
-                een stop blijft geldig zodra het apparaat terug is
+  per apparaat  dev["scn"] = {"sel": [ids], "slots": {id: slot}, "cap": wat het apparaat in zijn descriptor meldt}; `scene:<id>` is de sleutel van de melding van een scène
+                in dev["last"] (voor 0.45 was het ook een ingang op het apparaatblok: die worden bij het laden een regelblok)
+  regels        /data/scenerules.json (scenerules.py): een blok Scènes heeft ingangen (een 0/1 of een tijd) en regels; de eerste regel die klopt bepaalt de scène.
+                Verandert die, dan start de nieuwe en stopt de oude alleen als er geen opvolger is en ze `release` stop heeft. Het blok bepaalt ook welke scènes
+                op het apparaat staan (`sel`). Een verzender per apparaat; een start vervalt na 60 s zonder verbinding, een stop blijft geldig zodra het apparaat terug is
   sync          na elke poll: een slot vullen of wissen als het afwijkt (hoogstens een schrijfactie per ronde en per 10 minuten per slot en hash,
-                6 per uur), en de geplande starts van een wekker waarvan de bron een timer is (de ESP start hem dan zelf, ook zonder verbinding)
+                6 per uur), en de geplande starts van een regel die alleen uit een timer bestaat (de ESP start hem dan zelf, ook zonder verbinding)
   seek          protocol 1.2: de tijdschuif van de pagina laat de strip het beeld op tijdstip t tonen (`scene/seek`). Een eigen verzender per apparaat die samenvoegt:
                 altijd het nieuwste tijdstip, hoogstens 1 per SEEK_GAP; geen invloed op sync, geplande starts, slots of de uurplafonds. Een echte start of stop wint
 
@@ -24,17 +25,18 @@ import os
 import re
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
+from . import scenerules as sr
 from . import scenes as sc
-from .logic import BOOL
+from .logic import BOOL, TIME
 from .model import ModelError, fits, source_type, timer_active
 
 log = logging.getLogger("kk.scenes")
 
-KEY = "scene:"  # in dev["inputs"], dev["last"] en de poorten van het blok: scene:<id>
+KEY = "scene:"  # in dev["last"]: de melding van een scène; voor 0.45 ook de ingang op het apparaatblok (scene:<id>)
 SID_RE = re.compile(r"^s[0-9]{1,6}$")
 SELF_RE = re.compile(r"^e:([a-z0-9_]{1,40}):")
 MAX_SCENES = 64
@@ -107,17 +109,6 @@ def clean_scn(raw) -> dict:
             slots[sid] = n
             used.add(n)
     return {"sel": sel, "slots": slots, "cap": clean_cap(raw.get("cap"))}
-
-
-def block_ports(a: dict, first_row: int, ports: list) -> int:
-    """Voor `schema._espdev_blocks`: een rij met een bool-ingang per geselecteerde scène (zoals een Nuki-actie). Geeft het aantal rijen."""
-    scn = a.get("scn") or {}
-    if not scn.get("cap"):
-        return 0  # een apparaat zonder scènes: de bedrading slaapt
-    sel = scn.get("sel") or []
-    for i, s in enumerate(sel):
-        ports.append({"name": KEY + s["id"], "type": "bool", "label": s["name"], "ref": a["inputs"].get(KEY + s["id"]), "row": first_row + i, "action": True, "scene": True, "danger": False})
-    return len(sel)
 
 
 def needs_write(have: list[dict], want: list[dict], low: int = SCHED_LOW, after: float | None = None) -> bool:
@@ -316,27 +307,83 @@ class SceneHub:
     def __init__(self, hub, mono=None, wall=None) -> None:
         self.hub = hub
         self.lib = Library(Path(hub.path).parent / "scenes.json")
+        self.rules = sr.RuleStore(Path(hub.path).parent / "scenerules.json")
         self.mono = mono or time.monotonic  # de tests zetten hier een eigen klok
         self.wall = wall or (lambda: hub.engine._wall())
         self.rt: dict[str, dict] = {}  # did -> wat het apparaat tot nu meldde en wat we ervan onthouden
-        self.q: dict[str, deque] = {}  # did -> opdrachten uit ingangen, in de volgorde van de flanken
+        self.q: dict[str, deque] = {}  # did -> opdrachten uit de regels, in de volgorde van de wijzigingen
         self.locks: dict[str, asyncio.Lock] = {}  # een verzender per apparaat
+        self.rmem: dict[str, dict] = {}  # blok -> {"scene": de scène die de regels de vorige ronde kozen}; ontbreekt = nog geen eerste stand
+        self.rnote: dict[str, dict] = {}  # blok -> {"idx": regel die nu klopt, "unsure": bool}, voor de pagina
         self._prune()
 
-    # ------------------------------------------------------------ opruimen
+    # ------------------------------------------------------------ opruimen en overzetten
 
     def _prune(self) -> None:
-        """Na het laden: een selectie of bedrading van een scène die niet meer bestaat, verdwijnt."""
-        dirty = False
+        """Na het laden: een selectie van een scène die niet meer bestaat verdwijnt, ingangen `scene:<id>` van voor 0.45 worden een regelblok en een regel met een
+        scène die niet meer bestaat of een apparaat dat weg is, valt weg."""
+        dirty = self._migrate()
         for dev in self.hub.devices.values():
             for sid in [s for s in dev["scn"]["sel"] if s not in self.lib.items]:
                 self._unselect(dev, sid)
                 dirty = True
-            for key in [k for k in dev["inputs"] if k.startswith(KEY) and k[len(KEY):] not in dev["scn"]["sel"]]:
-                dev["inputs"].pop(key)
-                dirty = True
+        changed = False
+        for bid, b in self.rules.items.items():
+            keep = [r for r in b["rules"] if r["scene"] in self.lib.items]
+            if len(keep) != len(b["rules"]):
+                b["rules"], changed = keep, True
+            if b["device"] and (b["device"] not in self.hub.devices or self.hub.devices[b["device"]]["driver"] != "huisdev"):
+                b["device"], changed = "", True
+        if changed:
+            self.rules.save()
+        for did in self.rules.device_owner():
+            if did in self.hub.devices:
+                dirty = self._apply_sel(did) or dirty
         if dirty:
             self.hub._save()
+
+    def _migrate(self) -> bool:
+        """Voor 0.45 had elke scène een ingang `scene:<id>` op het apparaatblok. Die worden een blok Scènes met per ingang een 0/1-ingang en een regel `ingang = 1`:
+        hetzelfde gedrag, maar de scènes zitten niet meer in het apparaatblok. Een scène zonder bron had geen ingang en krijgt geen regel (haar slot wordt gewist)."""
+        hub, dirty = self.hub, False
+        owners = self.rules.device_owner()
+        for did, dev in hub.devices.items():
+            wired = {k[len(KEY):]: r for k, r in dev["inputs"].items() if k.startswith(KEY)}
+            if not wired:
+                continue
+            ins, rules = [], []
+            for sid in dev["scn"]["sel"]:
+                if sid in wired and sid in self.lib.items:
+                    iid = f"i{len(ins) + 1}"
+                    ins.append({"id": iid, "name": self.lib.name(sid), "kind": "bool", "ref": wired[sid]})
+                    rules.append({"scene": sid, "when": [{"op": "on", "in": iid}]})
+            if ins and did not in owners and len(self.rules.items) < sr.MAX_BLOCKS:
+                bid = f"q{self.rules.next}"
+                self.rules.next += 1
+                self.rules.items[bid] = {"name": f"Scènes {dev['name']}"[:sr.MAX_NAME], "device": did, "inputs": ins, "inext": len(ins) + 1, "rules": rules}
+                owners[did] = bid
+                self.rules.save()
+                self._place_near(f"e:{did}", f"q:{bid}")
+                log.info("scènes van %s zijn een blok Scènes geworden (%d regels)", dev["name"], len(rules))
+            for k in wired:
+                dev["inputs"].pop(KEY + k, None)
+            dirty = True
+        return dirty
+
+    def _place_near(self, near: str, key: str) -> None:
+        """Een nieuw blok op de pagina van een ander blok, ernaast; staat dat nergens, dan blijft het in de lijst."""
+        model = getattr(self.hub.engine, "model", None)
+        pos = model.schema["blocks"].get(near) if model else None
+        if not pos or not pos.get("page"):
+            return
+        import copy
+        s = copy.deepcopy(model.schema)
+        x = pos["x"] - 300 if pos["x"] >= 300 else pos["x"] + 520
+        s["blocks"][key] = {"page": pos["page"], "x": x, "y": pos["y"]}
+        try:
+            model.set_schema(s)
+        except Exception:  # noqa: BLE001 - een plek is een gemak, geen voorwaarde
+            log.exception("plek van %s", key)
 
     def _unselect(self, dev: dict, sid: str) -> None:
         scn = dev["scn"]
@@ -355,6 +402,11 @@ class SceneHub:
             t.cancel()
         for x in (self.rt, self.q, self.locks):
             x.pop(did, None)
+        for bid, b in self.rules.items.items():
+            if b["device"] == did:  # het blok blijft, zonder apparaat
+                b["device"] = ""
+                self.rmem.pop(bid, None)
+                self.rules.save()
 
     # ------------------------------------------------------------ bibliotheek (voor de web-API)
 
@@ -389,6 +441,17 @@ class SceneHub:
         if not self.lib.remove(sid):
             return False
         hub = self.hub
+        touched = []
+        for bid, b in self.rules.items.items():  # de regels met deze scène vallen weg
+            keep = [r for r in b["rules"] if r["scene"] != sid]
+            if len(keep) != len(b["rules"]):
+                b["rules"] = keep
+                touched.append(b["device"])
+        if touched:
+            self.rules.save()
+        for did in touched:
+            if did in hub.devices:
+                self._apply_sel(did)
         for did, dev in hub.devices.items():
             if sid in dev["scn"]["sel"] or KEY + sid in dev["inputs"]:
                 self._unselect(dev, sid)
@@ -508,25 +571,100 @@ class SceneHub:
                 last[KEY + sid] = f"geen vrij slot: het apparaat heeft {cap['slots']} slots en ze zijn bezet; haal een andere scène van dit apparaat weg"
         return slots != before
 
-    def check_input(self, did: str, dev: dict, pid: str, ref: str) -> None:
-        """Mag deze bron op de ingang `scene:<id>`? Alleen een geselecteerde scène en alleen een 0/1."""
-        sid = pid[len(KEY):]
-        if sid not in dev["scn"]["sel"] or sid not in self.lib.items:
-            raise ModelError(f"{pid}: deze scène staat niet op dit apparaat")
-        name = self.lib.name(sid)
-        if not isinstance(ref, str):
-            raise ModelError(f"ingang {name}: ongeldige bron")
+    def check_ref(self, ref: str, kind: str) -> None:
+        """Mag deze bron op een ingang van een blok Scènes? Een 0/1 voor `bool`, een tijd voor `time`."""
         m = self.hub.engine.model
         got = source_type(ref, m.modules, m.timers)
         if got is None:
-            raise ModelError(f"ingang {name} wijst naar iets dat niet bestaat")
-        if not fits(got, BOOL):
-            raise ModelError(f"ingang {name} verwacht een 0 of 1" + (". Zet er een Groter dan of Kleiner dan tussen." if got == "number" else ""))
-        r = SELF_RE.match(ref)
-        if r and r.group(1) == did:
-            raise ModelError("een apparaat stuurt zichzelf niet")
+            raise ModelError("deze ingang wijst naar iets dat niet bestaat")
+        if not fits(got, BOOL if kind == "bool" else TIME):
+            raise ModelError(f"deze ingang verwacht {'een 0 of 1' if kind == 'bool' else 'een tijd'}" + (". Zet er een Groter dan of Kleiner dan tussen." if kind == "bool" and got == "number" else ""))
 
-    # ------------------------------------------------------------ de ingangen: flanken
+    def _apply_sel(self, did: str) -> bool:
+        """De scènes van het blok van dit apparaat zijn de scènes die op het apparaat staan (een slot elk). True als er iets veranderde."""
+        dev = self.hub.devices.get(did)
+        bid = self.rules.device_owner().get(did)
+        if not dev or not bid:
+            return False
+        want = sr.used_scenes(self.rules.items[bid])[:MAX_SEL]
+        scn = dev["scn"]
+        if scn["sel"] == want:
+            return False
+        for sid in [x for x in scn["sel"] if x not in want]:
+            self._unselect(dev, sid)
+            self.hub.last.get(did, {}).pop(KEY + sid, None)
+        scn["sel"] = list(want)
+        self.assign(did)
+        return True
+
+    # ------------------------------------------------------------ de blokken Scènes (voor de web-API)
+
+    def _check_block(self, bid: str | None, b) -> dict:
+        devices = {d for d, v in self.hub.devices.items() if v["driver"] == "huisdev"}
+        old = self.rules.items.get(bid) if bid else None
+        out = sr.clean_block(b, old, self.lib.items, self.check_ref, devices, self.rules.device_owner(), bid)
+        used = sr.used_scenes(out)
+        if len(used) > MAX_SEL:
+            raise ModelError(f"maximaal {MAX_SEL} verschillende scènes per blok")
+        return out
+
+    def _block_changed(self, bid: str, old_device: str | None = None) -> None:
+        self.rules.save()
+        self.rmem.pop(bid, None)  # de regels zijn anders: de eerstvolgende stand wordt weer alleen onthouden
+        self.rnote.pop(bid, None)
+        hub = self.hub
+        for did in {old_device, self.rules.items[bid]["device"] if bid in self.rules.items else None}:
+            if did and did in hub.devices:
+                if not self.rules.device_owner().get(did):  # het blok is er niet meer: de scènes van dit apparaat horen nergens meer bij
+                    self.select(did, [])
+                else:
+                    self._apply_sel(did)
+                hub._kick(did)
+        hub._save()
+        hub._poke()
+
+    def add_block(self, b) -> str:
+        if len(self.rules.items) >= sr.MAX_BLOCKS:
+            raise ModelError(f"maximaal {sr.MAX_BLOCKS} blokken Scènes")
+        item = self._check_block(None, b)
+        bid = f"q{self.rules.next}"
+        self.rules.next += 1
+        self.rules.items[bid] = item
+        self._block_changed(bid)
+        return bid
+
+    def update_block(self, bid: str, b) -> None:
+        if bid not in self.rules.items:
+            raise ModelError("onbekend blok Scènes")
+        old_dev = self.rules.items[bid]["device"]
+        self.rules.items[bid] = self._check_block(bid, b)
+        self._block_changed(bid, old_dev)
+
+    def delete_block(self, bid: str) -> bool:
+        if bid not in self.rules.items:
+            return False
+        dev = self.rules.items.pop(bid)["device"]
+        self._block_changed(bid, dev)
+        return True
+
+    # ------------------------------------------------------------ de regels: de scène die nu hoort te spelen
+
+    def _read(self, ref):
+        return self.hub.engine.ref_value(ref) if isinstance(ref, str) else None
+
+    def _ahead(self, tid: str, minutes: int):
+        """Staat de timer over zoveel minuten aan? (voor een wekker die eerder begint dan zijn timer)"""
+        eng = self.hub.engine
+        t = eng.model.timers.get(tid)
+        if t is None:
+            return None
+        at = eng.local_now() + timedelta(minutes=minutes)
+        return timer_active(t, at.weekday(), at.hour * 60 + at.minute)
+
+    def pick(self, bid: str) -> tuple[int | None, bool]:
+        """(index van de regel die nu klopt of None, onzeker). Zie scenerules.evaluate."""
+        now = self.hub.engine.local_now()
+        return sr.evaluate(self.rules.items[bid], self._read, self._ahead, now.hour * 60 + now.minute)
 
     def _note(self, did: str, key: str, msg: str | None, err: bool = False) -> None:
         if key == "scenes":
@@ -540,25 +678,31 @@ class SceneHub:
             last[key] = msg
             self.hub._poke()
 
-    def tick_input(self, did: str, dev: dict, key: str, ref: str, mem: dict) -> None:
-        """Een ingang `scene:<id>`: de eerste stand (na een herstart of na onbekend) wordt alleen onthouden; 0 naar 1 start, 1 naar 0 stopt (alleen bij `release` stop)."""
-        sid = key[len(KEY):]
-        if sid not in dev["scn"]["sel"] or sid not in self.lib.items or not dev["scn"]["cap"]:
-            mem.pop(key, None)  # slapend: geen scènes (meer) op dit apparaat
-            return
-        raw = self.hub.engine.ref_value(ref)
-        v = raw if isinstance(raw, bool) else None
-        if v is None:
-            mem.pop(key, None)
-            return
-        was = mem.get(key)
-        mem[key] = v
-        if was is None or was == v:
-            return
-        if v:
-            self._enqueue(did, "start", sid)
-        elif self.lib.items[sid]["release"] == "stop":
-            self._enqueue(did, "stop", sid)
+    def tick_rules(self) -> None:
+        """Elke ronde: de scène die de regels nu kiezen. De eerste stand (na een herstart of na onbekend) wordt alleen onthouden. Een andere scène dan de vorige start
+        meteen (en vervangt wat speelde); kiezen de regels niets meer, dan stopt de vorige alleen met `release` stop. Weet een ingang niets en klopt er geen regel,
+        dan blijft alles zoals het was."""
+        for bid, b in self.rules.items.items():
+            did = b["device"]
+            dev = self.hub.devices.get(did) if did else None
+            if not dev or not dev["scn"]["cap"]:
+                self.rmem.pop(bid, None)  # slapend: geen apparaat of geen scènes (meer)
+                self.rnote[bid] = {"idx": None, "unsure": False}
+                continue
+            idx, unsure = self.pick(bid)
+            self.rnote[bid] = {"idx": idx, "unsure": unsure}
+            sid = b["rules"][idx]["scene"] if idx is not None else None
+            if sid is None and unsure:
+                self.rmem.pop(bid, None)
+                continue
+            mem = self.rmem.get(bid)
+            self.rmem[bid] = {"scene": sid}
+            if mem is None or mem["scene"] == sid:
+                continue
+            if sid is not None:
+                self._enqueue(did, "start", sid)
+            elif mem["scene"] in self.lib.items and self.lib.items[mem["scene"]]["release"] == "stop":
+                self._enqueue(did, "stop", mem["scene"])
 
     def _lock(self, did: str) -> asyncio.Lock:
         return self.locks.setdefault(did, asyncio.Lock())
@@ -1016,31 +1160,50 @@ class SceneHub:
             rt["snotes"][sid] = msg
             self.hub._poke()
 
+    def _rule_timer(self, b: dict, r: dict) -> tuple[dict | None, int, str]:
+        """(timer, minuten ervoor, reden): is de regel vooruit te berekenen? Alleen een regel met een enkele voorwaarde op een timer: `ingang = 1` of een wekker
+        met een timer (die `before` minuten eerder begint). Anders None en de reden waarom niet."""
+        m = self.hub.engine.model
+        c = r["when"][0]
+        inp = next((i for i in b["inputs"] if i["id"] == c.get("in")), None)
+        if len(r["when"]) != 1:
+            return None, 0, "geen geplande start: de regel heeft meer dan een voorwaarde (alleen een regel met enkel een timer is vooruit te berekenen), de gewone start blijft werken"
+        if not inp or c["op"] not in ("on", "wake") or inp["kind"] != BOOL or not inp["ref"] or not inp["ref"].startswith("t:"):
+            return None, 0, "geen geplande start: de bron is geen timer (alleen een timer is vooruit te berekenen), de gewone start blijft werken"
+        t = m.timers.get(inp["ref"][2:])
+        if t is None:
+            return None, 0, "geen geplande start: de timer bestaat niet (meer)"
+        return t, c.get("before", 0), ""
+
     def _desired_sched(self, did: str, dev: dict, rt: dict, cap: dict) -> list[dict] | None:
         """De geplande starts die dit apparaat zou moeten hebben, of None als er nog gewacht moet worden (een slot is nog niet gevuld of de klok is niet geldig)."""
         hub = self.hub
-        m = hub.engine.model
         now = self.wall()
         tz = getattr(hub.engine, "tz", None)
+        bid = self.rules.device_owner().get(did)
+        b = self.rules.items.get(bid) if bid else None
         want, waiting = [], False
         for sid in dev["scn"]["sel"]:
-            ref, n = dev["inputs"].get(KEY + sid), dev["scn"]["slots"].get(sid)
-            if not ref or not n or sid not in self.lib.items:
+            n = dev["scn"]["slots"].get(sid)
+            rules = [r for r in (b["rules"] if b else []) if r["scene"] == sid]
+            if not rules or not n or sid not in self.lib.items:
                 self._snote(rt, sid, None)
                 continue
-            t = m.timers.get(ref[2:]) if ref.startswith("t:") else None
-            if t is None:
-                self._snote(rt, sid, "geen geplande start: de bron is geen timer (alleen een timer is vooruit te berekenen), de gewone flank blijft werken" if not ref.startswith("t:")
-                            else "geen geplande start: de timer bestaat niet (meer)")
-                continue
-            if rt["have"].get(n, {}).get("h") != self.lib.hashes.get(sid):
-                waiting = True
-                continue
-            self._snote(rt, sid, None)
-            want += [{"slot": n, "at": at} for at in rising_edges(t, now, cap["sched"], tz)]
+            reason = None
+            for r in rules:
+                t, before, why = self._rule_timer(b, r)
+                if t is None:
+                    reason = reason or why
+                    continue
+                if rt["have"].get(n, {}).get("h") != self.lib.hashes.get(sid):
+                    waiting = True
+                    continue
+                want += [{"slot": n, "at": at - before * 60} for at in rising_edges(t, now + before * 60, cap["sched"], tz)]
+            self._snote(rt, sid, reason)
         if waiting:
             return None
-        return sorted(want, key=lambda e: (e["at"], e["slot"]))[:cap["sched"]]
+        uniq = sorted({(e["at"], e["slot"]) for e in want})[:cap["sched"]]
+        return [{"slot": sl, "at": at} for at, sl in uniq]
 
     async def _sync_sched(self, did: str, dev: dict, rt: dict, cap: dict) -> None:
         if cap["sched"] <= 0 or rt["time"] is None:
@@ -1098,7 +1261,7 @@ class SceneHub:
                 state = "ok"
             else:
                 state = "wait"
-            sel.append({"id": sid, "name": self.lib.name(sid), "slot": n, "release": self.lib.items[sid]["release"], "state": state, "src": dev["inputs"].get(KEY + sid), "note": last.get(KEY + sid, ""),
+            sel.append({"id": sid, "name": self.lib.name(sid), "slot": n, "release": self.lib.items[sid]["release"], "state": state, "note": last.get(KEY + sid, ""),
                         "sched_note": rt["snotes"].get(sid, "")})
         run = None
         if rt["run"]:
@@ -1107,3 +1270,19 @@ class SceneHub:
             run = {"slot": r["slot"], "h": r["h"], "until": r["until"], "seek": r.get("seek"), "id": sid, "name": self.lib.name(sid) if sid else ""}
         sched = [{"slot": e["slot"], "at": e["at"], "id": by_slot.get(e["slot"]), "name": self.lib.name(by_slot[e["slot"]]) if e["slot"] in by_slot else ""} for e in rt["sched"]]
         return {"cap": cap, "known": rt["known"], "sel": sel, "have": {str(n): v for n, v in rt["have"].items()}, "run": run, "sched": sched, "time": rt["time"], "note": last.get("scenes", "")}
+
+    def rules_view(self) -> list[dict]:
+        """De blokken Scènes voor de pagina (engine.snapshot): ingangen met hun waarde nu, regels met wat er klopt, en wat de regels nu kiezen."""
+        out = []
+        for bid, b in self.rules.items.items():
+            names = {i["id"]: i["name"] for i in b["inputs"]}
+            note = self.rnote.get(bid) or {"idx": None, "unsure": False}
+            dev = self.hub.devices.get(b["device"]) if b["device"] else None
+            ins = [{**i, "value": self._read(i["ref"])} for i in b["inputs"]]
+            rules = [{"scene": r["scene"], "scene_name": self.lib.name(r["scene"]), "when": r["when"], "text": [sr.condition_text(c, names) for c in r["when"]], "on": note["idx"] == n}
+                     for n, r in enumerate(b["rules"])]
+            idx = note["idx"]
+            out.append({"id": bid, "name": b["name"], "device": b["device"], "device_name": dev["name"] if dev else "", "online": bool(dev and b["device"] in self.hub.online),
+                        "ready": bool(dev and dev["scn"]["cap"]), "inputs": ins, "rules": rules, "inext": b["inext"], "active": b["rules"][idx]["scene"] if idx is not None else None,
+                        "active_rule": idx, "unsure": note["unsure"]})
+        return out

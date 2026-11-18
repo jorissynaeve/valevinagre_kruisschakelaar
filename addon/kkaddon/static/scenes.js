@@ -1,6 +1,7 @@
 'use strict';
-// HUISDEV-scènes in de zijbalk van een apparaat dat ze kent (kkaddon/scenehub.py en scenesweb.py, protocol/huisdev/HUISDEV.md §16).
-// Wordt na schema.js geladen: `scEspdevPanel` roept `scnSection` en `scnHint` aan. De bibliotheek (naam, soort, parameters) staat op de server in
+// HUISDEV-scènes in de zijbalk van een blok Scènes (kkaddon/scenehub.py, scenerules.py en scenesweb.py, protocol/huisdev/HUISDEV.md §16): de ingangen en regels die
+// kiezen welke scène een ledstrip speelt, en de bibliotheek met het formulier, de voorbeeldstrip en de tijdschuif.
+// Wordt na schema.js geladen: `scPanel` roept `scScenesPanel` aan en het apparaatblok `scnPointer`. De bibliotheek (naam, soort, parameters) staat op de server in
 // /data/scenes.json; hier staat alleen het formulier. De voorbeeldstrip wordt niet hier berekend: de renderer bestaat maar een keer, in Python
 // (POST /api/scenes/preview), en dit bestand tekent alleen de kleuren die terugkomen. Zo ook de tijdschuif: het beeld op tijdstip t komt van POST /api/scenes/frame, en
 // "ook op de strip van dit apparaat" stuurt dezelfde t naar het apparaat (POST espdev/<id>/scene/seek, HUISDEV 1.2); de server voegt die samen.
@@ -255,38 +256,118 @@ function scnForm() {
       ${e.id ? '<button class="btn small danger" type="button" data-sc="scndel">Verwijderen</button>' : ''}</div></div>`;
 }
 
-function scnSection(b) { // de sectie "Scènes" in de zijbalk van een apparaat met scènes
-  const sc = b.scn;
-  if (!sc || !sc.cap) return '';
+function scnSection(q, dev) { // de bibliotheek met formulier, voorbeeld en tijdschuif; `dev` is het apparaat van het blok (mag ontbreken)
   scnLoad(false);
-  const sel = new Map(sc.sel.map((s) => [s.id, s]));
-  const run = sc.run;
+  const sc = dev && dev.scn && dev.scn.cap ? dev.scn : null;
+  const sel = new Map((sc ? sc.sel : []).map((s) => [s.id, s]));
+  const used = new Map();
+  q.rules.forEach((r, n) => used.set(r.scene, [...(used.get(r.scene) || []), n + 1]));
+  const run = sc ? sc.run : null;
   const held = run && run.seek !== null && run.seek !== undefined ? run.seek : null; // het apparaat toont een beeld uit de tijdschuif
-  const status = !b.online ? 'het apparaat is offline' : held !== null ? `toont een beeld uit de tijdschuif${run.name ? ` (${esc(run.name)})` : ''} op ${scnClock(held)}` : run ? `speelt: ${esc(run.name || (run.slot ? `slot ${run.slot}` : 'een scène'))}${run.until ? `, tot ${scnTime(run.until)}` : ''}` : 'speelt niets';
-  if (sc.cap.seek) SCN.dev = b.id;
-  const liveBox = sc.cap.seek
-    ? `<label class="chk" title="Elke beweging van een tijdschuif toont dat beeld ook op de echte strip en houdt het vast (hoogstens 5 minuten, of tot je dit uitzet)"><input type="checkbox" id="scnlive" data-sklive="1" ${SCN.live ? 'checked' : ''} ${b.online ? '' : 'disabled'}> ook op de strip van dit apparaat</label>
+  const status = !sc ? 'kies hierboven een apparaat met scènes om ze te spelen' : !dev.online ? 'het apparaat is offline' : held !== null ? `toont een beeld uit de tijdschuif${run.name ? ` (${esc(run.name)})` : ''} op ${scnClock(held)}` : run ? `speelt: ${esc(run.name || (run.slot ? `slot ${run.slot}` : 'een scène'))}${run.until ? `, tot ${scnTime(run.until)}` : ''}` : 'speelt niets';
+  if (sc && sc.cap.seek) SCN.dev = dev.id;
+  const liveBox = sc && sc.cap.seek
+    ? `<label class="chk" title="Elke beweging van een tijdschuif toont dat beeld ook op de echte strip en houdt het vast (hoogstens 5 minuten, of tot je dit uitzet)"><input type="checkbox" id="scnlive" data-sklive="1" ${SCN.live ? 'checked' : ''} ${dev.online ? '' : 'disabled'}> ook op de strip van dit apparaat</label>
       <div class="sub" id="scnskinfo">${esc(SCN.skinfo || (held !== null ? `apparaat toont: ${scnClock(held)}` : ''))}</div>`
-    : '<div class="sub">Dit apparaat kan niet door een scène scrollen (firmware ouder dan 1.2): de tijdschuif toont alleen het beeld hier op de pagina.</div>';
+    : sc ? '<div class="sub">Dit apparaat kan niet door een scène scrollen (firmware ouder dan 1.2): de tijdschuif toont alleen het beeld hier op de pagina.</div>' : '';
+  const online = sc && dev.online;
   const rows = SCN.lib.map((s) => {
-    const on = sel.get(s.id), extra = [on ? (SCN_STATE[on.state] || '') + (on.slot ? ` (slot ${on.slot})` : '') : 'niet op dit apparaat', s.bytes ? `${s.bytes} bytes` : 'compileert niet',
+    const on = sel.get(s.id), where = used.get(s.id);
+    const extra = [where ? `regel ${where.join(', ')}` : 'in geen enkele regel', on ? (SCN_STATE[on.state] || '') + (on.slot ? ` (slot ${on.slot})` : '') : '', s.bytes ? `${s.bytes} bytes` : 'compileert niet',
       s.bounded && s.total_ms ? scnDur(s.total_ms) : s.bounded === false ? 'loopt tot stop' : ''].filter(Boolean).join(' · ');
     const slide = s.bytes ? `<div class="scnscrub">${scnSlider(s.id, s.window_ms || 0)}</div>` : '';
-    return `<div class="scnrow"><label class="chk" title="Zet deze scène op dit apparaat: een slot en een rij met een ingang op het blok"><input type="checkbox" data-scsel="${esc(s.id)}" ${on ? 'checked' : ''}> <b>${esc(s.name)}</b></label>
+    return `<div class="scnrow"><b>${esc(s.name)}</b>
       <span class="sub">${esc(extra)}</span>
-      <span class="scnbtns"><button class="btn small" type="button" data-sc="scnplay" data-id="${esc(b.id)}" data-s="${esc(s.id)}" title="Nu spelen" ${b.online ? '' : 'disabled'}>▶</button><button class="btn small" type="button" data-sc="scnstop" data-id="${esc(b.id)}" data-s="${esc(s.id)}" title="Stoppen (alleen als deze scène speelt)" ${b.online ? '' : 'disabled'}>■</button><button class="btn small" type="button" data-sc="scnedit" data-s="${esc(s.id)}">Wijzig</button></span>
+      <span class="scnbtns"><button class="btn small" type="button" data-sc="scnplay" data-id="${esc(dev ? dev.id : '')}" data-s="${esc(s.id)}" title="Nu spelen" ${online ? '' : 'disabled'}>▶</button><button class="btn small" type="button" data-sc="scnstop" data-id="${esc(dev ? dev.id : '')}" data-s="${esc(s.id)}" title="Stoppen (alleen als deze scène speelt)" ${online ? '' : 'disabled'}>■</button><button class="btn small" type="button" data-sc="scnedit" data-s="${esc(s.id)}">Wijzig</button></span>
       ${slide}${on && on.note ? `<div class="sub scnnote">${esc(on.note)}</div>` : ''}${on && on.sched_note ? `<div class="sub scnnote">${esc(on.sched_note)}</div>` : ''}</div>`;
   }).join('');
-  const sched = sc.sched.map((e) => `<div class="sub">${esc(scnDay(e.at))} · ${esc(e.name || `slot ${e.slot}`)}</div>`).join('');
-  return `<h2>Scènes</h2><div class="sub">${status}. ${sc.cap.slots} slots, scènes tot ${sc.cap.max_bytes} bytes.${sc.note ? ` ${esc(sc.note)}` : ''}</div>${liveBox}
-    ${rows || '<div class="sub">Nog geen scènes. Maak er een: kies een soort, geef hem een naam en zet hem op dit apparaat.</div>'}
+  const sched = (sc ? sc.sched : []).map((e) => `<div class="sub">${esc(scnDay(e.at))} · ${esc(e.name || `slot ${e.slot}`)}</div>`).join('');
+  return `<h2>Scènes</h2><div class="sub">${status}.${sc ? ` ${sc.cap.slots} slots, scènes tot ${sc.cap.max_bytes} bytes.${sc.note ? ` ${esc(sc.note)}` : ''}` : ''}</div>${liveBox}
+    ${rows || '<div class="sub">Nog geen scènes. Maak er een: kies een soort en geef hem een naam. Daarna zet je hem in een regel hierboven.</div>'}
     <div class="row" style="margin-top:6px"><button class="btn small" type="button" data-sc="scnnew">Nieuwe scène</button></div>
     ${scnForm()}
-    <div class="sub" style="margin-top:6px"><b>Gepland op het apparaat</b> (lokale tijd)</div>${sched || '<div class="sub">Geen geplande starts. Sluit op de ingang van een scène een timer aan: het apparaat krijgt dan de eerstvolgende starts vooruit en start ook zonder verbinding.</div>'}`;
+    ${sc ? `<div class="sub" style="margin-top:6px"><b>Gepland op het apparaat</b> (lokale tijd)</div>${sched || '<div class="sub">Geen geplande starts. Een regel met alleen een timer (of een wekker op een timer) wordt vooruit naar het apparaat gestuurd: het start dan ook zonder verbinding.</div>'}` : ''}`;
 }
 
-function scnHint(b) { // onder de ingangen
-  return b.scn && b.scn.cap ? '<div class="sub">Een <b>scène</b> (▶) start als de bron van <b>0 naar 1</b> gaat en stopt als ze naar 0 gaat, of loopt uit (naar keuze per scène). Een start wacht hoogstens 60 seconden op een apparaat dat niet bereikbaar is; een stop blijft staan tot het apparaat terug is. Is de bron een <b>timer</b>, dan krijgt het apparaat de komende starts vooraf en doet de wekker het ook als de add-on of het netwerk weg is.</div>' : '';
+function scnPointer(b) { // in de zijbalk van het apparaat: waar de scènes nu staan
+  if (!b.scn || !b.scn.cap) return '';
+  const q = scBlocks().find((x) => x.kind === 'scenes' && x.device === b.id);
+  return `<h2>Scènes</h2><div class="sub">${q ? `Dit apparaat kan scènes afspelen. Welke scène wanneer start, staat in het blok <a href="#" data-sc="go" data-k="${esc(q.key)}">${esc(q.name)}</a>.`
+    : 'Dit apparaat kan scènes afspelen. Maak een blok <b>Scènes</b> (+ Module → Routines) om te kiezen welke scène wanneer start.'}</div>`;
+}
+
+// ---------------------------------------------------------------- de ingangen en regels van een blok Scènes
+
+const SCQ_OPS = [['on', 'is 1'], ['off', 'is 0'], ['between', 'tijd tussen'], ['after', 'tijd na'], ['before', 'tijd voor'], ['wake', 'wekker']];
+const SCQ_NEED = { on: ['in:bool'], off: ['in:bool'], after: ['in:time'], before: ['in:time'], between: ['from:time', 'to:time'], wake: ['in:any'] };
+
+const scqBlock = () => { const b = SC.sel && scBlock(SC.sel); return b && b.kind === 'scenes' ? b : null; };
+const scqRules = (b) => b.rules.map((r) => ({ scene: r.scene, when: r.when.map((c) => ({ ...c })) }));
+const scqInputs = (b) => b.defs.map((i) => ({ id: i.id, name: i.name, kind: i.kind, ref: i.ref }));
+
+function scqSave(b, patch) { // elke wijziging gaat meteen naar de server; een weigering komt als melding en de zijbalk toont weer wat er echt staat
+  return act(async () => {
+    try { await api('PUT', `scenerules/${b.id}`, patch); } finally { SC.force = true; await refresh(); }
+  })();
+}
+
+function scqSources(kind) { // de bronnen die op een ingang van deze soort passen
+  const same = (s) => ({ key: s.key, name: s.name, out: scOut(s) });
+  return kind === 'bool' ? [...scBlocks().filter((s) => s.kind === 'timer' || (s.kind === 'module' && s.out === 'bool')).map(same), ...scAcOuts('bool')]
+    : [...scBlocks().filter((s) => s.kind === 'module' && s.out === 'time').map(same), ...scAcOuts('time')];
+}
+
+function scqCond(b, r, n, c, k) { // een voorwaarde als regel met keuzelijsten
+  const at = `data-qr="${n}" data-qc="${k}"`;
+  const pick = (field, want) => {
+    const list = b.defs.filter((i) => want === 'any' || i.kind === want);
+    return `<select ${at} data-qf="${field}"><option value="">kies een ingang</option>${list.map((i) => `<option value="${esc(i.id)}" ${i.id === c[field] ? 'selected' : ''}>${esc(i.name)}</option>`).join('')}</select>`;
+  };
+  const num = (field, label, min, max) => `<label class="chk">${label} <input type="number" ${at} data-qf="${field}" min="${min}" max="${max}" step="1" value="${esc(c[field])}" style="width:64px"></label>`;
+  const inp = b.defs.find((i) => i.id === c.in);
+  let body = '';
+  if (c.op === 'between') body = `${pick('from', 'time')} en ${pick('to', 'time')}`;
+  else if (c.op === 'wake') body = `${pick('in', 'any')} ${num('before', 'min ervoor', 0, 720)}${inp && inp.kind === 'time' ? ` ${num('hold', 'min erna', 1, 720)}` : ''}`;
+  else body = pick('in', c.op === 'on' || c.op === 'off' ? 'bool' : 'time');
+  return `<div class="row qcond"><select ${at} data-qf="op">${SCQ_OPS.map((o) => `<option value="${o[0]}" ${o[0] === c.op ? 'selected' : ''}>${esc(o[1])}</option>`).join('')}</select> ${body}
+    <button class="btn small" type="button" data-sc="qdelcond" data-r="${n}" data-c="${k}" title="Voorwaarde weghalen">✕</button></div>`;
+}
+
+function scqRule(b, r, n) {
+  const sceneOpt = SCN.lib.map((s) => `<option value="${esc(s.id)}" ${s.id === r.scene ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
+  const missing = SCN.lib.some((s) => s.id === r.scene) ? '' : `<option value="${esc(r.scene)}" selected>${esc(r.scene_name)}</option>`;
+  const on = b.rules[n] && b.rules[n].on;
+  return `<div class="qrule ${on ? 'qon' : ''}"><div class="row"><b>${n + 1}.</b> dan scène <select data-qr="${n}" data-qf="scene">${missing}${sceneOpt}</select>${on ? '<span class="badge ok">klopt nu</span>' : ''}
+      <span class="scnbtns"><button class="btn small" type="button" data-sc="qup" data-r="${n}" ${n ? '' : 'disabled'} title="Eerder">↑</button><button class="btn small" type="button" data-sc="qdown" data-r="${n}" ${n < b.rules.length - 1 ? '' : 'disabled'} title="Later">↓</button><button class="btn small danger" type="button" data-sc="qdelrule" data-r="${n}" title="Regel weghalen">✕</button></span></div>
+    <div class="sub">als</div>${r.when.map((c, k) => scqCond(b, r, n, c, k)).join('')}
+    <div class="row"><button class="btn small" type="button" data-sc="qaddcond" data-r="${n}">+ voorwaarde</button></div></div>`;
+}
+
+function scScenesPanel(b, props) {
+  scnLoad(false);
+  const dev = scBlocks().find((x) => x.kind === 'espdev' && x.id === b.device) || null;
+  const taken = new Set(scBlocks().filter((x) => x.kind === 'scenes' && x.key !== b.key).map((x) => x.device));
+  const devs = scBlocks().filter((x) => x.kind === 'espdev' && x.driver === 'huisdev' && x.scn && (x.scn.cap || x.id === b.device));
+  const devSel = `<label>Ledstrip (apparaat met scènes)</label><select data-qdev="1"><option value="">geen apparaat</option>${devs.map((x) => `<option value="${esc(x.id)}" ${x.id === b.device ? 'selected' : ''} ${taken.has(x.id) ? 'disabled' : ''}>${esc(x.name)}${taken.has(x.id) ? ' (heeft al een blok)' : ''}${x.scn.cap ? '' : ' (meldt geen scènes)'}</option>`).join('')}</select>`;
+  const ins = b.defs.map((i, k) => {
+    const list = scqSources(i.kind), cur = i.ref && !list.some((x) => x.key === i.ref) ? scSrc(i.ref) : null;
+    const all = cur ? [{ ...cur, key: i.ref }, ...list] : list;
+    return `<div class="row qin"><input type="text" maxlength="60" data-qin="name" data-i="${k}" value="${esc(i.name)}" style="width:110px">
+      <select data-qin="kind" data-i="${k}"><option value="bool" ${i.kind === 'bool' ? 'selected' : ''}>0/1</option><option value="time" ${i.kind === 'time' ? 'selected' : ''}>tijd</option></select>
+      <select data-qin="ref" data-i="${k}"><option value="">niet aangesloten</option>${all.map((x) => `<option value="${esc(x.key)}" ${x.key === i.ref ? 'selected' : ''}>${esc(x.name)} (nu ${esc(x.out)})</option>`).join('')}</select>
+      <button class="btn small danger" type="button" data-sc="qdelin" data-i="${k}" title="Ingang weghalen (mag niet als een regel hem gebruikt)">✕</button></div>`;
+  }).join('');
+  const status = !b.device ? 'Kies een apparaat.' : !b.ready ? 'Het apparaat meldt (nog) geen scènes: het blok wacht.' : b.active ? `Kiest nu: <b>${esc(b.active_name)}</b> (regel ${b.active_rule + 1}).` : b.unsure ? 'Een ingang heeft geen waarde: er klopt geen regel en het blok laat alles zoals het was.' : 'Geen regel klopt: geen scène.';
+  return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.ready ? 'ok' : ''}">${b.ready ? (b.online ? 'verbonden' : 'offline') : 'wacht'}</span></div>
+    <div class="sub">Kiest welke scène een ledstrip speelt. De regels gaan van boven naar onder: de <b>eerste regel waarvan alle voorwaarden kloppen</b> bepaalt de scène. ${status}</div>${props}
+    ${devSel}
+    <h2>Ingangen</h2>${ins || '<div class="sub">Nog geen ingangen. Een ingang is een 0/1 (een timer of module) of een tijd (een module, bv. Vaste tijd of Zonsopgang). Je kunt ze ook op het blok zelf aansluiten door te slepen.</div>'}
+    <div class="row" style="margin-top:6px"><button class="btn small" type="button" data-sc="qaddin">+ Ingang</button></div>
+    <h2>Regels</h2>${b.rules.map((r, n) => scqRule(b, r, n)).join('') || '<div class="sub">Nog geen regels.</div>'}
+    <div class="row" style="margin-top:6px"><button class="btn small" type="button" data-sc="qaddrule" ${b.defs.length && SCN.lib.length ? '' : 'disabled'}>+ Regel</button>${b.defs.length ? '' : '<span class="sub">maak eerst een ingang</span>'}</div>
+    <div class="sub"><b>Een wekker</b> start de scène een aantal minuten <i>voor</i> de wekkertijd en laat hem lopen tot een aantal minuten erna. Is de ingang een <b>timer</b>, dan telt de timer die minuten eerder (en stopt hij ook eerder); alleen dan en alleen als de regel verder niets vraagt, krijgt het apparaat de komende starts vooraf en start de wekker ook als de add-on of het netwerk weg is. Een scène start meteen als de keuze verandert; een scène die niet meer geldt stopt alleen als ze zo is ingesteld (anders loopt ze uit). Een start wacht hoogstens 60 seconden op een apparaat dat niet bereikbaar is. Na een herstart of een wijziging van het blok onthoudt het alleen de stand en start het niets.</div>
+    ${scnSection(b, dev)}
+    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="delscenes" data-id="${esc(b.id)}">Blok verwijderen</button></div>`;
 }
 
 function scnEditorOpens() { // een nieuwe of andere scène in het formulier: de schuif begint weer bij 0
@@ -320,26 +401,48 @@ Object.assign(SC_ACTIONS, {
   },
   scncancel: () => { scnEditorCloses(); SCN.ed = null; SC.force = true; render(); },
   scnsave: async () => {
-    const e = SCN.ed, b = scBlock(SC.sel);
-    if (!e || !b) return;
+    const e = SCN.ed;
+    if (!e) return;
     const body = { name: e.name, def: scnDef(e), release: e.release };
     if (e.id) await api('PUT', `scenes/${e.id}`, body);
-    else {
-      const r = await api('POST', 'scenes', body);
-      if (b.scn && b.scn.cap) await api('PUT', `espdev/${b.id}/scenes`, { scenes: [...b.scn.sel.map((s) => s.id), r.id] }); // een nieuwe scène staat meteen op dit apparaat
-    }
+    else await api('POST', 'scenes', body);
     scnEditorCloses();
     SCN.ed = null;
-    toast(e.id ? 'Scène bewaard.' : 'Scène gemaakt en op dit apparaat gezet.', 3000);
+    toast(e.id ? 'Scène bewaard.' : 'Scène gemaakt. Zet hem in een regel om hem te laten starten.', 4000);
     await scnReload();
   },
   scndel: async () => {
     const e = SCN.ed;
-    if (!e || !e.id || !confirm(`De scène "${e.name}" verwijderen? Ze verdwijnt van elk apparaat en haar ingang wordt losgekoppeld.`)) return;
+    if (!e || !e.id || !confirm(`De scène "${e.name}" verwijderen? Ze verdwijnt van elk apparaat en haar regels worden weggehaald.`)) return;
     await api('DELETE', `scenes/${e.id}`);
     scnEditorCloses();
     SCN.ed = null;
     await scnReload();
+  },
+  qaddin: () => { const b = scqBlock(); if (b) return scqSave(b, { inputs: [...scqInputs(b), { name: `Ingang ${b.defs.length + 1}`, kind: 'bool', ref: null }] }); },
+  qdelin: (d) => { const b = scqBlock(); if (b) return scqSave(b, { inputs: scqInputs(b).filter((_, k) => k !== +d.i) }); },
+  qaddrule: () => {
+    const b = scqBlock();
+    if (!b || !b.defs.length || !SCN.lib.length) return;
+    const i = b.defs[0];
+    return scqSave(b, { rules: [...scqRules(b), { scene: SCN.lib[0].id, when: [i.kind === 'bool' ? { op: 'on', in: i.id } : { op: 'after', in: i.id }] }] });
+  },
+  qdelrule: (d) => { const b = scqBlock(); if (b) return scqSave(b, { rules: scqRules(b).filter((_, n) => n !== +d.r) }); },
+  qup: (d) => { const b = scqBlock(), n = +d.r, rules = b && scqRules(b); if (b && n > 0) { [rules[n - 1], rules[n]] = [rules[n], rules[n - 1]]; return scqSave(b, { rules }); } },
+  qdown: (d) => { const b = scqBlock(), n = +d.r, rules = b && scqRules(b); if (b && n < rules.length - 1) { [rules[n + 1], rules[n]] = [rules[n], rules[n + 1]]; return scqSave(b, { rules }); } },
+  qaddcond: (d) => {
+    const b = scqBlock();
+    if (!b || !b.defs.length) return;
+    const rules = scqRules(b), i = b.defs[0];
+    rules[+d.r].when.push(i.kind === 'bool' ? { op: 'on', in: i.id } : { op: 'after', in: i.id });
+    return scqSave(b, { rules });
+  },
+  qdelcond: (d) => {
+    const b = scqBlock();
+    if (!b) return;
+    const rules = scqRules(b);
+    rules[+d.r].when.splice(+d.c, 1);
+    return scqSave(b, { rules }); // een regel zonder voorwaarden weigert de server: haal dan de regel weg
   },
   scnplay: async (d) => {
     try {
@@ -379,12 +482,31 @@ document.addEventListener('change', (ev) => {
     SC.force = true;
     render();
     scnPreviewSoon();
-  } else if (t.dataset.scsel !== undefined && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'espdev') {
-    const b = scBlock(SC.sel), checked = [...document.querySelectorAll('[data-scsel]')].filter((x) => x.checked).map((x) => x.dataset.scsel);
-    const have = (b.scn ? b.scn.sel : []).map((s) => s.id), scenes = [...have.filter((i) => checked.includes(i)), ...checked.filter((i) => !have.includes(i))];
-    act(async () => {
-      try { await api('PUT', `espdev/${b.id}/scenes`, { scenes }); } finally { SC.force = true; await refresh(); }
-    })();
+  } else if (t.dataset.qdev !== undefined && scqBlock()) {
+    scqSave(scqBlock(), { device: t.value });
+  } else if (t.dataset.qin && scqBlock()) { // een ingang: naam, soort of bron
+    const q = scqBlock(), ins = scqInputs(q), i = ins[+t.dataset.i], f = t.dataset.qin;
+    if (!i) return;
+    if (f === 'name') i.name = t.value.trim() || i.name;
+    else if (f === 'kind') { i.kind = t.value; i.ref = null; } // een bron van de andere soort past niet
+    else i.ref = t.value || null;
+    scqSave(q, { inputs: ins });
+  } else if (t.dataset.qr !== undefined && t.dataset.qf && scqBlock()) { // een regel of een voorwaarde
+    const q = scqBlock(), rules = scqRules(q), r = rules[+t.dataset.qr], f = t.dataset.qf;
+    if (!r) return;
+    if (f === 'scene') r.scene = t.value;
+    else {
+      const c = r.when[+t.dataset.qc];
+      if (!c) return;
+      if (f === 'op') {
+        const first = (kind) => (q.defs.find((i) => i.kind === kind) || q.defs[0] || {}).id || '';
+        const need = SCQ_NEED[t.value];
+        r.when[+t.dataset.qc] = t.value === 'between' ? { op: 'between', from: first('time'), to: first('time') } : t.value === 'wake' ? { op: 'wake', in: first('time'), before: 0, hold: 60 }
+          : { op: t.value, in: first(need[0].split(':')[1]) };
+      } else if (f === 'before' || f === 'hold') c[f] = Math.round(Number(t.value));
+      else c[f] = t.value;
+    }
+    scqSave(q, { rules });
   }
 });
 
@@ -401,6 +523,8 @@ setInterval(() => { if (SCN.live && !document.getElementById('scnlive')) scnLive
     + ' .scnform { margin-top: 6px; padding: 6px 0; } .scnform textarea { width: 100%; font-family: monospace; font-size: 12px; } .scnprev { width: 100%; max-height: 190px; image-rendering: pixelated; background: #000; display: block; border-radius: 4px; }'
     + ' .scnprevwrap { position: relative; } .scnmark { position: absolute; left: 0; right: 0; height: 0; border-top: 2px solid #fff; mix-blend-mode: difference; pointer-events: none; }'
     + ' .scnscrub { flex-basis: 100%; } .scnsk { display: flex; align-items: center; gap: 8px; margin-top: 4px; } .scnrange { flex: 1; width: auto; } .scnclock { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; }'
-    + ' .scnstrip { height: 12px; border-radius: 3px; background: #000; margin-top: 3px; }';
+    + ' .scnstrip { height: 12px; border-radius: 3px; background: #000; margin-top: 3px; }'
+    + ' .qin, .qcond, .qrule > .row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 3px 0; } .qin select, .qin input[type=text], .qcond select { width: auto; flex: 1 1 110px; min-width: 0; }'
+    + ' .qrule { border: 1px solid var(--line, #ddd); border-radius: 6px; padding: 4px 8px; margin: 6px 0; } .qrule.qon { border-color: #2a8; } .qrule select[data-qf=scene] { width: auto; flex: 1 1 140px; } .qrule .scnbtns { margin-left: auto; display: flex; gap: 4px; }';
   document.head.appendChild(st);
 })();

@@ -358,6 +358,7 @@ class EspDevHub:
         engine.espdev_view = self.status
         engine.espdev_found = self.found_view
         engine.espdev_value = self.output
+        engine.scenerules_view = self.scn.rules_view
         engine.hue_view = self.hue_view
         engine.nuki_view = self.nuki_view
         engine.brink_view = self.brink_view
@@ -560,13 +561,6 @@ class EspDevHub:
         new = dict(dev["inputs"])
         m = self.engine.model
         for pid, ref in b.items():
-            if isinstance(pid, str) and pid.startswith(scenehub.KEY):  # een scène (scenehub.py): een 0/1-bron start hem
-                if ref in (None, ""):
-                    new.pop(pid, None)
-                else:
-                    self.scn.check_input(did, dev, pid, ref)
-                    new[pid] = ref
-                continue
             act = self._wired_action(dev, pid) if isinstance(pid, str) else None
             p = {"id": pid, "label": act["label"], "kind": "bool", "writable": True, "danger": False} if act else self._by_id(dev, pid) if isinstance(pid, str) else None
             if ref in (None, ""):
@@ -2639,9 +2633,6 @@ class EspDevHub:
         for did, dev in self.devices.items():
             mem = self.seen.setdefault(did, {})
             for pid, ref in list(dev["inputs"].items()):
-                if pid.startswith(scenehub.KEY):  # een scène: een eigen tak met een eigen verzender (scenehub.py)
-                    self.scn.tick_input(did, dev, pid, ref, mem)
-                    continue
                 act = self._wired_action(dev, pid)
                 if act is not None:
                     self._tick_action(did, dev, pid, act, ref, mem, now)
@@ -2667,6 +2658,7 @@ class EspDevHub:
                     continue
                 self._inflight.add((did, pid))
                 asyncio.get_running_loop().create_task(self._send_input(did, pid, p, v))
+        self.scn.tick_rules()  # de blokken Scènes: welke scène hoort nu te spelen (scenehub.py)
 
     @staticmethod
     def _wired_action(dev: dict, key: str) -> dict | None:

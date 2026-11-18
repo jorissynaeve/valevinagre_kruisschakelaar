@@ -119,6 +119,29 @@ def switch(r):
     return (lambda on: r.model.set_module(n, value=1 if on else 0)), f"m:{hi}"
 
 
+def wire(hub, did, sid, ref):
+    """Een scène starten door een 0/1-bron (zoals voor 0.45 een ingang op het apparaatblok): een blok Scènes bij dit apparaat met een ingang en de regel `ingang = 1`
+    voor deze scène. `ref` None haalt de ingang en de regel weg."""
+    sh = hub.scn
+    bid = sh.rules.device_owner().get(did) or sh.add_block({"name": "Test", "device": did})
+    sh.update_block(bid, {"rules": [r for r in sh.rules.items[bid]["rules"] if r["scene"] != sid]})
+    ins = [i for i in sh.rules.items[bid]["inputs"] if i["name"] != sid]
+    if ref:
+        ins.append({"name": sid, "kind": "bool", "ref": ref})
+    sh.update_block(bid, {"inputs": ins})
+    if ref:
+        iid = next(i["id"] for i in sh.rules.items[bid]["inputs"] if i["name"] == sid)
+        sh.update_block(bid, {"rules": sh.rules.items[bid]["rules"] + [{"scene": sid, "when": [{"op": "on", "in": iid}]}]})
+    return bid
+
+
+def mem(hub, did):
+    """Wat de regels de vorige ronde kozen: True (een scène speelt), False (geen) of None (nog geen eerste stand of onbekend)."""
+    bid = hub.scn.rules.device_owner().get(did)
+    m = hub.scn.rmem.get(bid) if bid else None
+    return None if m is None else m["scene"] is not None
+
+
 def calls(esp, op=None):
     return [(o, b) for o, b in esp.scene_calls if op is None or o == op]
 
@@ -187,7 +210,12 @@ def test_a_device_without_scenes_has_no_scene_features(tmp_path, monkeypatch):
             assert not any("/scene/" in c[1] for c in esp.calls)
             v = hub.status()[0]["scn"]
             assert v["cap"] is None and v["sel"] == []
-            assert not [p for p in block(r, f"e:{did}")["ports"] if p["name"].startswith("scene:")]
+            with pytest.raises(ModelError):  # een blok Scènes voor een apparaat dat niet bestaat
+                hub.scn.update_block(hub.scn.add_block({"name": "X"}), {"device": "bestaat_niet"})
+            bid = hub.scn.add_block({"name": "Slaapt", "device": did})
+            assert hub.scn.rules_view()[0]["ready"] is False
+            hub.scn.tick_rules()
+            assert bid not in hub.scn.rmem, "zonder scènes op het apparaat doet het blok niets"
         finally:
             await shutdown(hub, esp)
     asyncio.run(go())
@@ -336,7 +364,6 @@ def test_too_many_scenes_keep_their_row_with_a_message_until_a_slot_is_free(tmp_
             assert "geen vrij slot" in hub.last[did][f"scene:{c}"]
             v = {x["id"]: x for x in hub.status()[0]["scn"]["sel"]}
             assert v[c]["state"] == "noslot" and v[c]["slot"] is None and "geen vrij slot" in v[c]["note"]
-            assert any(p["name"] == f"scene:{c}" for p in block(r, f"e:{did}")["ports"]), "de rij blijft"
             await fill(hub, did, esp)
             assert sorted(esp.slots) == [1, 2]
             hub.scn.select(did, [c, b])  # a weg: c krijgt zijn slot
@@ -353,13 +380,14 @@ def test_scn_survives_a_restart_and_an_old_file_without_it_loads(tmp_path, monke
         r, hub, esp, did, clock = await env(tmp_path, monkeypatch)
         try:
             a, b = (hub.scn.add({"name": n, "def": NIGHT}) for n in ("A", "B"))
-            hub.scn.select(did, [a, b])
             src = switch(r)[1]
-            hub.update(did, {"inputs": {f"scene:{b}": src}})
+            bid = wire(hub, did, b, src)
             hub.close()
             hub2 = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)
-            assert hub2.devices[did]["scn"] == {"sel": [a, b], "slots": {a: 1, b: 2}, "cap": {"formats": ["ledscene/1"], "slots": 8, "max_bytes": 768, "sched": 8}}
-            assert hub2.devices[did]["inputs"] == {f"scene:{b}": src} and sorted(hub2.scn.lib.items) == [a, b]
+            assert hub2.devices[did]["scn"] == {"sel": [b], "slots": {b: 1}, "cap": {"formats": ["ledscene/1"], "slots": 8, "max_bytes": 768, "sched": 8}}
+            assert hub2.devices[did]["inputs"] == {} and sorted(hub2.scn.lib.items) == [a, b]
+            assert hub2.scn.rules.items[bid]["rules"] == [{"scene": b, "when": [{"op": "on", "in": "i1"}]}] and hub2.scn.rules.items[bid]["inputs"][0]["ref"] == src
+            (tmp_path / "scenerules.json").unlink()  # zonder blok kan de selectie uit een oud of stuk bestand niet worden afgeleid
             raw = json.loads((tmp_path / "espdev.json").read_text(encoding="utf-8"))
             for bad in (None, 5, [], {"sel": "x"}, {"sel": ["s1", "s1", "zzz", 7], "slots": {"s1": 99, "zzz": 1}, "cap": "stuk"}):
                 if bad is None:
@@ -372,10 +400,37 @@ def test_scn_survives_a_restart_and_an_old_file_without_it_loads(tmp_path, monke
                 assert set(scn) == {"sel", "slots", "cap"} and scn["slots"] == {} and scn["cap"] is None and scn["sel"] in ([], ["s1"]), bad
             # een scène die uit de bibliotheek is verdwenen (bestand gewist): selectie en bedrading verdwijnen bij het laden
             raw["devices"][did]["scn"] = {"sel": [a, "s9"], "slots": {a: 1, "s9": 2}, "cap": None}
-            raw["devices"][did]["inputs"] = {"scene:s9": src, f"scene:{a}": src}
             (tmp_path / "espdev.json").write_text(json.dumps(raw), encoding="utf-8")
             h4 = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)
-            assert h4.devices[did]["scn"]["sel"] == [a] and h4.devices[did]["inputs"] == {f"scene:{a}": src}
+            assert h4.devices[did]["scn"]["sel"] == [a] and h4.devices[did]["inputs"] == {} and not h4.scn.rules.items
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_scene_inputs_from_before_0_45_become_a_scene_block_with_the_same_behaviour(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await env(tmp_path, monkeypatch)
+        try:
+            a, b, c = (hub.scn.add({"name": n, "def": NIGHT}) for n in ("Nachtlicht", "Wekker", "Zonder bron"))
+            hub.scn.select(did, [a, b, c])
+            tm = r.model.save_timer(None, "Wekker", {"mon": [{"from": "07:00", "to": "08:00"}]})
+            src = switch(r)[1]
+            hub.devices[did]["inputs"].update({f"scene:{a}": src, f"scene:{b}": f"t:{tm}", "scene:s99": src, "brightness": src})  # de oude bedrading, en een ingang van een gewoon punt
+            r.model.set_schema({"pages": [{"id": "p1", "name": "Kamer"}], "blocks": {f"e:{did}": {"page": "p1", "x": 700, "y": 40}}, "switches": {}, "names": {}})
+            hub._save()
+            hub.close()
+            h2 = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)
+            assert h2.devices[did]["inputs"] == {"brightness": src}, "de scène-ingangen zijn weg, een gewone ingang blijft"
+            (bid, blk), = h2.scn.rules.items.items()
+            assert blk["device"] == did and blk["name"] == f"Scènes {h2.devices[did]['name']}"
+            assert [(i["name"], i["kind"], i["ref"]) for i in blk["inputs"]] == [("Nachtlicht", "bool", src), ("Wekker", "bool", f"t:{tm}")]
+            assert blk["rules"] == [{"scene": a, "when": [{"op": "on", "in": "i1"}]}, {"scene": b, "when": [{"op": "on", "in": "i2"}]}], "een scène zonder bron krijgt geen regel"
+            assert h2.devices[did]["scn"]["sel"] == [a, b] and c not in h2.devices[did]["scn"]["slots"]
+            assert r.model.schema["blocks"][f"q:{bid}"] == {"page": "p1", "x": 400, "y": 40}, "het blok staat naast het apparaat"
+            h2.close()
+            h3 = EspDevHub(tmp_path, r.engine, port=0, poll=0.05)
+            assert list(h3.scn.rules.items) == [bid], "opnieuw laden maakt er niet nog een"
         finally:
             await shutdown(hub, esp)
     asyncio.run(go())
@@ -383,32 +438,83 @@ def test_scn_survives_a_restart_and_an_old_file_without_it_loads(tmp_path, monke
 
 # ------------------------------------------------------------ de bedrading en het blok
 
-def test_scene_rows_on_the_block_and_the_wiring_is_checked(tmp_path, monkeypatch):
+def test_the_scene_block_shows_on_the_schema_and_its_inputs_are_checked(tmp_path, monkeypatch):
     async def go():
         r, hub, esp, did, clock = await env(tmp_path, monkeypatch)
         try:
             a, b = hub.scn.add({"name": "Nachtlicht", "def": NIGHT}), hub.scn.add({"name": "Wekker", "def": WAKE})
-            hub.scn.select(did, [a, b])
-            blk = block(r, f"e:{did}")
-            rows = [p for p in blk["ports"] if p["name"].startswith("scene:")]
-            assert [(p["name"], p["label"], p["type"], p["action"], p["scene"], p["ref"]) for p in rows] == [(f"scene:{a}", "Nachtlicht", "bool", True, True, None), (f"scene:{b}", "Wekker", "bool", True, True, None)]
-            assert [p["row"] for p in rows] == [2, 3] and blk["rows"] == 4, "onder de punten (Helderheid en Wekker aan staan op het blok), een rij per scène"
+            assert not [p for p in block(r, f"e:{did}")["ports"] if p["name"].startswith("scene:")], "het apparaatblok heeft geen scène-rijen meer"
+            bid = hub.scn.add_block({"name": "Kidswekker scènes", "device": did, "inputs": [{"name": "Nacht", "kind": "bool"}, {"name": "Wekker", "kind": "time"}]})
+            blk = block(r, f"q:{bid}")
+            assert (blk["kind"], blk["name"], blk["device"], blk["rows"], blk["active"]) == ("scenes", "Kidswekker scènes", did, 3, None)
+            assert [(p["name"], p["label"], p["type"], p["ref"]) for p in blk["ports"]] == [("i1", "Nacht", "bool", None), ("i2", "Wekker", "time", None)]
             tm = r.model.save_timer(None, "Wekker", {"mon": [{"from": "07:00", "to": "08:00"}]})
             n = r.model.add_module("number", "Getal", 5)
-            above = r.model.add_module("above", "Hoog", 1)
-            r.model.set_module(above, inputs={"a": f"m:{n}"})
-            hub.update(did, {"inputs": {f"scene:{a}": f"t:{tm}", f"scene:{b}": f"m:{above}"}})
-            assert [p["ref"] for p in block(r, f"e:{did}")["ports"] if p["name"] == f"scene:{a}"] == [f"t:{tm}"] and hub.devices[did]["inputs"] == {f"scene:{a}": f"t:{tm}", f"scene:{b}": f"m:{above}"}
-            for pid, ref, word in ((f"scene:{a}", f"m:{n}", "een 0 of 1"), (f"scene:{a}", "m:bestaat_niet", "niet bestaat"), (f"scene:{a}", 5, "ongeldige bron"),
-                                   ("scene:s99", f"t:{tm}", "niet op dit apparaat"), (f"scene:{a}", f"e:{did}:armed", "zichzelf")):
+            t7 = r.model.add_module("time", "Zeven", "07:00")
+            hub.scn.update_block(bid, {"refs": {"i1": f"t:{tm}", "i2": f"m:{t7}"}})
+            assert [p["ref"] for p in block(r, f"q:{bid}")["ports"]] == [f"t:{tm}", f"m:{t7}"]
+            for refs, word in (({"i1": f"m:{n}"}, "een 0 of 1"), ({"i2": f"t:{tm}"}, "een tijd"), ({"i1": "m:bestaat_niet"}, "niet bestaat"), ({"i1": 5}, "ongeldige bron"), ({"i9": f"t:{tm}"}, "onbekende ingang")):
                 with pytest.raises(ModelError, match=word):
-                    hub.update(did, {"inputs": {pid: ref}})
-            hub.update(did, {"inputs": {f"scene:{a}": None, f"scene:{b}": ""}})
+                    hub.scn.update_block(bid, {"refs": refs})
+            hub.scn.update_block(bid, {"refs": {"i1": None}})
+            assert hub.scn.rules.items[bid]["inputs"][0]["ref"] is None
+            with pytest.raises(ModelError, match="al een blok Scènes"):
+                hub.scn.add_block({"device": did})
+            with pytest.raises(ModelError, match="onbekend apparaat"):
+                hub.scn.add_block({"device": "bestaat_niet"})
+            # de selectie van het apparaat volgt de regels
+            hub.scn.update_block(bid, {"rules": [{"scene": b, "when": [{"op": "on", "in": "i1"}]}, {"scene": a, "when": [{"op": "wake", "in": "i2"}]}]})
+            assert hub.devices[did]["scn"]["sel"] == [b, a] and hub.devices[did]["scn"]["slots"] == {b: 1, a: 2}
+            hub.scn.update_block(bid, {"rules": [{"scene": a, "when": [{"op": "on", "in": "i1"}]}]})
+            assert hub.devices[did]["scn"]["sel"] == [a] and hub.devices[did]["scn"]["slots"] == {a: 2}, "een slot blijft bij zijn scène, een andere scène verhuist niet"
+            assert hub.scn.delete_block(bid) and hub.devices[did]["scn"]["sel"] == [] and not hub.scn.delete_block(bid)
             assert hub.devices[did]["inputs"] == {}
-            hub.update(did, {"inputs": {f"scene:{a}": f"t:{tm}"}})
-            hub.scn.select(did, [b])  # a van het apparaat: de rij en de bedrading verdwijnen
-            assert hub.devices[did]["inputs"] == {} and [p["name"] for p in block(r, f"e:{did}")["ports"] if p["name"].startswith("scene:")] == [f"scene:{b}"]
-            hub.update(did, {"inputs": {"brightness": f"m:{n}"}})  # een gewoon punt werkt nog
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_rules_are_validated(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await env(tmp_path, monkeypatch)
+        try:
+            a = hub.scn.add({"name": "Nachtlicht", "def": NIGHT})
+            bid = hub.scn.add_block({"device": did, "inputs": [{"name": "Knop", "kind": "bool"}, {"name": "Van", "kind": "time"}, {"name": "Tot", "kind": "time"}]})
+            ok = {"scene": a, "when": [{"op": "on", "in": "i1"}, {"op": "between", "from": "i2", "to": "i3"}]}
+            hub.scn.update_block(bid, {"rules": [ok]})
+            for rule, word in (({"scene": "s99", "when": ok["when"]}, "kies een scène"), ({"scene": a, "when": []}, "minstens een voorwaarde"), ({"scene": a, "when": [{"op": "xx"}]}, "kies een van"),
+                               ({"scene": a, "when": [{"op": "on", "in": "i2"}]}, "geen 0/1"), ({"scene": a, "when": [{"op": "between", "from": "i1", "to": "i3"}]}, "geen tijd"),
+                               ({"scene": a, "when": [{"op": "on", "in": "i9"}]}, "kies een ingang"), ({"scene": a, "when": [{"op": "wake", "in": "i2", "before": 721}]}, "minuten ervoor"),
+                               ({"scene": a, "when": [{"op": "wake", "in": "i2", "hold": 0}]}, "minuten erna"), ({"scene": a, "when": [{"op": "on", "in": "i1"}] * 7}, "maximaal 6")):
+                with pytest.raises(ModelError, match=word):
+                    hub.scn.update_block(bid, {"rules": [ok, rule]})
+            assert hub.scn.rules.items[bid]["rules"] == [ok], "een weigering verandert niets"
+            with pytest.raises(ModelError, match="maximaal 24"):
+                hub.scn.update_block(bid, {"rules": [ok] * 25})
+            with pytest.raises(ModelError):  # een ingang die een regel gebruikt kan niet van soort veranderen of weg
+                hub.scn.update_block(bid, {"inputs": [{"id": "i1", "kind": "time"}, {"id": "i2"}, {"id": "i3"}]})
+            with pytest.raises(ModelError):
+                hub.scn.update_block(bid, {"inputs": [{"id": "i2"}, {"id": "i3"}]})
+            hub.scn.update_block(bid, {"inputs": [{"id": "i1", "name": "Anders"}, {"id": "i2"}, {"id": "i3"}, {"name": "Nieuw", "kind": "time"}]})
+            assert [i["id"] for i in hub.scn.rules.items[bid]["inputs"]] == ["i1", "i2", "i3", "i4"] and hub.scn.rules.items[bid]["inputs"][0]["name"] == "Anders"
+            hub.scn.update_block(bid, {"inputs": [{"id": "i1"}, {"id": "i2"}, {"id": "i3"}]})
+            hub.scn.update_block(bid, {"inputs": [{"id": "i1"}, {"id": "i2"}, {"id": "i3"}, {"name": "Weer"}]})
+            assert hub.scn.rules.items[bid]["inputs"][-1]["id"] == "i5", "ids worden nooit hergebruikt"
+            # een wekker op een 0/1 vroeger laten beginnen kan alleen met een timer
+            tm = r.model.save_timer(None, "Wekker", {"mon": [{"from": "07:00", "to": "08:00"}]})
+            n = r.model.add_module("number", "Getal", 5)
+            hi = r.model.add_module("above", "Hoog", 0.5)
+            r.model.set_module(hi, inputs={"a": f"m:{n}"})
+            hub.scn.update_block(bid, {"refs": {"i1": f"m:{hi}"}})
+            with pytest.raises(ModelError, match="alleen met een timer"):
+                hub.scn.update_block(bid, {"rules": [{"scene": a, "when": [{"op": "wake", "in": "i1", "before": 10}]}]})
+            hub.scn.update_block(bid, {"refs": {"i1": f"t:{tm}"}})
+            hub.scn.update_block(bid, {"rules": [{"scene": a, "when": [{"op": "wake", "in": "i1", "before": 10}]}]})
+            with pytest.raises(ModelError, match="alleen met een timer"):
+                hub.scn.update_block(bid, {"refs": {"i1": f"m:{hi}"}})
+            # een scène weghalen haalt haar regels weg
+            hub.scn.delete(a)
+            assert hub.scn.rules.items[bid]["rules"] == [] and hub.devices[did]["scn"]["sel"] == []
         finally:
             await shutdown(hub, esp)
     asyncio.run(go())
@@ -568,7 +674,7 @@ async def wired(tmp_path, monkeypatch, release="stop", **kw):
     sid = hub.scn.add({"name": "Nachtlicht", "def": NIGHT, "release": release})
     hub.scn.select(did, [sid])
     setter, src = switch(r)
-    hub.update(did, {"inputs": {f"scene:{sid}": src}})
+    wire(hub, did, sid, src)
     return r, hub, esp, did, clock, sid, setter
 
 
@@ -581,7 +687,7 @@ def test_first_value_is_only_remembered_then_0_to_1_starts_from_the_slot(tmp_pat
             hub.tick()
             hub.tick()
             await asyncio.sleep(0.05)
-            assert calls(esp, "play") == [] and hub.seen[did][f"scene:{sid}"] is True, "de eerste stand wordt alleen onthouden: een herstart start niets"
+            assert calls(esp, "play") == [] and mem(hub, did) is True, "de eerste stand wordt alleen onthouden: een herstart start niets"
             setter(False)
             hub.tick()
             await asyncio.sleep(0.05)
@@ -612,17 +718,17 @@ def test_after_unknown_the_next_value_is_a_first_value_again(tmp_path, monkeypat
             n = r.model.add_module("number", "Waarde", 0)
             above = r.model.add_module("above", "Hoog", 0.5)
             r.model.set_module(above, inputs={"a": f"m:{n}"})
-            hub.update(did, {"inputs": {f"scene:{sid}": f"m:{above}"}})
+            wire(hub, did, sid, f"m:{above}")
             hub.tick()
-            assert hub.seen[did][f"scene:{sid}"] is False
+            assert mem(hub, did) is False
             r.model.set_module(above, inputs={"a": None})  # de bron wordt onbekend
             hub.tick()
-            assert f"scene:{sid}" not in hub.seen[did]
+            assert mem(hub, did) is None, "onbekend en geen regel die klopt: niets onthouden"
             r.model.set_module(n, value=1)
             r.model.set_module(above, inputs={"a": f"m:{n}"})
             hub.tick()
             await asyncio.sleep(0.05)
-            assert hub.seen[did][f"scene:{sid}"] is True and calls(esp) == [], "alleen onthouden"
+            assert mem(hub, did) is True and calls(esp) == [], "alleen onthouden"
         finally:
             await shutdown(hub, esp)
     asyncio.run(go())
@@ -856,26 +962,26 @@ def test_a_failure_does_not_wait_forever(tmp_path, monkeypatch):
     asyncio.run(go())
 
 
-def test_wiring_of_a_device_without_scenes_sleeps_and_wakes_up_again(tmp_path, monkeypatch):
+def test_the_rules_of_a_device_without_scenes_sleep_and_wake_up_again(tmp_path, monkeypatch):
     async def go():
         r, hub, esp, did, clock, sid, setter = await wired(tmp_path, monkeypatch, manual=False)
         try:
-            key = f"scene:{sid}"
+            bid = hub.scn.rules.device_owner()[did]
             hub.tick()
             esp.scene_cap = None  # het device verliest zijn scènes (firmware zonder)
             await eventually(lambda: hub.devices[did]["scn"]["cap"] is None)
-            assert hub.devices[did]["inputs"][key] and hub.devices[did]["scn"]["sel"] == [sid], "de bedrading blijft bewaard"
-            assert not [p for p in block(r, f"e:{did}")["ports"] if p["name"] == key], "maar slapend: geen rij"
+            assert hub.scn.rules.items[bid]["rules"] and hub.devices[did]["scn"]["sel"] == [sid], "de regels blijven bewaard"
+            assert hub.scn.rules_view()[0]["ready"] is False, "maar slapend"
             n = len(esp.scene_calls)
             setter(True)
             hub.tick()
             await asyncio.sleep(0.2)
-            assert len(esp.scene_calls) == n and key not in hub.seen[did], "geen scenefunctionaliteit"
+            assert len(esp.scene_calls) == n and bid not in hub.scn.rmem, "geen scenefunctionaliteit"
             esp.scenes()
             await eventually(lambda: hub.devices[did]["scn"]["cap"] is not None)
-            assert hub.devices[did]["scn"]["slots"] == {sid: 1} and [p["name"] for p in block(r, f"e:{did}")["ports"] if p["name"] == key]
+            assert hub.devices[did]["scn"]["slots"] == {sid: 1} and hub.scn.rules_view()[0]["ready"] is True
             hub.tick()
-            assert hub.seen[did][key] is True and not calls(esp, "play"), "de eerste stand na het terugkomen wordt alleen onthouden"
+            assert mem(hub, did) is True and not calls(esp, "play"), "de eerste stand na het terugkomen wordt alleen onthouden"
         finally:
             await shutdown(hub, esp)
     asyncio.run(go())
@@ -1003,7 +1109,7 @@ async def alarm(tmp_path, monkeypatch, days=None, **kw):
     tm = r.model.save_timer(None, "Schooldagen", days or {d: [{"from": "07:00", "to": "08:00"}] for d in ("mon", "tue", "wed", "thu", "fri")})
     sid = hub.scn.add({"name": "Wekker", "def": WAKE, "release": "finish"})
     hub.scn.select(did, [sid])
-    hub.update(did, {"inputs": {f"scene:{sid}": f"t:{tm}"}})
+    wire(hub, did, sid, f"t:{tm}")
     return r, hub, esp, did, clock, sid, tm
 
 
@@ -1061,8 +1167,7 @@ def test_the_schedule_of_all_scenes_goes_in_one_sorted_list(tmp_path, monkeypatc
         try:
             tm2 = r.model.save_timer(None, "Avond", {d: [{"from": "20:00", "to": "20:30"}] for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")})
             night = hub.scn.add({"name": "Slaaplicht", "def": NIGHT})
-            hub.scn.select(did, [sid, night])
-            hub.update(did, {"inputs": {f"scene:{night}": f"t:{tm2}"}})
+            wire(hub, did, night, f"t:{tm2}")
             await cycle(hub, did, 4)
             sent = calls(esp, "schedule")[-1][1]["entries"]
             assert len(sent) == 8 and [e["at"] for e in sent] == sorted(e["at"] for e in sent), "samen, gesorteerd, hoogstens `sched` regels"
@@ -1079,11 +1184,12 @@ def test_unwiring_or_removing_clears_the_schedule_on_the_next_sync(tmp_path, mon
         try:
             await cycle(hub, did, 3)
             assert len(esp.sched) == 8
-            hub.update(did, {"inputs": {f"scene:{sid}": None}})  # de bron los
-            await cycle(hub, did)
-            assert esp.sched == [] and calls(esp, "schedule")[-1] == ("schedule", {"entries": []}), "de regels van die scène gaan weg"
-            hub.update(did, {"inputs": {f"scene:{sid}": f"t:{tm}"}})
+            wire(hub, did, sid, None)  # de bron los
             await cycle(hub, did, 2)
+            assert esp.sched == [] and calls(esp, "schedule")[-1] == ("schedule", {"entries": []}), "de regels van die scène gaan weg"
+            clock.advance(700)  # het slot is net gewist: dezelfde scène hoogstens eens per 10 minuten opnieuw schrijven
+            wire(hub, did, sid, f"t:{tm}")
+            await cycle(hub, did, 3)
             assert len(esp.sched) == 8
             hub.scn.select(did, [])  # de scène van het apparaat
             await cycle(hub, did, 3)
@@ -1100,10 +1206,10 @@ def test_no_schedule_for_a_source_that_cannot_be_computed_or_while_not_ready(tmp
             n = r.model.add_module("number", "Getal", 5)
             above = r.model.add_module("above", "Hoog", 1)
             r.model.set_module(above, inputs={"a": f"m:{n}"})
-            hub.update(did, {"inputs": {f"scene:{sid}": f"m:{above}"}})  # een module: niet vooruit te berekenen
+            wire(hub, did, sid, f"m:{above}")  # een module: niet vooruit te berekenen
             await cycle(hub, did, 4)
             assert calls(esp, "schedule") == [] and "geen timer" in hub.status()[0]["scn"]["sel"][0]["sched_note"], "geen schema, een melding"
-            hub.update(did, {"inputs": {f"scene:{sid}": f"t:{tm}"}})
+            wire(hub, did, sid, f"t:{tm}")
             esp.time_valid = False  # de klok van het apparaat is nog niet gezet
             await cycle(hub, did, 3)
             assert calls(esp, "schedule") == [] and hub.scn.rt[did]["time"] is None
@@ -1180,16 +1286,16 @@ def test_deleting_a_scene_cleans_up_everywhere_and_the_slot_is_cleared(tmp_path,
         r, hub, esp, did, clock, sid, tm = await alarm(tmp_path, monkeypatch)
         try:
             other = hub.scn.add({"name": "Rest", "def": NIGHT})
-            hub.scn.select(did, [sid, other])
+            wire(hub, did, other, switch(r)[1])
             await cycle(hub, did, 4)
             key = f"scene:{sid}"
             hub.tick()
             hub.last[did][key] = "iets"
             hub.scn.q[did] = __import__("collections").deque([{"kind": "stop", "sid": sid, "t": clock.mono, "tries": 0}])
-            assert key in hub.seen[did] and len(esp.sched) == 8 and sorted(esp.slots) == [1, 2]
+            assert mem(hub, did) is not None and len(esp.sched) == 8 and sorted(esp.slots) == [1, 2]
             assert hub.scn.delete(sid) is True and hub.scn.delete(sid) is False
             d = hub.devices[did]
-            assert d["scn"]["sel"] == [other] and sid not in d["scn"]["slots"] and key not in d["inputs"] and key not in hub.seen[did] and key not in hub.last[did] and not hub.scn.q[did]
+            assert d["scn"]["sel"] == [other] and sid not in d["scn"]["slots"] and key not in d["inputs"] and key not in hub.last[did] and not hub.scn.q[did]
             saved = json.loads((tmp_path / "espdev.json").read_text(encoding="utf-8"))["devices"][did]
             assert saved["scn"]["sel"] == [other] and key not in saved["inputs"]
             assert sid not in json.loads((tmp_path / "scenes.json").read_text(encoding="utf-8"))["scenes"]
@@ -1198,7 +1304,7 @@ def test_deleting_a_scene_cleans_up_everywhere_and_the_slot_is_cleared(tmp_path,
             await cycle(hub, did)
             assert esp.sched == [], "en de regels van die scène"
             assert hub.scn.add({"name": "Nieuw", "def": NIGHT}) not in (sid, other), "het id komt niet terug"
-            assert [p["name"] for p in block(r, f"e:{did}")["ports"] if p["name"].startswith("scene:")] == [f"scene:{other}"]
+            assert [x["scene"] for x in hub.scn.rules.items[hub.scn.rules.device_owner()[did]]["rules"]] == [other], "de regels van de gewiste scène zijn weg, de rest blijft"
         finally:
             await shutdown(hub, esp)
     asyncio.run(go())
@@ -1768,14 +1874,24 @@ def test_web_api(tmp_path, monkeypatch):
             assert pr.status == 200 and body["n"] == 4 and body["frames"][0][0] == [0, 255, 0]
             assert (await c.post("/api/scenes/preview", json={"def": {"kind": "nope"}})).status == 400
             assert (await c.post("/api/scenes/preview", json={"def": NIGHT, "n": 0})).status == 400
-            # op het apparaat
-            res = await c.put(f"/api/espdev/{did}/scenes", json={"scenes": ["s1", "s2"]})
+            # een blok Scènes op het apparaat
+            assert await (await c.get("/api/scenerules")).json() == []
+            res = await c.post("/api/scenerules", json={"name": "Kidswekker", "device": did, "inputs": [{"name": "Nacht", "kind": "bool"}, {"name": "Wekker", "kind": "time"}]})
+            assert res.status == 200 and (await res.json()) == {"ok": True, "id": "q1"}
+            res = await c.put("/api/scenerules/q1", json={"rules": [{"scene": "s1", "when": [{"op": "on", "in": "i1"}]}, {"scene": "s2", "when": [{"op": "wake", "in": "i2", "before": 15}]}]})
             assert res.status == 200 and hub.devices[did]["scn"]["slots"] == {"s1": 1, "s2": 2}
-            assert (await c.put(f"/api/espdev/{did}/scenes", json={"scenes": ["s7"]})).status == 400
-            assert (await c.put(f"/api/espdev/{did}/scenes", json={"scenes": "s1"})).status == 400
+            bad = await c.put("/api/scenerules/q1", json={"rules": [{"scene": "s7", "when": [{"op": "on", "in": "i1"}]}]})
+            assert bad.status == 400 and "kies een scène" in (await bad.json())["error"]
+            assert (await c.put("/api/scenerules/q1", json={"rules": "s1"})).status == 400
+            assert (await c.put("/api/scenerules/q9", json={"name": "x"})).status == 400
+            assert (await c.post("/api/scenerules", json={"device": did})).status == 400, "een apparaat heeft hoogstens een blok"
+            lst = await (await c.get("/api/scenerules")).json()
+            assert lst[0]["id"] == "q1" and lst[0]["device_name"] == hub.devices[did]["name"] and [x["text"] for x in lst[0]["rules"]] == [["Nacht = 1"], ["wekker Wekker, 15 min ervoor, 60 min erna"]]
             st = await (await c.get("/api/state")).json()
             dev = next(x for x in st["espdev"] if x["id"] == did)
             assert [x["id"] for x in dev["scn"]["sel"]] == ["s1", "s2"] and dev["scn"]["cap"]["slots"] == 8 and "token" not in json.dumps(st)
+            blk = next(x for x in st["schema"]["blocks"] if x["key"] == "q:q1")
+            assert blk["kind"] == "scenes" and st["scenerules"][0]["id"] == "q1"
             await fill(hub, did, esp)
             res = await c.post(f"/api/espdev/{did}/scene/play", json={"id": "s1"})
             assert res.status == 200 and esp.run["slot"] == 1
@@ -1785,8 +1901,10 @@ def test_web_api(tmp_path, monkeypatch):
             assert (await c.post(f"/api/espdev/{did}/scene/play", json={"slot": 2})).status == 200 and esp.run["slot"] == 2
             assert (await c.post(f"/api/espdev/{did}/scene/stop", json={})).status == 200 and esp.run is None
             res = await c.delete("/api/scenes/s1")
-            assert res.status == 200 and hub.devices[did]["scn"]["sel"] == ["s2"]
+            assert res.status == 200 and hub.devices[did]["scn"]["sel"] == ["s2"] and len(hub.scn.rules.items["q1"]["rules"]) == 1
             assert (await c.delete("/api/scenes/s1")).status == 404
+            assert (await c.delete("/api/scenerules/q1")).status == 200 and hub.devices[did]["scn"]["sel"] == []
+            assert (await c.delete("/api/scenerules/q1")).status == 404
             res = await c.put(f"/api/espdev/{did}", json={"name": "Slaapkamer"})  # de gewone route werkt nog
             assert res.status == 200 and hub.devices[did]["name"] == "Slaapkamer"
         finally:
