@@ -12,11 +12,37 @@
 #include "WiFiUdp.h"
 #include "Preferences.h"
 #include "WebServer.h"
+// De klok is bestuurbaar (settime); nows.cpp laat het standaard time(nullptr) van de header in gebruik.
+static int64_t g_epoch = 0;  // 0 = geen geldige tijd
+#define HUISDEV_NOW() g_epoch
 #include "huisdev.h"
 
 static std::unique_ptr<HuisDev> dev;
 static WebServer ws;
 static std::vector<std::string> g_calls;
+
+// ---- scenes: het testdevice valideert en speelt niet echt af, het logt alleen en antwoordt zoals de test het instelt ----
+struct SceneCfg {
+  bool on = false;
+  std::vector<std::string> formats;
+  int slots = 8, maxBytes = 768, sched = 8;
+  std::string checkReason;                          // "" = elke scene geldig
+  std::string playResult = "applied", playReason;   // antwoord van onScenePlay
+  std::string stopResult = "applied", stopReason;   // antwoord van onSceneStop
+};
+static SceneCfg g_sc;
+static std::vector<std::string> g_scene_log;
+
+static std::string hex8(uint32_t v) {
+  char b[16];
+  snprintf(b, sizeof b, "%08x", (unsigned)v);
+  return b;
+}
+static HdResult mkResult(const std::string& r, const std::string& why) {
+  if (r == "queued") return HdResult::queued();
+  if (r == "rejected") return HdResult::rejected(why.c_str());
+  return HdResult::applied();
+}
 
 static std::string num(double v) {
   char b[64];
@@ -100,11 +126,33 @@ static void register_all() {
   dev->actionState("flush", true, "pomp draait niet");
 }
 
+static void apply_scenes() {
+  const char* f[2] = {"", ""};
+  size_t nf = g_sc.formats.size() > 2 ? 2 : g_sc.formats.size();
+  for (size_t i = 0; i < nf; i++) f[i] = g_sc.formats[i].c_str();
+  if (nf == 0) dev->scenes({}, g_sc.slots, g_sc.maxBytes, g_sc.sched);
+  else if (nf == 1) dev->scenes({f[0]}, g_sc.slots, g_sc.maxBytes, g_sc.sched);
+  else dev->scenes({f[0], f[1]}, g_sc.slots, g_sc.maxBytes, g_sc.sched);
+  dev->onSceneCheck([](const uint8_t* d, size_t n) -> String {
+    g_scene_log.push_back("check|" + std::to_string(n) + "|" + hex8(HuisDev::sceneHash(d, n)));
+    return g_sc.checkReason.c_str();
+  });
+  dev->onScenePlay([](int slot, const uint8_t* d, size_t n, uint32_t elapsed) -> HdResult {
+    g_scene_log.push_back("play|" + std::to_string(slot) + "|" + std::to_string(n) + "|" + std::to_string(elapsed) + "|" + hex8(HuisDev::sceneHash(d, n)));
+    return mkResult(g_sc.playResult, g_sc.playReason);
+  });
+  dev->onSceneStop([](int slot) -> HdResult {
+    g_scene_log.push_back("stop|" + std::to_string(slot));
+    return mkResult(g_sc.stopResult, g_sc.stopReason);
+  });
+}
+
 static void boot(bool full) {
   dev.reset(new HuisDev());
   ws = WebServer();
   if (full) register_all();
   dev->begin("poolcontroller", "Zwembad", "0.3.1", &ws);
+  if (full && g_sc.on) apply_scenes();
   if (full) {
     dev->setNum("ph", 7.2);
     dev->setNum("orp", 740);
@@ -123,6 +171,11 @@ static void factory() {
   g_udp_on = false;
   g_udp_begins = g_udp_stops = 0;
   g_calls.clear();
+  g_sc = SceneCfg();
+  g_scene_log.clear();
+  g_epoch = 0;
+  g_nvs_quota = -1;
+  g_nvs_writes = 0;
   boot(true);
 }
 
@@ -246,6 +299,52 @@ static std::string run(const std::vector<std::string>& a) {
     auto it = g_prefs.find("huisdev");
     if (it == g_prefs.end() || !it->second.count("token")) return ok({"-"});
     return ok({"+" + it->second["token"]});
+  }
+  // ---- scenes ----
+  if (c == "scenes") {  // scenes SLOTS MAX_BYTES SCHED [FORMAT...]: zet dev.scenes(...) aan (blijft aan na reboot)
+    g_sc.on = true;
+    g_sc.slots = atoi(arg(1).c_str());
+    g_sc.maxBytes = atoi(arg(2).c_str());
+    g_sc.sched = atoi(arg(3).c_str());
+    g_sc.formats.clear();
+    for (size_t i = 4; i < a.size(); i++)
+      if (a[i] != "-") g_sc.formats.push_back(a[i]);  // "-" = geen formats
+    apply_scenes();
+    return ok();
+  }
+  if (c == "scene_cfg") {  // scene_cfg check REDEN | play RESULT REDEN | stop RESULT REDEN
+    if (arg(1) == "check") g_sc.checkReason = arg(2);
+    else if (arg(1) == "play") { g_sc.playResult = arg(2); g_sc.playReason = arg(3); }
+    else if (arg(1) == "stop") { g_sc.stopResult = arg(2); g_sc.stopReason = arg(3); }
+    else return "ERR	scene_cfg: check|play|stop";
+    return ok();
+  }
+  if (c == "scene_log") {  // callbacks sinds de vorige aanroep: check|n|hash, play|slot|n|elapsed|hash, stop|slot
+    std::vector<std::string> f = g_scene_log;
+    g_scene_log.clear();
+    return ok(f);
+  }
+  if (c == "scene_running") { dev->sceneRunning(atoi(arg(1).c_str()), (uint32_t)strtoul(arg(2).c_str(), nullptr, 16), (uint32_t)strtoul(arg(3).c_str(), nullptr, 10)); return ok(); }
+  if (c == "scene_idle") { dev->sceneIdle(); return ok(); }
+  if (c == "scene_read") {  // scene_read SLOT [CAP]: lengte en hex van sceneRead()
+    size_t cap = arg(2).empty() ? 2048 : (size_t)atoi(arg(2).c_str());
+    std::vector<uint8_t> buf(cap ? cap : 1);
+    size_t n = dev->sceneRead(atoi(arg(1).c_str()), buf.data(), cap);
+    std::string h;
+    char b[4];
+    for (size_t i = 0; i < n; i++) { snprintf(b, sizeof b, "%02x", buf[i]); h += b; }
+    return ok({std::to_string(n), h});
+  }
+  if (c == "settime") { g_epoch = strtoll(arg(1).c_str(), nullptr, 10); return ok(); }
+  if (c == "nvs_quota") { g_nvs_quota = atol(arg(1).c_str()); return ok(); }
+  if (c == "nvs_writes") { return ok({std::to_string(g_nvs_writes)}); }
+  if (c == "prefs_get") {  // prefs_get NS KEY: "-" als de sleutel ontbreekt, anders "+" en de bytes als hex
+    auto it = g_prefs.find(arg(1));
+    if (it == g_prefs.end() || !it->second.count(arg(2))) return ok({"-"});
+    std::string h = "+";
+    char b[4];
+    for (unsigned char ch : it->second[arg(2)]) { snprintf(b, sizeof b, "%02x", ch); h += b; }
+    return ok({h});
   }
   if (c == "resetclaim") { dev->resetClaim(); return ok(); }
   if (c == "claimed") { return ok({dev->claimed() ? "1" : "0"}); }

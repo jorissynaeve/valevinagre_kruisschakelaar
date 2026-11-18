@@ -1,7 +1,7 @@
 // huisdev.h - referentie-implementatie van het HUISDEV-protocol.
 //
-// Protocol : 1.0   (zie HUISDEV.md, de spec is leidend)
-// Header   : 1.0.1 (wijzigt de header zonder dat het protocol wijzigt: patch/minor ophogen)
+// Protocol : 1.1   (zie HUISDEV.md, de spec is leidend)
+// Header   : 1.1.0 (wijzigt de header zonder dat het protocol wijzigt: patch/minor ophogen)
 //
 // Header-only, alleen ESP32 (Arduino-ESP32 3.x). Geen ArduinoJson, geen async server.
 // De kern (`HuisDev::handle`) kent geen webserver. `begin(..., &server)` koppelt de blokkerende `WebServer`.
@@ -25,18 +25,34 @@
 #include <uri/UriGlob.h>
 #endif
 #include <Preferences.h>
+#include <time.h>
+#include <algorithm>
+#include <initializer_list>
 #include <list>
 #include <vector>
 #include <functional>
 #include <math.h>
 
-#define HUISDEV_PROTO "1.0"
-#define HUISDEV_HEADER_VERSION "1.0.2"
+#define HUISDEV_PROTO "1.1"
+#define HUISDEV_HEADER_VERSION "1.1.0"
 #define HUISDEV_UDP_PORT 47500
 #define HUISDEV_MAX_POINTS 64
 #define HUISDEV_MAX_ACTIONS 16
 #define HUISDEV_MAX_ARGS 8
 #define HUISDEV_ANNOUNCE_MS 300000UL
+// Scenes (1.1, HUISDEV.md §16). Alleen actief na dev.scenes(...).
+#define HUISDEV_SCENE_MAX_SLOTS 8
+#define HUISDEV_SCENE_MAX_BYTES 1024
+#define HUISDEV_SCENE_MAX_TOTAL 6144            // slots * max_bytes
+#define HUISDEV_SCENE_MAX_SCHED 8
+#define HUISDEV_SCENE_MIN_WRITE_MS 2000UL       // minimuminterval tussen schrijfacties naar NVS (store/schedule)
+#define HUISDEV_SCENE_TIME_MIN 1700000000UL     // een klok is geldig als hij hierboven staat
+#define HUISDEV_SCENE_AHEAD_S (14UL * 86400UL)  // `at` mag hoogstens zo ver vooruit
+#define HUISDEV_SCENE_LATE_S 86400UL            // een geplande start die langer geleden is wordt genegeerd
+// De klok (epoch, seconden). Een sketch met een eigen klokbron mag dit vóór de include herdefiniëren.
+#ifndef HUISDEV_NOW
+#define HUISDEV_NOW() ((int64_t)time(nullptr))
+#endif
 
 enum HdKind : uint8_t { HD_BOOL, HD_INT, HD_FLOAT, HD_ENUM, HD_TEXT };
 
@@ -52,6 +68,11 @@ struct HdResult {
 
 typedef std::function<HdResult(double num, const String& text)> HdSetFn;  // num voor bool/int/float/enum, text voor text
 typedef std::function<HdResult(const String& body)> HdDoFn;                // body = het JSON-verzoek, lees met hdJson*
+
+// Scenes (1.1). De header kent de inhoud van een scene niet, alleen bytes; valideren en afspelen doet het device.
+typedef std::function<String(const uint8_t* data, size_t n)> HdSceneCheckFn;  // "" = geldig, anders de reden van weigering
+typedef std::function<HdResult(int slot, const uint8_t* data, size_t n, uint32_t elapsedS)> HdScenePlayFn;  // slot 0 = rechtstreeks; elapsedS > 0: start op positie
+typedef std::function<HdResult(int slot)> HdSceneStopFn;                      // slot 0 = elke scene
 
 struct HdOption {
   int v;
@@ -193,6 +214,49 @@ inline double hdJsonNum(const String& b, const char* key, double def = NAN) {
 inline bool hdJsonBool(const String& b, const char* key, bool def = false) {
   String r = hdJsonRaw(b, key);
   return r == "true" ? true : (r == "false" ? false : def);
+}
+
+// ---- base64 (standaard alfabet, padding verplicht, strikt canoniek), zonder allocaties ----
+inline int hdB64Val(char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+') return 62;
+  if (c == '/') return 63;
+  return -1;
+}
+// Aantal bytes dat s[0..len) oplevert, of -1 als het geen geldig base64 is. `out` mag nullptr zijn (alleen controleren);
+// anders moet er plaats zijn voor het resultaat (zie de eerste aanroep).
+inline long hdB64Decode(const char* s, size_t len, uint8_t* out) {
+  if (len % 4) return -1;
+  size_t o = 0;
+  for (size_t i = 0; i < len; i += 4) {
+    const bool last = i + 4 == len;
+    int v[4] = {0, 0, 0, 0};
+    int pad = 0;
+    for (int k = 0; k < 4; k++) {
+      char c = s[i + k];
+      if (c == '=') {
+        if (!last || k < 2) return -1;
+        pad++;
+      } else {
+        int x = pad ? -1 : hdB64Val(c);
+        if (x < 0) return -1;
+        v[k] = x;
+      }
+    }
+    if (pad == 2 && (v[1] & 0x0F)) return -1;  // niet-canonieke restbits
+    if (pad == 1 && (v[2] & 0x03)) return -1;
+    uint32_t w = ((uint32_t)v[0] << 18) | ((uint32_t)v[1] << 12) | ((uint32_t)v[2] << 6) | (uint32_t)v[3];
+    size_t take = 3 - (size_t)pad;
+    if (out) {
+      out[o] = (uint8_t)(w >> 16);
+      if (take > 1) out[o + 1] = (uint8_t)(w >> 8);
+      if (take > 2) out[o + 2] = (uint8_t)w;
+    }
+    o += take;
+  }
+  return (long)o;
 }
 
 class HuisDev;
@@ -389,6 +453,7 @@ class HuisDev {
   }
   void loop() {
     refresh();
+    sceneTick();
     udpLoop();
   }
 
@@ -401,8 +466,70 @@ class HuisDev {
       pr.remove("token");
       pr.end();
     }
+    sceneWipeAll();  // een device zonder dev.scenes() raakt de scene-opslag niet aan
   }
   const String& id() const { return _id; }
+
+  // ---- scenes (1.1, HUISDEV.md §16): optioneel, alleen actief na scenes() ----
+  // formats: de talen die het device begrijpt ("ledscene/1"). Grenzen (normatief): slots 1..8, max_bytes 1..1024, slots*max_bytes <= 6144
+  // (is dat te veel, dan verlaagt de header max_bytes), sched 0..8. De waarden die u opgeeft zijn dus een verzoek: de descriptor meldt wat geldt.
+  // Mag voor of na begin(); een wijziging van de parameters verandert de `rev`.
+  void scenes(std::initializer_list<const char*> formats, int slots, int maxBytes, int sched) {
+    slots = slots < 1 ? 1 : (slots > HUISDEV_SCENE_MAX_SLOTS ? HUISDEV_SCENE_MAX_SLOTS : slots);
+    maxBytes = maxBytes < 1 ? 1 : (maxBytes > HUISDEV_SCENE_MAX_BYTES ? HUISDEV_SCENE_MAX_BYTES : maxBytes);
+    if (slots * maxBytes > HUISDEV_SCENE_MAX_TOTAL) maxBytes = HUISDEV_SCENE_MAX_TOTAL / slots;
+    sched = sched < 0 ? 0 : (sched > HUISDEV_SCENE_MAX_SCHED ? HUISDEV_SCENE_MAX_SCHED : sched);
+    std::vector<String> f;
+    for (const char* c : formats) f.push_back(c ? c : "");
+    bool same = _scOn && slots == _scSlots && maxBytes == _scMax && sched == _scSched && f.size() == _scFormats.size();
+    for (size_t i = 0; same && i < f.size(); i++) same = f[i] == _scFormats[i];
+    if (same) return;
+    _scOn = true;
+    _scSlots = slots;
+    _scMax = maxBytes;
+    _scSched = sched;
+    _scFormats = f;
+    dirty = true;
+    sceneLoad();
+  }
+  // Valideert een scene. "" = geldig, anders de reden (HTTP 200 `rejected`). Zonder deze functie is elke scene geldig.
+  void onSceneCheck(HdSceneCheckFn fn) { _onCheck = fn; }
+  // Start een scene. slot 0 = rechtstreeks gespeeld (`play` met `data`). elapsedS > 0: een geplande start die te laat is; het device beslist
+  // of dat nog zinvol is (resume-venster van de scene) en geeft anders `rejected` terug: de header slaat die start dan over.
+  // `data` is alleen geldig tijdens de aanroep. Na `applied`/`queued` meldt de header zelf `run` (zonder `until`), tenzij het device
+  // tijdens de aanroep sceneRunning() of sceneIdle() aanriep.
+  void onScenePlay(HdScenePlayFn fn) { _onPlay = fn; }
+  // Stopt de scene van `slot` (0 = elke scene, ook als de header denkt dat er niets speelt). Na een niet-geweigerd antwoord meldt de header `run` als afwezig.
+  void onSceneStop(HdSceneStopFn fn) { _onStop = fn; }
+  // Meld wat er speelt (`run` in de state). hash = sceneHash() van de bytes, untilEpoch = einde (epoch, 0 = onbegrensd of onbekend).
+  // Roep sceneIdle() aan als de scene eindigt. Is `until` bereikt (met een geldige klok), dan meldt de header zelf niets meer.
+  void sceneRunning(int slot, uint32_t hash, uint32_t untilEpoch = 0) {
+    _run.active = true;
+    _run.slot = slot;
+    _run.h = hash;
+    _run.until = untilEpoch;
+    _runGen++;
+  }
+  void sceneIdle() {
+    _run.active = false;
+    _runGen++;
+  }
+  // Leest de bytes van een slot (bv. na een herstart, om de scene weer af te spelen). Geeft het aantal bytes, 0 als het slot leeg is of
+  // `cap` te klein is. Met buf == nullptr: alleen de lengte.
+  size_t sceneRead(int slot, uint8_t* buf, size_t cap) {
+    if (!_scOn || slot < 1 || slot > _scSlots || !_scHave[slot].have) return 0;
+    if (!buf) return _scHave[slot].n;
+    return scGet(slot, buf, cap);
+  }
+  // De hash zoals `have` en `run` hem melden: FNV-1a-32 over de ruwe bytes.
+  static uint32_t sceneHash(const uint8_t* d, size_t n) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; i++) {
+      h ^= d[i];
+      h *= 16777619u;
+    }
+    return h;
+  }
 
   // ---- de kern: een HTTP-verzoek afhandelen, zonder webserver-afhankelijkheid ----
   // Geeft de HTTP-status, of 0 als het pad niet van HUISDEV is. `out` is het JSON-antwoord.
@@ -410,8 +537,10 @@ class HuisDev {
     if (!path.startsWith("/huisdev/")) return 0;
     refresh();
     const bool isGet = path == "/huisdev/descriptor" || path == "/huisdev/state";
-    const bool isPost = path == "/huisdev/claim" || path == "/huisdev/unclaim" || path == "/huisdev/set" || path == "/huisdev/do";
+    const bool isScene = path == "/huisdev/scene/store" || path == "/huisdev/scene/play" || path == "/huisdev/scene/stop" || path == "/huisdev/scene/schedule";
+    const bool isPost = isScene || path == "/huisdev/claim" || path == "/huisdev/unclaim" || path == "/huisdev/set" || path == "/huisdev/do";
     if (!isGet && !isPost) return err(out, 404, "unknown_path", "");
+    if (isScene && !_scOn) return err(out, 404, "unknown_path", "");  // zonder dev.scenes() bestaan deze paden niet
     if (method != (isGet ? "GET" : "POST")) return err(out, 405, "method", "");
     if (path == "/huisdev/descriptor") {
       out = desc;
@@ -447,6 +576,11 @@ class HuisDev {
       if (!tokenOk) return err(out, 401, "token", "");
       return path == "/huisdev/set" ? doSet(body, out) : doAction(body, out);
     }
+    if (isScene) {
+      if (!claimed()) return err(out, 403, "not_claimed", "eerst claimen");
+      if (!tokenOk) return err(out, 401, "token", "");
+      return sceneRoute(path, body, out);
+    }
     return err(out, 404, "unknown_path", "");
   }
 
@@ -477,6 +611,34 @@ class HuisDev {
   WiFiUDP udp;
   bool udpOn = false;
   uint32_t lastAnnounce = 0;
+  // scenes
+  struct ScSlot {
+    bool have = false;
+    uint32_t h = 0;
+    uint16_t n = 0;
+  };
+  struct ScSched {
+    uint8_t slot;
+    uint32_t at;
+  };
+  struct ScRun {
+    bool active = false;
+    int slot = 0;
+    uint32_t h = 0, until = 0;
+  };
+  bool _scOn = false;
+  int _scSlots = 0, _scMax = 0, _scSched = 0;
+  std::vector<String> _scFormats;
+  ScSlot _scHave[HUISDEV_SCENE_MAX_SLOTS + 1];
+  std::vector<ScSched> _scList;  // wat nog moet komen (RAM)
+  std::vector<ScSched> _scNv;    // wat in NVS staat
+  ScRun _run;
+  uint32_t _runGen = 0;
+  uint32_t _scLastWrite = 0;
+  bool _scWrote = false;
+  HdSceneCheckFn _onCheck;
+  HdScenePlayFn _onPlay;
+  HdSceneStopFn _onStop;
 
   HdPoint* find(const char* id) {
     for (auto& p : points)
@@ -631,6 +793,16 @@ class HuisDev {
       body += "}";
     }
     body += "]";
+    if (_scOn) {  // direct na actions; hoort bij de rev (HUISDEV.md §5, §16)
+      body += ",\"scenes\":{\"formats\":[";
+      for (size_t i = 0; i < _scFormats.size(); i++) {
+        if (i) body += ',';
+        body += '"';
+        jesc(body, _scFormats[i]);
+        body += '"';
+      }
+      body += "],\"slots\":" + String(_scSlots) + ",\"max_bytes\":" + String(_scMax) + ",\"sched\":" + String(_scSched) + "}";
+    }
     char rb[9];
     snprintf(rb, sizeof rb, "%08x", (unsigned)fnv(body));
     if (rev != rb) {
@@ -696,7 +868,9 @@ class HuisDev {
       jesc(out, a.reason);
       out += "\"}";
     }
-    out += "}}";
+    out += "}";
+    if (_scOn) sceneState(out);
+    out += "}";
   }
   // Valideert een waarde tegen type, enum-opties, bereik en stap. Geeft "" bij ok, anders de fout.
   static const char* validate(const HdPoint& p, const String& body, double& num, String& text) {
@@ -771,6 +945,387 @@ class HuisDev {
     jesc(out, r.reason);
     out += "\"}";
     return 200;
+  }
+  // ================= scenes (1.1, HUISDEV.md §16) =================
+  // Alles draait vanuit loop() of de webserver-taak: geen eigen taken, geen delay.
+  struct ScBuf {  // een tijdelijke buffer (malloc, zodat een tekort een `rejected` wordt en geen crash)
+    uint8_t* p = nullptr;
+    size_t n = 0;
+    ScBuf() {}
+    ScBuf(const ScBuf&) = delete;
+    ScBuf& operator=(const ScBuf&) = delete;
+    ~ScBuf() { free(p); }
+    bool alloc(size_t len) {
+      free(p);
+      p = (uint8_t*)malloc(len ? len : 1);
+      n = p ? len : 0;
+      return p != nullptr;
+    }
+  };
+  static const char* scKey(int slot, char* b, size_t cap) {
+    snprintf(b, cap, "s%d", slot);
+    return b;
+  }
+  static void hex8(String& o, uint32_t v) {
+    char b[9];
+    snprintf(b, sizeof b, "%08x", (unsigned)v);
+    o += b;
+  }
+  static bool schedLess(const ScSched& a, const ScSched& b) { return a.at != b.at ? a.at < b.at : a.slot < b.slot; }
+  static bool schedEq(const std::vector<ScSched>& a, const std::vector<ScSched>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++)
+      if (a[i].slot != b[i].slot || a[i].at != b[i].at) return false;
+    return true;
+  }
+  uint32_t sceneNow() {  // de klok (epoch) als hij geldig is, anders 0
+    int64_t t = HUISDEV_NOW();
+    return (t > (int64_t)HUISDEV_SCENE_TIME_MIN && t < 4294967295LL) ? (uint32_t)t : 0;
+  }
+  // ---- NVS (namespace huisdev_sc: s1..s8 = bytes, sched = (slot u8, at u32 little-endian)-paren) ----
+  size_t scGet(int slot, uint8_t* buf, size_t cap) {
+    char k[8];
+    Preferences pr;
+    if (!pr.begin("huisdev_sc", true)) return 0;
+    size_t n = pr.getBytes(scKey(slot, k, sizeof k), buf, cap);
+    pr.end();
+    return n;
+  }
+  bool scPut(const char* key, const uint8_t* d, size_t n) {
+    Preferences pr;
+    if (!pr.begin("huisdev_sc", false)) return false;
+    size_t w = pr.putBytes(key, d, n);
+    pr.end();
+    return w == n;
+  }
+  bool scDel(const char* key) {
+    Preferences pr;
+    if (!pr.begin("huisdev_sc", false)) return false;
+    bool ok = !pr.isKey(key) || pr.remove(key);
+    pr.end();
+    return ok;
+  }
+  bool scSame(int slot, const uint8_t* d, size_t n) {  // staat er al precies dit?
+    ScBuf b;
+    return b.alloc(n) && scGet(slot, b.p, n) == n && memcmp(b.p, d, n) == 0;
+  }
+  bool scTooOften() const { return _scWrote && (uint32_t)(millis() - _scLastWrite) < HUISDEV_SCENE_MIN_WRITE_MS; }
+  void scStamp() {
+    _scWrote = true;
+    _scLastWrite = millis();
+  }
+  void sceneLoad() {  // na scenes() en na een herstart: wat er in NVS staat inlezen
+    for (auto& s : _scHave) s = ScSlot();
+    _scList.clear();
+    _scNv.clear();
+    Preferences pr;
+    if (!pr.begin("huisdev_sc", true)) return;
+    uint8_t* buf = (uint8_t*)malloc((size_t)_scMax);
+    for (int s = 1; s <= _scSlots && buf; s++) {
+      char k[8];
+      scKey(s, k, sizeof k);
+      size_t len = pr.getBytesLength(k);
+      if (len < 1 || len > (size_t)_scMax || pr.getBytes(k, buf, (size_t)_scMax) != len) continue;
+      _scHave[s].have = true;
+      _scHave[s].h = sceneHash(buf, len);
+      _scHave[s].n = (uint16_t)len;
+    }
+    free(buf);
+    uint8_t raw[5 * HUISDEV_SCENE_MAX_SCHED];
+    size_t len = pr.getBytesLength("sched");
+    if (len && len % 5 == 0 && len <= sizeof raw && pr.getBytes("sched", raw, sizeof raw) == len) {
+      for (size_t i = 0; i < len; i += 5) {
+        ScSched e;
+        e.slot = raw[i];
+        e.at = (uint32_t)raw[i + 1] | ((uint32_t)raw[i + 2] << 8) | ((uint32_t)raw[i + 3] << 16) | ((uint32_t)raw[i + 4] << 24);
+        if (e.slot >= 1 && e.slot <= _scSlots && e.at >= HUISDEV_SCENE_TIME_MIN && (int)_scNv.size() < _scSched) _scNv.push_back(e);
+      }
+      std::sort(_scNv.begin(), _scNv.end(), schedLess);
+    }
+    pr.end();
+    _scList = _scNv;  // verstreken regels (> at+24 u) vallen weg zodra de klok geldig is, in sceneTick()
+  }
+  void sceneWipeAll() {  // unclaim en resetClaim: scenes en lijst weg
+    if (!_scOn) return;
+    Preferences pr;
+    if (pr.begin("huisdev_sc", false)) {
+      for (int s = 1; s <= HUISDEV_SCENE_MAX_SLOTS; s++) {
+        char k[8];
+        scKey(s, k, sizeof k);
+        if (pr.isKey(k)) pr.remove(k);
+      }
+      if (pr.isKey("sched")) pr.remove("sched");
+      pr.end();
+    }
+    for (auto& s : _scHave) s = ScSlot();
+    _scList.clear();
+    _scNv.clear();
+    if (_run.active) _run.slot = 0;  // de lopende scene speelt zijn eigen kopie door
+  }
+  // ---- afspelen ----
+  HdResult scenePlayCore(int slot, const uint8_t* d, size_t n, uint32_t h, uint32_t elapsedS) {
+    if (_run.active && _run.h == h) return HdResult::applied();  // dezelfde scene speelt al: niets doen
+    if (!_onPlay) return HdResult::rejected("niet beschikbaar");
+    const uint32_t gen = _runGen;
+    HdResult r = _onPlay(slot, d, n, elapsedS);
+    if (String(r.result) != "rejected" && _runGen == gen) sceneRunning(slot, h, 0);
+    return r;
+  }
+  void sceneTick() {  // geplande starts en het einde van een scene met `until`
+    if (!_scOn) return;
+    const uint32_t now = sceneNow();
+    if (!now) return;
+    if (_run.active && _run.until && now >= _run.until) _run.active = false;
+    while (!_scList.empty() && _scList.front().at <= now) {
+      const ScSched e = _scList.front();
+      _scList.erase(_scList.begin());  // uitgevoerd of overgeslagen: telt niet meer mee (NVS blijft zoals het was)
+      const uint32_t late = now - e.at;
+      if (late > HUISDEV_SCENE_LATE_S) continue;
+      if (e.slot < 1 || e.slot > _scSlots || !_scHave[e.slot].have) continue;  // leeg slot: overslaan
+      ScBuf b;
+      if (!b.alloc(_scHave[e.slot].n) || scGet(e.slot, b.p, b.n) != b.n) continue;
+      scenePlayCore(e.slot, b.p, b.n, sceneHash(b.p, b.n), late);  // `rejected` (te laat voor het device): overgeslagen
+    }
+  }
+  // ---- state ----
+  void sceneState(String& out) {
+    const uint32_t now = sceneNow();
+    out += ",\"scenes\":{\"have\":{";
+    bool first = true;
+    for (int s = 1; s <= _scSlots; s++) {
+      if (!_scHave[s].have) continue;
+      if (!first) out += ',';
+      first = false;
+      out += '"';
+      out += String(s);
+      out += "\":{\"h\":\"";
+      hex8(out, _scHave[s].h);
+      out += "\",\"n\":" + String((uint32_t)_scHave[s].n) + "}";
+    }
+    out += "}";
+    if (_run.active) {
+      out += ",\"run\":{\"slot\":" + String(_run.slot) + ",\"h\":\"";
+      hex8(out, _run.h);
+      out += "\",\"until\":";
+      out += (_run.until && now) ? String(_run.until) : String("null");
+      out += "}";
+    }
+    out += ",\"sched\":[";
+    first = true;
+    for (auto& e : _scList) {
+      if (!first) out += ',';
+      first = false;
+      out += "{\"slot\":" + String((int)e.slot) + ",\"at\":" + String(e.at) + "}";
+    }
+    out += "],\"time\":";
+    out += now ? String(now) : String("null");
+    out += "}";
+  }
+  // ---- routes ----
+  static int sceneReply(String& out, const HdResult& r, bool withHash = false, uint32_t h = 0) {
+    const bool ok = String(r.result) != "rejected";
+    out = String("{\"ok\":") + (ok ? "true" : "false") + ",\"result\":\"" + r.result + "\",\"reason\":\"";
+    jesc(out, r.reason);
+    out += '"';
+    if (ok && withHash) {
+      out += ",\"hash\":\"";
+      hex8(out, h);
+      out += '"';
+    }
+    out += '}';
+    return 200;
+  }
+  // 0 = geen `slot` in het verzoek, -1 = ongeldig (geen geheel getal of buiten 1..slots), anders het slot
+  int sceneSlotArg(const String& body) {
+    if (!hdJsonHas(body, "slot")) return 0;
+    double v = hdJsonNum(body, "slot", NAN);
+    if (isnan(v) || fabs(v - round(v)) > 1e-9 || v < 1 || v > _scSlots) return -1;
+    return (int)lround(v);
+  }
+  // Leest en decodeert "data". 0 = gelukt (b.n kan 0 zijn: leeg), anders de HTTP-status met het antwoord al in `out`.
+  int sceneDecode(const String& body, ScBuf& b, String& out) {
+    const int n = (int)body.length();
+    const int i = hdKeyPos(body, "data");
+    if (i < 0 || body[i] != '"') return err(out, 422, "bad_data", "data ontbreekt of is geen tekst");
+    const char* s = body.c_str();
+    int j = i + 1;
+    bool esc = false;
+    while (j < n && s[j] != '"') {
+      if (s[j] == '\\') {
+        esc = true;
+        j += 2;
+      } else {
+        j++;
+      }
+    }
+    if (j >= n) return err(out, 422, "bad_data", "data niet afgesloten");
+    String hold;
+    const char* p = s + i + 1;
+    size_t len = (size_t)(j - i - 1);
+    if (esc) {  // bv. "\/" van een JSON-schrijver die / escaped: eerst de escapes uitpakken
+      hold = hdJsonStr(body, "data", "\x01");
+      if (hold == "\x01") return err(out, 422, "bad_data", "ongeldige escape in data");
+      p = hold.c_str();
+      len = hold.length();
+    }
+    const long dn = hdB64Decode(p, len, nullptr);
+    if (dn < 0) return err(out, 422, "bad_data", "geen geldig base64");
+    if (dn > _scMax) return err(out, 422, "too_large", "scene te groot");
+    if (dn > 0) {
+      if (!b.alloc((size_t)dn)) return sceneReply(out, HdResult::rejected("geen geheugen"));
+      hdB64Decode(p, len, b.p);
+    }
+    return 0;
+  }
+  int sceneRoute(const String& path, const String& body, String& out) {
+    const size_t lim = (size_t)((_scMax + 2) / 3) * 4 + 256;  // ceil(max_bytes/3)*4 + 256, vóór het ontleden
+    if (body.length() > lim) return err(out, 422, "too_large", "body te groot");
+    if (path == "/huisdev/scene/store") return sceneStore(body, out);
+    if (path == "/huisdev/scene/play") return scenePlay(body, out);
+    if (path == "/huisdev/scene/stop") return sceneStop(body, out);
+    return sceneSchedule(body, out);
+  }
+  int sceneStore(const String& body, String& out) {
+    const int slot = sceneSlotArg(body);
+    if (slot <= 0) return err(out, 422, "bad_slot", slot == 0 ? "slot ontbreekt" : "slot buiten bereik");
+    ScBuf b;
+    if (int c = sceneDecode(body, b, out)) return c;
+    char k[8];
+    scKey(slot, k, sizeof k);
+    if (b.n == 0) {  // "data":"" wist het slot
+      if (!_scHave[slot].have) return sceneReply(out, HdResult::applied());
+      if (scTooOften()) return sceneReply(out, HdResult::rejected("te vaak"));
+      if (!scDel(k)) return sceneReply(out, HdResult::rejected("geen geheugen"));
+      scStamp();
+      _scHave[slot] = ScSlot();
+      if (_run.active && _run.slot == slot) _run.slot = 0;
+      return sceneReply(out, HdResult::applied());
+    }
+    const uint32_t h = sceneHash(b.p, b.n);
+    if (_scHave[slot].have && _scHave[slot].h == h && _scHave[slot].n == b.n && scSame(slot, b.p, b.n)) return sceneReply(out, HdResult::applied(), true, h);  // niets schrijven
+    String why = _onCheck ? _onCheck(b.p, b.n) : String();
+    if (why.length()) return sceneReply(out, HdResult::rejected(why));
+    if (scTooOften()) return sceneReply(out, HdResult::rejected("te vaak"));
+    if (!scPut(k, b.p, b.n)) return sceneReply(out, HdResult::rejected("geen geheugen"));  // `have` blijft zoals het was
+    scStamp();
+    _scHave[slot].have = true;
+    _scHave[slot].h = h;
+    _scHave[slot].n = (uint16_t)b.n;
+    if (_run.active && _run.slot == slot) _run.slot = 0;  // het device speelt zijn eigen kopie door
+    return sceneReply(out, HdResult::applied(), true, h);
+  }
+  int scenePlay(const String& body, String& out) {
+    const bool hasData = hdJsonHas(body, "data"), hasSlot = hdJsonHas(body, "slot");
+    if (hasData && hasSlot) return err(out, 422, "bad_value", "slot of data, niet allebei");
+    if (!hasData && !hasSlot) return err(out, 422, "bad_slot", "slot of data ontbreekt");
+    ScBuf b;
+    int slot = 0;
+    if (hasSlot) {
+      slot = sceneSlotArg(body);
+      if (slot < 1) return err(out, 422, "bad_slot", "slot buiten bereik");
+      if (!_scHave[slot].have) return sceneReply(out, HdResult::rejected("slot leeg"));
+      if (!b.alloc(_scHave[slot].n)) return sceneReply(out, HdResult::rejected("geen geheugen"));
+      if (scGet(slot, b.p, b.n) != b.n) return sceneReply(out, HdResult::rejected("slot onleesbaar"));
+    } else {
+      if (int c = sceneDecode(body, b, out)) return c;
+      if (b.n == 0) return err(out, 422, "bad_data", "lege scene");
+      if (_run.active && _run.h == sceneHash(b.p, b.n)) return sceneReply(out, HdResult::applied(), true, _run.h);  // speelt al: ook de check overslaan
+      String why = _onCheck ? _onCheck(b.p, b.n) : String();
+      if (why.length()) return sceneReply(out, HdResult::rejected(why));
+    }
+    const uint32_t h = sceneHash(b.p, b.n);
+    HdResult r = scenePlayCore(slot, b.p, b.n, h, 0);
+    return sceneReply(out, r, true, h);
+  }
+  int sceneStop(const String& body, String& out) {
+    int slot = 0;
+    if (hdJsonHas(body, "slot")) {
+      slot = sceneSlotArg(body);
+      if (slot < 1) return err(out, 422, "bad_slot", "slot buiten bereik");
+      if (!(_run.active && _run.slot == slot)) return sceneReply(out, HdResult::applied());  // dat slot speelt niet
+    }
+    if (!_onStop) return sceneReply(out, _run.active ? HdResult::rejected("niet beschikbaar") : HdResult::applied());
+    HdResult r = _onStop(slot);  // bij slot 0 ook als de header denkt dat er niets speelt: stoppen is altijd veilig
+    if (String(r.result) != "rejected") sceneIdle();
+    return sceneReply(out, r);
+  }
+  int sceneSchedule(const String& body, String& out) {
+    const int n = (int)body.length();
+    const char* s = body.c_str();
+    int i = hdKeyPos(body, "entries");
+    if (i < 0 || body[i] != '[') return err(out, 422, "bad_value", "entries ontbreekt");
+    std::vector<ScSched> list;
+    auto ws = [&]() {
+      while (i < n && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) i++;
+    };
+    i++;
+    ws();
+    if (i < n && s[i] == ']') {
+      i++;
+    } else {
+      for (;;) {
+        ws();
+        if (i >= n || s[i] != '{') return err(out, 422, "bad_value", "entries is geen lijst van objecten");
+        const int st = i;
+        int depth = 0;
+        for (; i < n; i++) {
+          if (s[i] == '"') {
+            for (i++; i < n && s[i] != '"'; i += (s[i] == '\\' && i + 1 < n) ? 2 : 1) {}
+          } else if (s[i] == '{') {
+            depth++;
+          } else if (s[i] == '}' && --depth == 0) {
+            break;
+          }
+        }
+        if (i >= n) return err(out, 422, "bad_value", "entries niet afgesloten");
+        const String obj = body.substring((unsigned)st, (unsigned)(i + 1));
+        i++;
+        if ((int)list.size() >= _scSched) return err(out, 422, "bad_value", "meer regels dan sched");
+        const double sv = hdJsonNum(obj, "slot", NAN), av = hdJsonNum(obj, "at", NAN);
+        if (isnan(sv) || fabs(sv - round(sv)) > 1e-9 || sv < 1 || sv > _scSlots) return err(out, 422, "bad_slot", "slot buiten bereik");
+        if (isnan(av) || fabs(av - round(av)) > 1e-9 || av < (double)HUISDEV_SCENE_TIME_MIN || av > 4294967295.0) return err(out, 422, "bad_value", "at buiten bereik");
+        ScSched e;
+        e.slot = (uint8_t)lround(sv);
+        e.at = (uint32_t)llround(av);
+        list.push_back(e);
+        ws();
+        if (i < n && s[i] == ',') {
+          i++;
+          continue;
+        }
+        if (i < n && s[i] == ']') break;
+        return err(out, 422, "bad_value", "entries niet afgesloten");
+      }
+    }
+    std::sort(list.begin(), list.end(), schedLess);
+    if (!list.empty()) {
+      const uint32_t now = sceneNow();
+      if (!now) return sceneReply(out, HdResult::rejected("geen tijd"));
+      for (auto& e : list)
+        if ((uint64_t)e.at > (uint64_t)now + HUISDEV_SCENE_AHEAD_S) return err(out, 422, "bad_value", "at verder dan 14 dagen vooruit");
+    }
+    if (schedEq(list, _scNv)) return sceneReply(out, HdResult::applied());  // zelfde lijst: niets schrijven
+    if (scTooOften()) return sceneReply(out, HdResult::rejected("te vaak"));
+    bool ok;
+    if (list.empty()) {
+      ok = scDel("sched");
+    } else {
+      uint8_t raw[5 * HUISDEV_SCENE_MAX_SCHED];
+      size_t o = 0;
+      for (auto& e : list) {
+        raw[o++] = e.slot;
+        raw[o++] = (uint8_t)e.at;
+        raw[o++] = (uint8_t)(e.at >> 8);
+        raw[o++] = (uint8_t)(e.at >> 16);
+        raw[o++] = (uint8_t)(e.at >> 24);
+      }
+      ok = scPut("sched", raw, o);
+    }
+    if (!ok) return sceneReply(out, HdResult::rejected("geen geheugen"));
+    scStamp();
+    _scNv = list;
+    _scList = list;
+    return sceneReply(out, HdResult::applied());
   }
 #ifndef HUISDEV_NO_WEBSERVER
   static const char* methodName(HTTPMethod m) {

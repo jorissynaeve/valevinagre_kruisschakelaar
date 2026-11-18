@@ -7,7 +7,7 @@ import json
 import os
 import unittest
 
-from huisdevtest import FIXTURES, Base, TOKEN
+from huisdevtest import FIXTURES, Base, TOKEN, b64, fnv1a
 
 
 class TestFixtures(Base):
@@ -81,6 +81,52 @@ class TestFixtures(Base):
         with open(os.path.join(FIXTURES, "descriptor.json"), encoding="utf-8") as f:
             rev1 = json.load(f)["rev"]
         self.assertNotEqual(rev1, json.loads(txt)["rev"])
+
+
+    def test_write_scene_fixtures(self):
+        """Hetzelfde device met scenes (HUISDEV.md §16): 8 slots, 768 bytes, 8 geplande starts, klok op een vast tijdstip."""
+        d = self.d
+        now = 1760000123
+        d.scenes_on(8, 768, 8, "ledscene/1")
+        d.claim()
+        d.settime(now)
+        txt, j = d.descriptor()
+        self.write("descriptor_scenes.json", txt)
+        self.assertEqual(j["scenes"], {"formats": ["ledscene/1"], "slots": 8, "max_bytes": 768, "sched": 8})
+
+        a = bytes((i * 7 + 3) & 255 for i in range(424))
+        b = bytes((i * 11 + 5) & 255 for i in range(122))
+        d.advance(2500)
+        st, txt = d.handle("POST", "/huisdev/scene/store", TOKEN, json.dumps({"slot": 1, "data": b64(a)}))
+        self.assertEqual(st, 200)
+        self.write("scene_store_applied.json", txt)
+        d.advance(2500)
+        d.sc("store", {"slot": 3, "data": b64(b)})
+        self.assertEqual(d.sc("play", {"slot": 1})[1]["result"], "applied")
+        d.scene_running(1, fnv1a(a), now + 1077)  # het device meldt het einde van de scene
+        d.advance(2500)
+        self.assertEqual(d.sc("schedule", {"entries": [{"slot": 1, "at": 1760000400}, {"slot": 1, "at": 1760086800}]})[1]["result"], "applied")
+        st, txt = d.handle("GET", "/huisdev/state", TOKEN)
+        self.write("state_scenes.json", txt)
+        self.assertEqual(json.loads(txt)["scenes"]["time"], now)
+
+        # een device dat een scene zonder klok niet kan afspelen weigert (hier: een scene die de klok nodig heeft)
+        d.scene_idle()
+        d.settime(0)
+        d.cmd("scene_cfg", "play", "rejected", "geen tijd")
+        st, txt = d.handle("POST", "/huisdev/scene/play", TOKEN, json.dumps({"slot": 3}))
+        self.assertEqual(st, 200)
+        self.assertEqual(json.loads(txt)["result"], "rejected")
+        self.write("scene_play_rejected_notime.json", txt)
+
+        def post(name, path, body):
+            st, txt = d.handle("POST", path, TOKEN, json.dumps(body))
+            self.write(name, txt)
+            return st
+
+        self.assertEqual(post("error_422_bad_slot.json", "/huisdev/scene/store", {"slot": 9, "data": b64(a)}), 422)
+        self.assertEqual(post("error_422_too_large.json", "/huisdev/scene/store", {"slot": 1, "data": b64(bytes(769))}), 422)
+        self.assertEqual(post("error_422_bad_data.json", "/huisdev/scene/store", {"slot": 1, "data": "###"}), 422)
 
 
 if __name__ == "__main__":

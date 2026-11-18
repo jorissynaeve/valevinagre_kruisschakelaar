@@ -1,4 +1,5 @@
 """Hulp voor de tests: start de C++-testdriver (de echte huisdev.h op een host) en praat ermee via een regelprotocol."""
+import base64
 import json
 import os
 import re
@@ -45,8 +46,12 @@ def fnv1a(data: bytes) -> str:
     return "%08x" % h
 
 
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
 def rev_body(descriptor_text: str) -> str:
-    """De tekst waarover `rev` wordt berekend: "points":[...],"actions":[...] (zie HUISDEV.md §5)."""
+    """De tekst waarover `rev` wordt berekend: "points":[...],"actions":[...] (en bij scenes ,"scenes":{...}; zie HUISDEV.md §5)."""
     i = descriptor_text.index('"points":[')
     return descriptor_text[i:-1]
 
@@ -132,6 +137,40 @@ class Dev:
 
     def rev(self):
         return self.descriptor()[1]["rev"]
+
+    # ---- scenes (1.1) ----
+    def scenes_on(self, slots=8, max_bytes=768, sched=8, *formats):
+        self.cmd("scenes", slots, max_bytes, sched, *(formats or ("ledscene/1",)))
+
+    def sc(self, action, obj=None, token=TOKEN, raw=None):
+        """POST /huisdev/scene/<action> met een JSON-object (of ruwe tekst)."""
+        return self.post("/huisdev/scene/" + action, obj, token=token, raw=raw)
+
+    def scene_running(self, slot, hash_hex, until=0):
+        self.cmd("scene_running", slot, hash_hex, until)
+
+    def scene_idle(self):
+        self.cmd("scene_idle")
+
+    def settime(self, epoch):
+        self.cmd("settime", epoch)
+
+    def advance(self, ms):
+        self.cmd("advance", ms)
+
+    def writes(self):
+        return int(self.cmd("nvs_writes")[0])
+
+    def scene_log(self):
+        return self.cmd("scene_log")
+
+    def scene_state(self, token=TOKEN):
+        return self.state(token)[1]["scenes"]
+
+    def prefs_get(self, ns, key):
+        """None als de sleutel ontbreekt, anders de opgeslagen bytes."""
+        r = self.cmd("prefs_get", ns, key)[0]
+        return None if r == "-" else bytes.fromhex(r[1:])
 
 
 class Base(unittest.TestCase):
