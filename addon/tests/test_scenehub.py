@@ -458,6 +458,13 @@ def test_the_scene_block_shows_on_the_schema_and_its_inputs_are_checked(tmp_path
                     hub.scn.update_block(bid, {"refs": refs})
             hub.scn.update_block(bid, {"refs": {"i1": None}})
             assert hub.scn.rules.items[bid]["inputs"][0]["ref"] is None
+            # een bron die intussen weg is, blokkeert een andere wijziging niet (een ingang erbij) en de melding noemt de ingang
+            r.model.remove_module(t7)
+            hub.scn.update_block(bid, {"inputs": [{"id": "i1"}, {"id": "i2"}, {"name": "Extra", "kind": "bool"}]})
+            assert hub.scn.rules.items[bid]["inputs"][1]["ref"] == f"m:{t7}" and len(hub.scn.rules.items[bid]["inputs"]) == 3
+            with pytest.raises(ModelError, match="ingang Wekker: .*niet bestaat"):
+                hub.scn.update_block(bid, {"refs": {"i2": "m:bestaat_niet"}})
+            t7 = r.model.add_module("time", "Zeven", "07:00")
             with pytest.raises(ModelError, match="al een blok Scènes"):
                 hub.scn.add_block({"device": did})
             with pytest.raises(ModelError, match="onbekend apparaat"):

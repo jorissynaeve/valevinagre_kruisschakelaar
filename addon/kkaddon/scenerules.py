@@ -80,7 +80,11 @@ def _clean_inputs(raw, old: dict | None, check_ref: Callable[[str, str], None]) 
         else:
             if not isinstance(ref, str):
                 raise ModelError(f"ingang {name}: ongeldige bron")
-            check_ref(ref, kind)
+            if not (iid in prev and prev[iid]["ref"] == ref and prev[iid]["kind"] == kind):  # alleen een nieuwe of gewijzigde bron controleren: een bron die intussen weg is mag een andere wijziging niet blokkeren
+                try:
+                    check_ref(ref, kind)
+                except ModelError as e:
+                    raise ModelError(f"ingang {name}: {e}") from None
         out.append({"id": iid, "name": name, "kind": kind, "ref": ref})
     return out, nxt
 
