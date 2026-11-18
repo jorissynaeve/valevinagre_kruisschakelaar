@@ -356,28 +356,46 @@ def _common(hold_s, fade, resume):
     return (_int(hold_s, "hold_s", 0, MAX_HOLD_S), _int(fade, "fade", 0, 255), _int(resume, "resume", 0, 65535))
 
 
+def _brightness(v):
+    """Helderheid per scène in procenten licht, 1..100 (een volledig zwarte scène heeft geen zin)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not 1 <= v <= 100:  # NaN valt hier ook buiten
+        raise SceneError("brightness: verwacht een getal tussen 1 en 100 (procent licht)")
+    return v
+
+
+def _dim(frames, brightness):
+    """Schaalt de `lum` van elk frame met `brightness` procent licht: `lum` is gamma-gecodeerd, dus lum' = round(lum * (brightness/100) ** (1/2.2)). Bij 100 verandert er niets (dezelfde bytes als zonder dit veld)."""
+    if brightness != 100:
+        k = (brightness / 100) ** (1 / 2.2)
+        for f in frames:
+            f.lum = int(f.lum * k + 0.5)
+    return frames
+
+
 def _tick_for(total_ms_, segments):
     """tick (ms, veelvoud van 100) zodat elke dt in 16 bits past."""
     longest = max(1, math.ceil(total_ms_ / max(1, segments)))
     return max(100, math.ceil(longest / 65535 / 100) * 100)
 
 
-def gen_static(color=(65, 38, 10), lum=255, hold_s=0, fade=20, resume=65535) -> bytes:
-    """Effen kleur. hold_s=0: tot stop (het device begrenst). Standaard het nachtlampje (warm wit, ~5 %)."""
+def gen_static(color=(65, 38, 10), lum=255, hold_s=0, fade=20, resume=65535, brightness=100) -> bytes:
+    """Effen kleur. hold_s=0: tot stop (het device begrenst). Standaard het nachtlampje (warm wit, ~5 %). `brightness`: % licht (1..100), zie `_dim`."""
     c = _color(color, "color")
     hold_s, fade, resume = _common(hold_s, fade, resume)
-    return build(Scene([Frame(0, 0, _int(lum, "lum", 0, 255), 0, [Span(0, 256, c)])], loops=1, end=1, tick=100, hold=hold_s, fade=fade, resume=resume))
+    brightness = _brightness(brightness)
+    return build(Scene(_dim([Frame(0, 0, _int(lum, "lum", 0, 255), 0, [Span(0, 256, c)])], brightness), loops=1, end=1, tick=100, hold=hold_s, fade=fade, resume=resume))
 
 
-def gen_fade(c1, c2, minutes, hold_s=0, lum=255, fade=20, resume=65535) -> bytes:
+def gen_fade(c1, c2, minutes, hold_s=0, lum=255, fade=20, resume=65535, brightness=100) -> bytes:
     """Lineaire overgang van c1 naar c2 in `minutes` minuten (twee frames), daarna c2 vasthouden."""
     a, b = _color(c1, "c1"), _color(c2, "c2")
     minutes = _num(minutes, "minutes", 1 / 600, 1440)
     hold_s, fade, resume = _common(hold_s, fade, resume)
     lum = _int(lum, "lum", 0, 255)
+    brightness = _brightness(brightness)
     ms = round(minutes * 60000)
     tick = _tick_for(ms, 1)
-    return build(Scene([Frame(max(1, round(ms / tick)), 1, lum, 0, [Span(0, 256, a)]), Frame(0, 0, lum, 0, [Span(0, 256, b)])],
+    return build(Scene(_dim([Frame(max(1, round(ms / tick)), 1, lum, 0, [Span(0, 256, a)]), Frame(0, 0, lum, 0, [Span(0, 256, b)])], brightness),
                        loops=1, end=1, tick=tick, hold=hold_s, fade=fade, resume=resume))
 
 
@@ -410,39 +428,42 @@ def _sun_frames(count, minutes, sun_pct):
     return frames, tick
 
 
-def gen_sunrise(minutes, sun_pct=20, hold_s=0, fade=20, resume=600) -> bytes:
+def gen_sunrise(minutes, sun_pct=20, hold_s=0, fade=20, resume=600, brightness=100) -> bytes:
     """Zonsopkomst vanuit het midden in `minutes` minuten (12 frames, 3 spans), daarna het eindbeeld vasthouden (hold_s=0: tot stop)."""
     minutes = _num(minutes, "minutes", 1 / 600, 1440)
     sun_pct = _num(sun_pct, "sun_pct", 0, 100)
     hold_s, fade, resume = _common(hold_s, fade, resume)
+    brightness = _brightness(brightness)
     frames, tick = _sun_frames(12, minutes, sun_pct)
-    return build(Scene(frames, loops=1, end=1, tick=tick, hold=hold_s, fade=fade, resume=resume))
+    return build(Scene(_dim(frames, brightness), loops=1, end=1, tick=tick, hold=hold_s, fade=fade, resume=resume))
 
 
-def gen_wake(sun_min=20, wake_min=20, wake_color=(0, 100, 0), sun_pct=20, fade=50, resume=600) -> bytes:
+def gen_wake(sun_min=20, wake_min=20, wake_color=(0, 100, 0), sun_pct=20, fade=50, resume=600, brightness=100) -> bytes:
     """Wekker: zonsopkomst van `sun_min` minuten die in het laatste segment overgaat in een effen wekkerkleur, die `wake_min` minuten blijft; dan fade-out en uit."""
     sun_min = _num(sun_min, "sun_min", 1 / 600, 1440)
     wake_min = _num(wake_min, "wake_min", 1 / 60, MAX_HOLD_S / 60)
     sun_pct = _num(sun_pct, "sun_pct", 0, 100)
     c = _color(wake_color, "wake_color")
     _, fade, resume = _common(0, fade, resume)
+    brightness = _brightness(brightness)
     frames, tick = _sun_frames(12, sun_min, sun_pct)
     frames[-1] = Frame(0, 0, 255, 0, [Span(0, 256, c)])
-    return build(Scene(frames, loops=1, end=1, tick=tick, hold=round(wake_min * 60), fade=fade, resume=resume))
+    return build(Scene(_dim(frames, brightness), loops=1, end=1, tick=tick, hold=round(wake_min * 60), fade=fade, resume=resume))
 
 
 _RAINBOW = ((255, 0, 0), (255, 255, 0), (0, 255, 0), (0, 255, 255), (0, 0, 255), (255, 0, 255))
 
 
-def gen_rainbow(period_s=5, fade=20, resume=65535) -> bytes:
+def gen_rainbow(period_s=5, fade=20, resume=65535, brightness=100) -> bytes:
     """Regenboog die in `period_s` seconden één keer rond de strip loopt (§8: twee frames, scroll 256, loops=0). Naadloos en onafhankelijk van het aantal leds."""
     period_s = _num(period_s, "period_s", 0.02, 1300)
     _, fade, resume = _common(0, fade, resume)
+    brightness = _brightness(brightness)
     cuts = (0, 43, 85, 128, 171, 213, 256)
     spans = [Span(cuts[i], cuts[i + 1] - cuts[i], _RAINBOW[i], _RAINBOW[(i + 1) % 6]) for i in range(6)]
     f0 = Frame(max(1, round(period_s * 50)), 1, 255, 256, list(spans))
     f1 = Frame(1, 0, 255, 0, [Span(s.a, s.len, s.c1, s.c2) for s in spans])
-    return build(Scene([f0, f1], loops=0, end=1, tick=20, hold=0, fade=fade, resume=resume))
+    return build(Scene(_dim([f0, f1], brightness), loops=0, end=1, tick=20, hold=0, fade=fade, resume=resume))
 
 
 def _only(defn: dict, allowed, kind):
@@ -489,6 +510,8 @@ def compile_def(defn: dict) -> bytes:
         raise SceneError("definitie: verwacht een object")
     kind = defn.get("kind")
     if kind == "raw":
+        if "brightness" in defn:
+            raise SceneError("raw: brightness hoort niet bij een eigen definitie, zet lum per frame")
         return _raw(defn)
     if kind not in _GENS:
         raise SceneError("kind: verwacht static, fade, sunrise, wake, rainbow of raw")
@@ -502,11 +525,28 @@ def compile_def(defn: dict) -> bytes:
 
 # ------------------------------------------------------------ voorbeeld voor de UI (niet normatief)
 
-def _window_ms(sc: Scene) -> int:
+def window_ms(sc: Scene) -> int:
+    """Wat een tijdschuif beslaat: de duur van een begrensde scène, bij een onbegrensde een ronde (een lus) of de speelduur (0 bij een scène die niet verandert)."""
     if sc.loops == 0:
         return span_ms(sc)
     t = total_ms(sc)
     return t if t is not None else play_ms(sc)
+
+
+_window_ms = window_ms
+
+
+def _srgb(px) -> list:
+    return [int((v / 65535) ** (1 / 2.2) * 255 + 0.5) for v in px]
+
+
+def frame_at(defn_or_bytes, t_ms, n: int = 24) -> dict:
+    """{"t_ms", "total_ms", "window_ms", "bounded", "frame": [[r,g,b] per led]}: het beeld `t_ms` ms na de start (zoals `render` op het apparaat; voorbij het einde het eindbeeld of
+    uit, een lus wikkelt), kleuren 0..255 zoals `preview`. `window_ms` is wat de schuif van de pagina beslaat: de duur, of bij een onbegrensde scène een ronde (een lus) of de speelduur."""
+    data = compile_def(defn_or_bytes) if isinstance(defn_or_bytes, dict) else bytes(defn_or_bytes)
+    sc = parse(data)
+    n, t_ms = _int(n, "n", 1, 300), _int(t_ms, "t_ms", 0, MAX_SPAN_MS)
+    return {"t_ms": t_ms, "total_ms": total_ms(sc), "window_ms": _window_ms(sc), "bounded": is_bounded(sc), "frame": [_srgb(px) for px in render(sc, t_ms, n)]}
 
 
 def preview(defn_or_bytes, n: int = 20, samples: int = 60) -> dict:
@@ -516,5 +556,5 @@ def preview(defn_or_bytes, n: int = 20, samples: int = 60) -> dict:
     n, samples = _int(n, "n", 1, 300), _int(samples, "samples", 1, 1000)
     win = _window_ms(sc)
     times = [0] if win == 0 or samples == 1 else sorted({win * i // (samples - 1) for i in range(samples)})
-    frames = [[[int((v / 65535) ** (1 / 2.2) * 255 + 0.5) for v in px] for px in render(sc, t, n)] for t in times]
+    frames = [[_srgb(px) for px in render(sc, t, n)] for t in times]
     return {"n": n, "bounded": is_bounded(sc), "total_ms": total_ms(sc), "window_ms": win, "times": times, "frames": frames}

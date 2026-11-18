@@ -6,6 +6,10 @@ zien welke verzoeken er kwamen. De foutcodes zijn die van HUISDEV §4.
 Scènes (`scenes(...)`, of de fabriek `kidswekker()`): slots, `store/play/stop/schedule` met `bad_slot`, `too_large`, `bad_data`, de FNV-hash van `scenes.hash_hex`,
 `have/run/sched/time` in de state en een klok die de test zelf verzet (`now`; `None` is de echte tijd, `time_valid=False` een klok die nog niet gezet is). Een
 geplande start waarvan de tijd gekomen is, start zodra de klok hem bereikt (`_advance`), zoals de header in `loop()` doet.
+
+Protocol 1.2: `scenes(seek=True)` (of `kidswekker(seek=True)`) meldt `"seek": true` en kent `POST /huisdev/scene/seek` met `{"slot","t"}`, `{"data","t"}` of `{"t"}` (dezelfde scène als
+de vorige seek): het beeld op t ms vasthouden (`run.seek`, `until` null), 422 `bad_value` voor een t buiten 0..86 400 000, `rejected` "geen scène om te tonen" bij `{"t"}` zonder eerdere
+seek. Een `play` of `stop` wist het vasthouden, een geplande start vervangt het, en 300 s na de laatste seek eindigt het vanzelf (`seek_hold_s`, op de klok van het apparaat).
 """
 import asyncio
 import base64
@@ -47,6 +51,9 @@ class FakeEsp:
         self.writes: list[tuple[str, object]] = []  # ("store", slot) / ("schedule", lijst): wat er daadwerkelijk naar "flash" ging
         self.wrong_hash = False  # een apparaat dat een andere hash meldt dan wat we stuurden, en niets opslaat
         self.play_started: list[tuple[int, str]] = []  # (slot, hash) van elke start (ook een geplande)
+        self.seeking: dict | None = None  # {"data": bytes, "slot": int, "t": ms, "at": epoch van de laatste seek}: het beeld dat nu wordt vastgehouden (run.seek)
+        self.seek_hold_s = 300
+        self.seek_log: list[dict] = []  # de body van elke seek die tot het ontleden kwam
 
     # ------------------------------------------------------------ wat het apparaat heeft
 
@@ -59,10 +66,12 @@ class FakeEsp:
         self.actions[aid] = {"def": {"id": aid, "label": label, **kw}}
         return self
 
-    def scenes(self, formats=("ledscene/1",), slots=8, max_bytes=768, sched=8):
-        """Dit apparaat ondersteunt scènes (HUISDEV 1.1): het `scenes`-object in de descriptor; de `rev` rekent het mee."""
+    def scenes(self, formats=("ledscene/1",), slots=8, max_bytes=768, sched=8, seek=False):
+        """Dit apparaat ondersteunt scènes (HUISDEV 1.1): het `scenes`-object in de descriptor; de `rev` rekent het mee. `seek`: protocol 1.2, `"seek": true` erbij."""
         self.scene_cap = {"formats": list(formats), "slots": slots, "max_bytes": max_bytes, "sched": sched}
-        self.proto = "1.1"
+        if seek:
+            self.scene_cap["seek"] = True
+        self.proto = "1.2" if seek else "1.1"
         return self
 
     def remove_point(self, pid):
@@ -93,6 +102,8 @@ class FakeEsp:
             sce = {"have": {str(n): {"h": sc.hash_hex(d), "n": len(d)} for n, d in sorted(self.slots.items())}, "time": int(self.epoch()) if self.time_valid else None}
             if self.run:
                 sce["run"] = dict(self.run)
+                if self.seeking:
+                    sce["run"]["seek"] = self.seeking["t"]
             if self.sched:
                 sce["sched"] = [dict(e) for e in self.sched]
             out["scenes"] = sce
@@ -106,6 +117,8 @@ class FakeEsp:
     def _start(self, slot: int, data: bytes) -> str:
         """Een scène laten spelen (een slot, of rechtstreeks met slot 0). Dezelfde scène die al speelt: niets."""
         h = sc.hash_hex(data)
+        if self.seeking:
+            self.seeking = self.run = None  # een start (play, geplande start) vervangt het vasthouden, ook van dezelfde scène
         if self.run and self.run["h"] == h:
             return h
         s = sc.parse(data)
@@ -121,6 +134,8 @@ class FakeEsp:
         now = self.epoch()
         if self.run and self.run["until"] is not None and now >= self.run["until"]:
             self.run = None
+        if self.seeking and now >= self.seeking["at"] + self.seek_hold_s:
+            self.seeking = self.run = None  # 300 s na de laatste seek: klaar (de fade-out sla ik over)
         for e in [e for e in self.sched if e["at"] <= now]:
             self.sched.remove(e)
             if e["slot"] in self.slots:
@@ -197,10 +212,39 @@ class FakeEsp:
                 if not self._slot_ok(cap, body["slot"]):
                     return self._err(422, "bad_slot")
                 if self.run and self.run["slot"] == body["slot"]:
-                    self.run = None
+                    self.run = self.seeking = None
             else:
-                self.run = None
+                self.run = self.seeking = None
             return ok()
+        if op == "seek":
+            self.seek_log.append(dict(body))
+            t = body.get("t")
+            if not isinstance(t, int) or isinstance(t, bool) or not 0 <= t <= 86_400_000:
+                return self._err(422, "bad_value", "t")
+            if "slot" in body and "data" in body:
+                return self._err(422, "bad_value", "slot en data")
+            if "slot" in body:
+                if not self._slot_ok(cap, body["slot"]):
+                    return self._err(422, "bad_slot")
+                if body["slot"] not in self.slots:
+                    return no("slot is leeg")
+                data, slot = self.slots[body["slot"]], body["slot"]
+            elif "data" in body:
+                data, slot = self._decode(body["data"]), 0
+                if data is None:
+                    return self._err(422, "bad_data", "geen base64")
+                try:
+                    sc.parse(data, cap["max_bytes"])
+                except sc.SceneError as e:
+                    return no(str(e))
+            else:
+                if not self.seeking:
+                    return no("geen scène om te tonen")
+                data, slot = self.seeking["data"], self.seeking["slot"]
+            self.seeking = {"data": data, "slot": slot, "t": t, "at": self.epoch()}
+            h = sc.hash_hex(data)
+            self.run = {"slot": slot, "h": h, "until": None}
+            return ok(hash=h)
         # schedule
         entries = body.get("entries")
         if not isinstance(entries, list):
@@ -277,7 +321,7 @@ class FakeEsp:
             if not ok_tok:
                 return self._err(401, "token")
             return await (self._set(body) if path.endswith("set") else self._do(body))
-        if self.scene_cap and path in ("/huisdev/scene/store", "/huisdev/scene/play", "/huisdev/scene/stop", "/huisdev/scene/schedule"):
+        if self.scene_cap and (path in ("/huisdev/scene/store", "/huisdev/scene/play", "/huisdev/scene/stop", "/huisdev/scene/schedule") or (path == "/huisdev/scene/seek" and self.scene_cap.get("seek"))):
             if not self.token:
                 return self._err(403, "not_claimed", "eerst claimen")
             if not ok_tok:
@@ -390,13 +434,13 @@ class FakeEsp:
         self.udp.sendto(json.dumps(self.discovery()).encode(), ("127.0.0.1", port))
 
 
-def kidswekker(slots=8, max_bytes=768, sched=8) -> FakeEsp:
-    """Een ledstrip-wekker met scènes (HUISDEV 1.1 §16): een paar punten en `ledscene/1` in acht slots."""
+def kidswekker(slots=8, max_bytes=768, sched=8, seek=False) -> FakeEsp:
+    """Een ledstrip-wekker met scènes (HUISDEV 1.1 §16): een paar punten en `ledscene/1` in acht slots; met `seek=True` protocol 1.2 (`scene/seek`)."""
     e = FakeEsp(hid="kidswekker-1a2b3c", type="kidswekker", name="Kidswekker", fw="1.0.0", proto="1.1")
     e.point("brightness", "Helderheid", "int", 80, unit="%", min=0, max=100, step=1, writable=True)
     e.point("armed", "Wekker aan", "bool", True)
     e.point("rssi", "WiFi-signaal", "int", -55, unit="dBm", diag=True)
-    e.scenes(slots=slots, max_bytes=max_bytes, sched=sched)
+    e.scenes(slots=slots, max_bytes=max_bytes, sched=sched, seek=seek)
     return e
 
 

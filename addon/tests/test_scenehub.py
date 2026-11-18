@@ -130,8 +130,8 @@ def block(r, key):
 # ------------------------------------------------------------ de versiestand en de descriptor
 
 def test_proto_state_upgrade_only_for_huisdev_devices():
-    assert eh.CURRENT == (1, 1)
-    assert [proto_state(x) for x in ("1.0", "1.1", "1.2", "2.0", "x", None)] == ["upgrade", "ok", "ok", "unsupported", "unsupported", "unsupported"]
+    assert eh.CURRENT == (1, 2)
+    assert [proto_state(x) for x in ("1.0", "1.1", "1.2", "1.3", "2.0", "x", None)] == ["upgrade", "upgrade", "ok", "ok", "unsupported", "unsupported", "unsupported"]
     for driver in ("hue", "nuki", "brink", "smappee", "reolink", "esphome"):
         assert proto_state("1.0", driver) == "ok", driver
         assert proto_state("2.0", driver) == "unsupported", "een onbekende major blijft onbekend, voor elk soort"
@@ -142,12 +142,14 @@ def test_only_a_real_huisdev_device_shows_upgrade_in_the_status(tmp_path, monkey
     async def go():
         r, hub, esp, did, clock = await env(tmp_path, monkeypatch, esp=pool(), manual=False)  # een 1.0-apparaat
         try:
-            assert hub.status()[0]["proto_state"] == "upgrade" and hub.status()[0]["current"] == "1.1"
+            assert hub.status()[0]["proto_state"] == "upgrade" and hub.status()[0]["current"] == "1.2"
             for drv in ("hue", "nuki", "brink", "smappee", "esphome"):
                 hub.devices[did]["driver"] = drv  # alle andere soorten zeggen vast 1.0
                 assert hub.status()[0]["proto_state"] == "ok", drv
             hub.devices[did]["driver"] = "huisdev"
             hub.devices[did]["proto"] = "1.1"
+            assert hub.status()[0]["proto_state"] == "upgrade", "1.1 mist `scene/seek` (1.2)"
+            hub.devices[did]["proto"] = "1.2"
             assert hub.status()[0]["proto_state"] == "ok"
         finally:
             await shutdown(hub, esp)
@@ -289,6 +291,7 @@ def test_library_view_has_what_the_page_needs(tmp_path):
     v = {x["id"]: x for x in lib.view()}
     assert v["s1"]["bounded"] is True and v["s1"]["total_ms"] == 5 * 60000 + 10 * 60000 + 5000 and v["s1"]["bytes"] == len(lib.bytes["s1"]) and v["s1"]["hash"] == lib.hashes["s1"]
     assert v["s2"]["bounded"] is False and v["s2"]["total_ms"] is None
+    assert v["s1"]["window_ms"] == v["s1"]["total_ms"] and v["s2"]["window_ms"] == 5020, "de lengte van de tijdschuif: de duur, of een ronde van een lus"
     p = scenehub.preview({"kind": "static", "color": "#ff0000"}, 5, 3)
     assert p["n"] == 5 and len(p["frames"]) == len(p["times"]) and p["frames"][0][0][0] == 255 and p["frames"][0][0][1] == 0
     with pytest.raises(ModelError, match="scène"):
@@ -1215,6 +1218,519 @@ def test_removing_the_device_cleans_up_its_scene_state(tmp_path, monkeypatch):
             assert sid in hub.scn.lib.items, "de bibliotheek blijft"
         finally:
             await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+# ------------------------------------------------------------ de tijdschuif: scene/seek (protocol 1.2) en helderheid
+
+SUN = {"kind": "sunrise", "minutes": 20}
+
+
+async def seeker(tmp_path, monkeypatch, gap=0.03, **kw):
+    """Een kidswekker met `scene/seek` (1.2) en een korte seek-pauze (de echte is 0,125 s)."""
+    monkeypatch.setattr(scenehub, "SEEK_GAP", gap)
+    return await env(tmp_path, monkeypatch, esp=kidswekker(seek=True), **kw)
+
+
+def seeks(esp):
+    return [b for _, b in calls(esp, "seek")]
+
+
+def test_descriptor_keeps_seek_only_when_it_is_true():
+    ok = clean_descriptor(kidswekker(seek=True).descriptor())
+    assert ok["scenes"] == {"formats": ["ledscene/1"], "slots": 8, "max_bytes": 768, "sched": 8, "seek": True} and ok["proto"] == "1.2"
+    assert "seek" not in clean_descriptor(kidswekker().descriptor())["scenes"], "een 1.1-apparaat verandert niet"
+    base = kidswekker().descriptor()
+    for bad in ("true", 1, "yes", [], None, False):
+        assert "seek" not in clean_descriptor({**base, "scenes": {**base["scenes"], "seek": bad}})["scenes"], bad
+    assert kidswekker(seek=True).rev != kidswekker().rev, "de rev rekent `seek` mee"
+    assert scenehub.clean_scn({"sel": [], "slots": {}, "cap": ok["scenes"]})["cap"]["seek"] is True, "en het blijft bewaard"
+
+
+def test_run_seek_is_read_and_only_its_presence_counts(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await seeker(tmp_path, monkeypatch)
+        try:
+            on = hub.scn.on_state
+            base = {"have": {}, "run": {"slot": 0, "h": "a1b2c3d4", "until": None}, "sched": [], "time": 1_799_000_000}
+            assert on(did, base) is True
+            assert hub.scn.rt[did]["run"] == {"slot": 0, "h": "a1b2c3d4", "until": None}, "zonder seek verandert de vorm niet"
+            assert on(did, {**base, "run": {**base["run"], "seek": 1000}}) is True and hub.scn.rt[did]["run"]["seek"] == 1000, "een seek-beeld verschijnt"
+            assert on(did, {**base, "run": {**base["run"], "seek": 5000}}) is False and hub.scn.rt[did]["run"]["seek"] == 5000, "het tijdstip telt niet (de pagina ververst niet bij elke poll)"
+            assert on(did, base) is True and "seek" not in hub.scn.rt[did]["run"], "en verdwijnt"
+            for bad in (-1, "5", 1.5, True, None):
+                on(did, {**base, "run": {**base["run"], "seek": bad}})
+                assert "seek" not in hub.scn.rt[did]["run"], bad
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_a_seek_sends_the_bytes_first_and_then_only_t_and_again_the_bytes_on_a_change(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await seeker(tmp_path, monkeypatch)
+        try:
+            got = await hub.scn.seek(did, {"def": SUN, "t_ms": 60_000})
+            assert got == {"ok": True, "message": "toont 1:00"}
+            data = base64.b64encode(sc.compile_def(SUN)).decode()
+            assert seeks(esp) == [{"data": data, "t": 60_000}], "de eerste keer met de bytes"
+            assert esp.seeking["t"] == 60_000 and esp.run["h"] == sc.hash_hex(sc.compile_def(SUN)) and esp.run["until"] is None
+            for t in (61_000, 90_000, 0):
+                assert (await hub.scn.seek(did, {"def": SUN, "t_ms": t}))["ok"]
+                await asyncio.sleep(scenehub.SEEK_GAP)
+            assert seeks(esp)[1:] == [{"t": 61_000}, {"t": 90_000}, {"t": 0}], "daarna alleen het tijdstip (spaart het wifi-verkeer)"
+            await cycle(hub, did)  # een poll ertussen: de state toont het seek-beeld, dus nog steeds alleen t
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 5})
+            assert seeks(esp)[-1] == {"t": 5}
+            await asyncio.sleep(scenehub.SEEK_GAP)
+            await hub.scn.seek(did, {"def": {**SUN, "brightness": 50}, "t_ms": 5})
+            assert seeks(esp)[-1] == {"data": base64.b64encode(sc.compile_def({**SUN, "brightness": 50})).decode(), "t": 5}, "een gewijzigde definitie: weer met de bytes"
+            await asyncio.sleep(scenehub.SEEK_GAP)
+            await hub.scn.seek(did, {"def": {**SUN, "brightness": 50}, "t_ms": 6})
+            assert seeks(esp)[-1] == {"t": 6}
+            v = hub.status()[0]["scn"]
+            assert v["run"]["seek"] == 6 and v["cap"]["seek"] is True
+            assert not any(c[0] in ("store", "schedule") for c in esp.scene_calls), "een seek raakt de slots en de geplande starts niet"
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_a_seek_from_the_library_or_a_slot(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await seeker(tmp_path, monkeypatch)
+        try:
+            a = hub.scn.add({"name": "Zon", "def": SUN})
+            hub.scn.select(did, [a])
+            await fill(hub, did, esp)
+            await hub.scn.seek(did, {"id": a, "t_ms": 1000})
+            assert seeks(esp)[-1] == {"data": base64.b64encode(hub.scn.lib.bytes[a]).decode(), "t": 1000}
+            v = hub.status()[0]["scn"]["run"]
+            assert v["seek"] == 1000 and v["id"] == a and v["name"] == "Zon", "de pagina weet welke scène"
+            await asyncio.sleep(scenehub.SEEK_GAP)
+            await hub.scn.seek(did, {"slot": 1, "t_ms": 2000})
+            assert seeks(esp)[-1] == {"slot": 1, "t": 2000}, "een slot: met het slotnummer"
+            await asyncio.sleep(scenehub.SEEK_GAP)
+            await hub.scn.seek(did, {"slot": 1, "t_ms": 3000})
+            assert seeks(esp)[-1] == {"t": 3000}
+            assert hub.status()[0]["scn"]["run"]["name"] == "Zon"
+            for body, word in (({"slot": 2, "t_ms": 0}, "leeg"), ({"slot": 9, "t_ms": 0}, "nummer"), ({"id": "s99", "t_ms": 0}, "onbekende scène"), ({"t_ms": 0}, "precies"),
+                               ({"id": a, "def": SUN, "t_ms": 0}, "precies"), ({"def": {"kind": "nope"}, "t_ms": 0}, "kind"), ({"def": {**SUN, "brightness": 0}, "t_ms": 0}, "brightness")):
+                with pytest.raises(ModelError, match=word):
+                    await hub.scn.seek(did, body)
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_seek_validates_t_and_the_size(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await seeker(tmp_path, monkeypatch)
+        try:
+            for t in (-1, 86_400_001, 1.5, "0", None, True):
+                with pytest.raises(ModelError, match="t_ms"):
+                    await hub.scn.seek(did, {"def": SUN, "t_ms": t})
+            assert (await hub.scn.seek(did, {"def": SUN, "t_ms": 86_400_000.0}))["ok"], "een heel getal als float mag"
+            assert seeks(esp)[-1]["t"] == 86_400_000
+            hub.devices[did]["scn"]["cap"] = {**hub.devices[did]["scn"]["cap"], "max_bytes": 100}
+            with pytest.raises(ModelError, match="hoogstens 100"):
+                await hub.scn.seek(did, {"def": SUN, "t_ms": 0})
+            assert len(seeks(esp)) == 1, "wat niet past wordt niet gestuurd"
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_the_device_refusing_t_alone_gets_the_bytes_again(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await seeker(tmp_path, monkeypatch)
+        try:
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 1000})
+            esp.seeking = esp.run = None  # het apparaat hield het niet meer vast (de 300 s verliep, of het werd herstart), de add-on weet dat nog niet
+            await asyncio.sleep(scenehub.SEEK_GAP)
+            assert (await hub.scn.seek(did, {"def": SUN, "t_ms": 2000}))["ok"]
+            assert [("data" in b, b["t"]) for b in seeks(esp)] == [(True, 1000), (False, 2000), (True, 2000)], "t alleen werd geweigerd, dan met de bytes"
+            assert esp.seeking["t"] == 2000
+            # zo ook als het apparaat zelf het vasthouden liet verlopen (300 s na de laatste seek) en de add-on het in een poll zag
+            clock.advance(301)
+            await cycle(hub, did)
+            assert esp.seeking is None and hub.scn.rt[did]["run"] is None
+            await asyncio.sleep(scenehub.SEEK_GAP)
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 3000})
+            assert "data" in seeks(esp)[-1]
+            # een echte weigering (een ongeldige scène op het apparaat) blijft een foutmelding
+            esp.reject = "kapot"
+            await asyncio.sleep(scenehub.SEEK_GAP)
+            with pytest.raises(ModelError, match="kapot"):
+                await hub.scn.seek(did, {"def": {**SUN, "minutes": 30}, "t_ms": 0})
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_seeks_are_merged_the_newest_wins_and_at_most_8_a_second(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await seeker(tmp_path, monkeypatch, gap=0.1)
+        try:
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 0})
+            # een schuif: twintig seeks in 0,2 s
+            tasks, t0 = [], time.monotonic()
+            for i in range(1, 21):
+                tasks.append(asyncio.ensure_future(hub.scn.seek(did, {"def": SUN, "t_ms": i * 1000})))
+                await asyncio.sleep(0.01)
+            res = await asyncio.gather(*tasks)
+            most = int((time.monotonic() - t0) / 0.1) + 1  # hoogstens een per pauze van 0,1 s (op een trage machine duurt de schuif langer, dus mogen het er meer zijn)
+            sent = [r for r in res if not r.get("superseded")]
+            assert 1 <= len(sent) <= most and res[-1] == {"ok": True, "message": "toont 0:20"}, "de laatste (het nieuwste tijdstip) is wat bleef staan"
+            assert all(r["ok"] for r in res) and sum(1 for r in res if r.get("superseded")) >= 20 - most, "wat tussendoor vervangen werd, kreeg een gewoon antwoord"
+            assert esp.seeking["t"] == 20_000 and seeks(esp)[-1] == {"t": 20_000}
+            assert len(seeks(esp)) <= most + 1 and len(seeks(esp)) < 21, "0,2 s bij een pauze van 0,1 s: een paar, geen twintig"
+            assert [b["t"] for b in seeks(esp)] == sorted(b["t"] for b in seeks(esp)), "nooit een oudere na een nieuwere"
+            await eventually(lambda: f"seek:{did}" not in hub.tasks)
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_one_seek_request_at_a_time_and_the_newest_is_sent_after_a_slow_one(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await seeker(tmp_path, monkeypatch, gap=0.001)
+        try:
+            real, state = hub.scn._post, {"now": 0, "max": 0, "order": []}
+
+            async def slow(did_, path, body):
+                state["now"] += 1
+                state["max"] = max(state["max"], state["now"])
+                state["order"].append(body.get("t"))
+                await asyncio.sleep(0.05)
+                try:
+                    return await real(did_, path, body)
+                finally:
+                    state["now"] -= 1
+            hub.scn._post = slow
+            tasks = [asyncio.ensure_future(hub.scn.seek(did, {"def": SUN, "t_ms": 1000}))]
+            await asyncio.sleep(0.02)  # de eerste is onderweg
+            for t in (2000, 3000, 4000, 5000):
+                tasks.append(asyncio.ensure_future(hub.scn.seek(did, {"def": SUN, "t_ms": t})))
+                await asyncio.sleep(0.005)
+            res = await asyncio.gather(*tasks)
+            assert state["max"] == 1, "nooit twee verzoeken tegelijk"
+            assert state["order"] == [1000, 5000], "wat tijdens het sturen binnenkwam: alleen het nieuwste"
+            assert [bool(x.get("superseded")) for x in res] == [False, True, True, True, False]
+            assert esp.seeking["t"] == 5000
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_seeks_do_not_touch_sync_schedule_slots_or_the_hourly_limits(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock, sid, tm = await alarm(tmp_path, monkeypatch, esp=kidswekker(seek=True))
+        monkeypatch.setattr(scenehub, "SEEK_GAP", 0.0)
+        try:
+            await cycle(hub, did, 3)
+            rt = hub.scn.rt[did]
+            before = (list(esp.writes), dict(esp.slots), list(esp.sched), len(rt["stores"]), len(rt["sched_tries"]), dict(hub.devices[did]["scn"]["slots"]), dict(rt["tried"]), rt["sched_sent"])
+            assert before[0] == [("store", 1), ("schedule", esp.sched)] and esp.sched
+            for i in range(40):
+                await hub.scn.seek(did, {"def": SUN, "t_ms": i * 1000})
+                if i % 5 == 0:
+                    await cycle(hub, did)  # de sync loopt ertussen
+            await hub.scn.seek(did, {"id": sid, "t_ms": 1000})
+            await cycle(hub, did, 2)
+            assert before == (list(esp.writes), dict(esp.slots), list(esp.sched), len(rt["stores"]), len(rt["sched_tries"]), dict(hub.devices[did]["scn"]["slots"]), dict(rt["tried"]), rt["sched_sent"])
+            assert not [c for c in esp.scene_calls if c[0] in ("store", "schedule")][2:], "geen enkele schrijfactie erbij"
+            assert esp.seeking and hub.scn.rt[did]["run"]["seek"] == esp.seeking["t"]
+            # en het plafond van 6 schrijfacties per uur is nog helemaal vrij voor wie het nodig heeft
+            for n in range(2, 7):
+                other = hub.scn.add({"name": f"Extra {n}", "def": {"kind": "static", "color": [n, 2, 3]}})
+                hub.scn.select(did, hub.devices[did]["scn"]["sel"] + [other])
+                await cycle(hub, did)
+            assert len([w for w in esp.writes if w[0] == "store"]) == 6 == len(rt["stores"]), "de sync schreef zijn zes slots: het plafond telde alleen die, niet de seeks"
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_a_device_without_seek_gets_a_clear_message_and_no_request(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await env(tmp_path, monkeypatch)  # een 1.1-kidswekker
+        try:
+            for body in ({"def": SUN, "t_ms": 0}, {}):
+                with pytest.raises(ModelError, match="kan niet door een scène scrollen.*ouder dan 1.2"):
+                    await hub.scn.seek(did, body)
+            with pytest.raises(ModelError, match="firmware ouder dan 1.2"):
+                await hub.scn.seek_stop(did)
+            assert not any("/seek" in c[1] for c in esp.calls) and not hub.scn.rt[did]["seek_q"]
+            assert f"seek:{did}" not in hub.tasks
+            with pytest.raises(ModelError, match="onbekend apparaat"):
+                await hub.scn.seek("nee", {"def": SUN, "t_ms": 0})
+        finally:
+            await shutdown(hub, esp)
+        (tmp_path / "pool").mkdir()
+        r, hub, esp, did, clock = await env(tmp_path / "pool", monkeypatch, esp=pool(), manual=False)  # een apparaat zonder scènes
+        try:
+            with pytest.raises(ModelError, match="scrollen"):
+                await hub.scn.seek(did, {"def": SUN, "t_ms": 0})
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_a_seek_on_an_offline_device_is_refused_and_not_queued(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await seeker(tmp_path, monkeypatch)
+        try:
+            hub.online.discard(did)
+            with pytest.raises(ModelError, match="geen verbinding"):
+                await hub.scn.seek(did, {"def": SUN, "t_ms": 0})
+            with pytest.raises(ModelError, match="geen verbinding"):
+                await hub.scn.seek_stop(did)
+            assert hub.scn.rt.get(did, {}).get("seek_q") is None and f"seek:{did}" not in hub.tasks and not seeks(esp)
+            hub.online.add(did)
+            assert (await hub.scn.seek(did, {"def": SUN, "t_ms": 0}))["ok"], "er staat niets te wachten: de eerstvolgende gaat gewoon"
+            assert len(seeks(esp)) == 1
+            # het apparaat valt weg tussen het verzoek en het sturen: een melding, geen wachtrij
+            hub.online.discard(did)
+            req = {"target": {"key": ("x",), "h": "x", "slot": None, "data": b"x"}, "t": 1, "fut": asyncio.get_running_loop().create_future(), "dead": False}
+            with pytest.raises(scenehub._Fail, match="geen verbinding"):
+                await hub.scn._do_seek(did, hub.scn.rt[did], req)
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_play_stop_and_an_input_edge_win_over_a_seek(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock, sid, setter = await wired(tmp_path, monkeypatch, esp=kidswekker(seek=True))
+        monkeypatch.setattr(scenehub, "SEEK_GAP", 0.05)
+        try:
+            await fill(hub, did, esp)
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 1000})
+            assert esp.seeking
+            # play vanaf de pagina: vervangt het vasthouden
+            await hub.scn.play(did, {"id": sid})
+            assert esp.seeking is None and "seek" not in esp.state()["scenes"]["run"] and esp.run["slot"] == 1
+            await cycle(hub, did)
+            assert "seek" not in hub.scn.rt[did]["run"]
+            await asyncio.sleep(0.06)
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 2000})
+            assert "data" in seeks(esp)[-1], "na een play weet de add-on dat er niets meer vastgehouden wordt: weer met de bytes"
+            # een stop vanaf de pagina
+            await hub.scn.stop(did, {})
+            assert esp.seeking is None and esp.run is None
+            await asyncio.sleep(0.06)
+            # een wachtende seek wordt door een play weggegooid (en komt dus nooit meer na de play aan)
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 3000})
+            n = len(seeks(esp))
+            pending = asyncio.ensure_future(hub.scn.seek(did, {"def": SUN, "t_ms": 4000}))  # wacht op de pauze
+            await asyncio.sleep(0.01)
+            await hub.scn.play(did, {"id": sid})
+            assert (await pending) == {"ok": True, "message": "vervangen door een start", "superseded": True}
+            await asyncio.sleep(0.15)
+            assert len(seeks(esp)) == n and esp.seeking is None and esp.run["slot"] == 1, "de wachtende seek is vervallen"
+            # een flank van een echte scène-ingang
+            await asyncio.sleep(0.06)
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 5000})
+            assert esp.seeking
+            setter(False)
+            hub.tick()  # eerste stand
+            await asyncio.sleep(0.05)
+            setter(True)
+            hub.tick()
+            await settle(hub, did)
+            assert esp.seeking is None and esp.run["slot"] == 1 and esp.run["h"] == hub.scn.lib.hashes[sid], "de flank startte de scène: het vasthouden is voorbij"
+            await cycle(hub, did)
+            assert hub.status()[0]["scn"]["run"]["seek"] is None
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_a_scheduled_start_replaces_the_hold_and_the_next_seek_sends_the_bytes(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock, sid, tm = await alarm(tmp_path, monkeypatch, esp=kidswekker(seek=True))
+        monkeypatch.setattr(scenehub, "SEEK_GAP", 0.0)
+        try:
+            await cycle(hub, did, 3)
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 1000})
+            clock.advance(local(2027, 1, 5, 7, 0) - clock.epoch)  # het apparaat start de wekker zelf
+            await cycle(hub, did)
+            assert esp.seeking is None and esp.run["slot"] == 1 and "seek" not in hub.scn.rt[did]["run"]
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 2000})
+            assert "data" in seeks(esp)[-1] and esp.seeking["t"] == 2000
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_seek_stop_only_stops_a_held_picture(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await seeker(tmp_path, monkeypatch)
+        try:
+            a = hub.scn.add({"name": "Zon", "def": SUN})
+            hub.scn.select(did, [a])
+            await fill(hub, did, esp)
+            await hub.scn.play(did, {"id": a})  # een gewone scène speelt
+            assert (await hub.scn.seek_stop(did))["message"].startswith("het apparaat toont geen beeld"), "iets anders dat speelt blijft ongemoeid"
+            assert esp.run and not calls(esp, "stop")
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 1000})
+            assert esp.seeking
+            assert await hub.scn.seek_stop(did) == {"ok": True, "message": "gestopt"}
+            assert esp.seeking is None and esp.run is None and calls(esp, "stop") == [("stop", {})]
+            assert hub.scn.rt[did]["run"] is None
+            assert (await hub.scn.seek_stop(did))["message"].startswith("het apparaat toont geen beeld"), "twee keer is onschadelijk"
+            # een seek die nog wacht, vervalt bij de stop
+            await asyncio.sleep(0.05)
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 1000})
+            n = len(seeks(esp))
+            pending = asyncio.ensure_future(hub.scn.seek(did, {"def": SUN, "t_ms": 2000}))
+            await asyncio.sleep(0.005)
+            assert (await hub.scn.seek_stop(did))["message"] == "gestopt"
+            assert (await pending)["superseded"] and len(seeks(esp)) == n and esp.seeking is None
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_the_hold_ends_by_itself_after_300_s_and_a_stop_after_that_does_nothing(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await seeker(tmp_path, monkeypatch)
+        try:
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 1000})
+            clock.advance(299)
+            await cycle(hub, did)
+            assert esp.seeking and hub.scn.rt[did]["run"]["seek"] == 1000
+            clock.advance(2)
+            await cycle(hub, did)
+            assert esp.seeking is None and hub.scn.rt[did]["run"] is None
+            assert (await hub.scn.seek_stop(did))["message"].startswith("het apparaat toont geen beeld")
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_removing_the_device_drops_a_waiting_seek(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await seeker(tmp_path, monkeypatch, gap=0.2)
+        try:
+            await hub.scn.seek(did, {"def": SUN, "t_ms": 0})
+            pending = asyncio.ensure_future(hub.scn.seek(did, {"def": SUN, "t_ms": 1000}))
+            await asyncio.sleep(0.01)
+            hub.scn.drop_device(did)
+            assert (await pending)["superseded"] and f"seek:{did}" not in hub.tasks and did not in hub.scn.rt
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_web_api_frame_and_seek(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock = await seeker(tmp_path, monkeypatch)
+        c = await Env(tmp_path, hub, r).client()
+        try:
+            sid = (await (await c.post("/api/scenes", json={"name": "Zon", "def": {"kind": "wake", "sun_min": 2, "wake_min": 1}})).json())["id"]
+            res = await c.post("/api/scenes/frame", json={"def": {"kind": "wake", "sun_min": 2, "wake_min": 1, "brightness": 50}, "t_ms": 60_000, "n": 5})
+            body = await res.json()
+            assert res.status == 200 and body["t_ms"] == 60_000 and body["window_ms"] == body["total_ms"] == 185_000 and body["bounded"] is True and len(body["frame"]) == 5
+            assert all(len(px) == 3 and all(isinstance(v, int) and 0 <= v <= 255 for v in px) for px in body["frame"])
+            full = await (await c.post("/api/scenes/frame", json={"def": {"kind": "wake", "sun_min": 2, "wake_min": 1}, "t_ms": 60_000, "n": 5})).json()
+            assert max(map(max, body["frame"])) < max(map(max, full["frame"])), "de helderheid telt mee"
+            byid = await (await c.post("/api/scenes/frame", json={"id": sid, "t_ms": 60_000, "n": 5})).json()
+            assert byid == full, "op id: de scène uit de bibliotheek"
+            assert len((await (await c.post("/api/scenes/frame", json={"def": NIGHT, "t_ms": 0})).json())["frame"]) == 24, "n is standaard 24"
+            for bad, word in (({"def": NIGHT}, "t_ms"), ({"def": NIGHT, "t_ms": -1}, "t_ms"), ({"def": {"kind": "x"}, "t_ms": 0}, "kind"), ({"t_ms": 0}, "def"), ({"id": "s99", "t_ms": 0}, "onbekende"),
+                              ({"def": NIGHT, "t_ms": 0, "n": 0}, "n:"), ({"def": {**NIGHT, "brightness": 0}, "t_ms": 0}, "brightness")):
+                res = await c.post("/api/scenes/frame", json=bad)
+                assert res.status == 400 and word in (await res.json())["error"], bad
+            # seek
+            res = await c.post(f"/api/espdev/{did}/scene/seek", json={"def": SUN, "t_ms": 90_000})
+            assert res.status == 200 and (await res.json()) == {"ok": True, "message": "toont 1:30"} and esp.seeking["t"] == 90_000
+            st = await (await c.get("/api/state")).json()
+            dev = next(x for x in st["espdev"] if x["id"] == did)
+            assert dev["scn"]["run"]["seek"] == 90_000 and dev["scn"]["cap"]["seek"] is True
+            res = await c.post(f"/api/espdev/{did}/scene/seek", json={"def": SUN, "t_ms": -5})
+            assert res.status == 400 and "t_ms" in (await res.json())["error"]
+            res = await c.post(f"/api/espdev/{did}/scene/seek/stop", json={})
+            assert res.status == 200 and (await res.json())["message"] == "gestopt" and esp.seeking is None
+            res = await c.post(f"/api/espdev/{did}/scene/seek/stop")
+            assert res.status == 200 and "niets te stoppen" in (await res.json())["message"]
+            assert (await c.post("/api/espdev/nee/scene/seek", json={"def": SUN, "t_ms": 0})).status == 400
+        finally:
+            await c.close()
+            await shutdown(hub, esp)
+        (tmp_path / "old").mkdir()
+        r, hub, esp, did, clock = await env(tmp_path / "old", monkeypatch)  # een 1.1-kidswekker
+        c = await Env(tmp_path / "old", hub, r).client()
+        try:
+            for path in ("scene/seek", "scene/seek/stop"):
+                res = await c.post(f"/api/espdev/{did}/{path}", json={"def": SUN, "t_ms": 0})
+                assert res.status == 400 and "firmware ouder dan 1.2" in (await res.json())["error"]
+        finally:
+            await c.close()
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_web_api_frame_without_a_hub(tmp_path):
+    async def go():
+        r = Rig(tmp_path)
+        s = Settings(data_dir=tmp_path, key=KEY, key_generated=False, dev_mode=True)
+        c = TestClient(TestServer(web.make_app(web.Ctx(s, r.engine))))
+        await c.start_server()
+        try:
+            res = await c.post("/api/scenes/frame", json={"def": NIGHT, "t_ms": 0})
+            assert res.status == 400 and "niet beschikbaar" in (await res.json())["error"]
+        finally:
+            await c.close()
+    asyncio.run(go())
+
+
+def test_the_fake_device_follows_the_spec_for_seek():
+    """De nagebouwde `scene/seek` zelf (tests/fakehuisdev.py): de drie bodyvormen, 422/rejected, wissen bij play en stop."""
+    async def go():
+        from aiohttp import ClientSession
+        esp = kidswekker(seek=True)
+        await esp.start()
+        esp.token = "t" * 16
+        data = sc.gen_static()
+        b64 = base64.b64encode(data).decode()
+        try:
+            async with ClientSession() as s:
+                async def post(path, body):
+                    async with s.post(f"http://127.0.0.1:{esp.http_port}/huisdev/{path}", json=body, headers={"X-Huisdev-Token": esp.token}) as r:
+                        return r.status, await r.json()
+                assert (await post("scene/seek", {"t": 5}))[1] == {"ok": False, "result": "rejected", "reason": "geen scène om te tonen"}
+                st, j = await post("scene/seek", {"data": b64, "t": 5})
+                assert (st, j["result"], j["hash"]) == (200, "applied", sc.hash_hex(data)) and esp.state()["scenes"]["run"] == {"slot": 0, "h": sc.hash_hex(data), "until": None, "seek": 5}
+                assert (await post("scene/seek", {"t": 9}))[1]["result"] == "applied" and esp.seeking["t"] == 9
+                for t in (-1, 86_400_001, 1.5, "1", None, True):
+                    assert (await post("scene/seek", {"t": t}))[0] == 422, t
+                assert (await post("scene/seek", {"slot": 1, "t": 5}))[1]["reason"] == "slot is leeg"
+                assert (await post("scene/seek", {"slot": 9, "t": 5}))[0] == 422
+                assert (await post("scene/seek", {"slot": 1, "data": b64, "t": 5}))[0] == 422
+                assert (await post("scene/seek", {"data": "@@@", "t": 5}))[0] == 422
+                assert (await post("scene/store", {"slot": 1, "data": b64}))[0] == 200
+                assert (await post("scene/seek", {"slot": 1, "t": 7}))[1]["result"] == "applied" and esp.state()["scenes"]["run"]["seek"] == 7
+                assert (await post("scene/play", {"slot": 1}))[0] == 200 and esp.seeking is None and "seek" not in esp.state()["scenes"]["run"], "play vervangt"
+                assert (await post("scene/seek", {"t": 1}))[1]["result"] == "rejected", "na een play is er geen seek-beeld meer om te verplaatsen"
+                await post("scene/seek", {"data": b64, "t": 3})
+                assert (await post("scene/stop", {}))[0] == 200 and esp.seeking is None and esp.run is None
+                await post("scene/seek", {"data": b64, "t": 3})
+                esp.now = esp.epoch() + 301
+                assert esp.state()["scenes"].get("run") is None, "300 s na de laatste seek"
+        finally:
+            await esp.stop()
+        old = kidswekker()  # 1.1: geen seek in de descriptor, het endpoint bestaat niet
+        await old.start()
+        old.token = "t" * 16
+        try:
+            assert "seek" not in old.descriptor()["scenes"]
+            async with ClientSession() as s:
+                async with s.post(f"http://127.0.0.1:{old.http_port}/huisdev/scene/seek", json={"t": 1}, headers={"X-Huisdev-Token": old.token}) as r:
+                    assert r.status == 404 and (await r.json())["error"] == "unknown_path"
+        finally:
+            await old.stop()
     asyncio.run(go())
 
 

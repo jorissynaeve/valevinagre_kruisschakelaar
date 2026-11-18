@@ -10,6 +10,8 @@ opslaat en afspeelt. Dit bestand is alles wat de add-on daarvoor doet; espdevhub
                 een stop blijft geldig zodra het apparaat terug is
   sync          na elke poll: een slot vullen of wissen als het afwijkt (hoogstens een schrijfactie per ronde en per 10 minuten per slot en hash,
                 6 per uur), en de geplande starts van een wekker waarvan de bron een timer is (de ESP start hem dan zelf, ook zonder verbinding)
+  seek          protocol 1.2: de tijdschuif van de pagina laat de strip het beeld op tijdstip t tonen (`scene/seek`). Een eigen verzender per apparaat die samenvoegt:
+                altijd het nieuwste tijdstip, hoogstens 1 per SEEK_GAP; geen invloed op sync, geplande starts, slots of de uurplafonds. Een echte start of stop wint
 
 Alles is absoluut en idempotent: een scène die al speelt opnieuw starten, een slot opnieuw vullen of dezelfde lijst opnieuw sturen doet niets."""
 from __future__ import annotations
@@ -51,6 +53,9 @@ SCHED_HOUR = 6  # idem voor `schedule`
 SCHED_LOW = 3  # een apparaat met minder geplande regels dan dit krijgt weer een volle lijst
 SCHED_GRACE = 90  # s: een regel die zo dichtbij is (of net voorbij, het apparaat loopt misschien een paar seconden achter) doet niet mee in de vergelijking en gaat niet verloren bij een herschrijven
 SCHED_DAYS = 13  # dagen vooruit (het apparaat weigert alles na nu + 14 dagen)
+SEEK_GAP = 0.125  # s tussen twee seeks naar hetzelfde apparaat (hoogstens 8 per seconde); een nieuwere vervangt wat nog wacht
+MAX_SEEK_MS = 86_400_000  # t van `scene/seek` (HUISDEV 1.2)
+NO_SEEK = "dit apparaat kan niet door een scène scrollen (firmware ouder dan 1.2)"
 RELEASES = ("stop", "finish")
 VALID_TIME = 1_700_000_000  # een klok van het apparaat is pas geldig boven dit getal (HUISDEV §16)
 
@@ -76,7 +81,10 @@ def clean_cap(raw) -> dict | None:
     slots, mb, sched = raw.get("slots"), raw.get("max_bytes"), raw.get("sched")
     if not (_int(slots) and _int(mb) and _int(sched)) or not 1 <= slots <= 8 or not 1 <= mb <= MAX_BYTES or not 0 <= sched <= 8 or slots * mb > 6144:
         return None
-    return {"formats": [f[:30] for f in raw["formats"] if isinstance(f, str)][:8], "slots": slots, "max_bytes": mb, "sched": sched}
+    cap = {"formats": [f[:30] for f in raw["formats"] if isinstance(f, str)][:8], "slots": slots, "max_bytes": mb, "sched": sched}
+    if raw.get("seek") is True:  # protocol 1.2: het apparaat kan het beeld op tijdstip t tonen (`scene/seek`); alleen aanwezig als het waar is
+        cap["seek"] = True
+    return cap
 
 
 def cap_field(raw) -> dict:
@@ -273,12 +281,12 @@ class Library:
         out = []
         for sid, it in self.items.items():
             data = self.bytes.get(sid)
-            bounded = total = None
+            bounded = total = window = None
             if data:
                 s = sc.parse(data)
-                bounded, total = sc.is_bounded(s), sc.total_ms(s)
+                bounded, total, window = sc.is_bounded(s), sc.total_ms(s), sc.window_ms(s)
             out.append({"id": sid, "name": it["name"], "def": it["def"], "release": it["release"], "hash": self.hashes.get(sid), "bytes": len(data) if data else None,
-                        "bounded": bounded, "total_ms": total})
+                        "bounded": bounded, "total_ms": total, "window_ms": window})
         return out
 
 
@@ -286,6 +294,14 @@ def preview(defn, n=20, samples=60) -> dict:
     """Voorbeeld voor de pagina: de renderer bestaat maar een keer, in Python (scenes.preview)."""
     try:
         return sc.preview(defn, n, samples)
+    except (sc.SceneError, ValueError) as e:
+        raise ModelError(f"scène: {e}") from None
+
+
+def frame_at(defn, t_ms, n=24) -> dict:
+    """Het beeld op tijdstip t voor de tijdschuif van de pagina (scenes.frame_at)."""
+    try:
+        return sc.frame_at(defn, t_ms, n)
     except (sc.SceneError, ValueError) as e:
         raise ModelError(f"scène: {e}") from None
 
@@ -333,6 +349,10 @@ class SceneHub:
         t = self.hub.tasks.pop(f"scn:{did}", None)
         if t:
             t.cancel()
+        self._cancel_seek(did, "apparaat verwijderd")
+        t = self.hub.tasks.pop(f"seek:{did}", None)
+        if t:
+            t.cancel()
         for x in (self.rt, self.q, self.locks):
             x.pop(did, None)
 
@@ -340,6 +360,18 @@ class SceneHub:
 
     def view_library(self) -> list[dict]:
         return self.lib.view()
+
+    def frame(self, b) -> dict:
+        """`{"def"|"id", "t_ms", "n"?}`: het beeld op dat tijdstip (de pagina tekent het in de voorbeeldstrip)."""
+        b = b if isinstance(b, dict) else {}
+        if "id" in b and "def" not in b:
+            sid = b["id"]
+            if not isinstance(sid, str) or sid not in self.lib.bytes:
+                raise ModelError("onbekende scène" if not isinstance(sid, str) or sid not in self.lib.items else "de scène compileert niet")
+            return frame_at(self.lib.bytes[sid], b.get("t_ms"), b.get("n", 24))
+        if not isinstance(b.get("def"), dict):
+            raise ModelError("geef def (een definitie) of id (een scène)")
+        return frame_at(b["def"], b.get("t_ms"), b.get("n", 24))
 
     def add(self, b) -> str:
         sid = self.lib.add(b)
@@ -378,7 +410,8 @@ class SceneHub:
 
     @staticmethod
     def _new() -> dict:
-        return {"known": False, "have": {}, "run": None, "sched": [], "time": None, "key": None, "started": {}, "tried": {}, "stores": deque(), "sched_tries": deque(), "sched_sent": None, "snotes": {}, "note_err": False}
+        return {"known": False, "have": {}, "run": None, "sched": [], "time": None, "key": None, "started": {}, "tried": {}, "stores": deque(), "sched_tries": deque(), "sched_sent": None, "snotes": {}, "note_err": False,
+                "seek_q": None, "seek_cur": None, "seek_at": -1e9, "seek_key": None}
 
     def on_desc(self, did: str, desc: dict) -> None:
         """Een nieuwe descriptor: wat het apparaat aan scènes kan. Zonder `scenes` (of een ander soort apparaat) is er geen scènefunctionaliteit."""
@@ -406,10 +439,12 @@ class SceneHub:
         if isinstance(r, dict) and isinstance(r.get("h"), str):
             until = r.get("until")
             run = {"slot": r["slot"] if _int(r.get("slot")) and r["slot"] >= 0 else 0, "h": r["h"].lower(), "until": until if _int(until) else None}
+            if _int(r.get("seek")) and r["seek"] >= 0:
+                run["seek"] = r["seek"]  # het apparaat toont een beeld uit de tijdschuif (1.2); alleen aanwezig als dat zo is
         sched = sorted(({"slot": e["slot"], "at": e["at"]} for e in (raw.get("sched") if isinstance(raw.get("sched"), list) else [])
                         if isinstance(e, dict) and _int(e.get("slot")) and _int(e.get("at"))), key=lambda e: (e["at"], e["slot"]))
         t = raw.get("time")
-        key = (tuple(sorted((n, v["h"], v["n"]) for n, v in have.items())), (run["slot"], run["h"]) if run else None, tuple((e["at"], e["slot"]) for e in sched))
+        key = (tuple(sorted((n, v["h"], v["n"]) for n, v in have.items())), (run["slot"], run["h"], "seek" in run) if run else None, tuple((e["at"], e["slot"]) for e in sched))
         changed = key != rt["key"] or not rt["known"]
         rt.update(known=True, have=have, run=run, sched=sched, time=t if _int(t) and t > VALID_TIME else None, key=key)
         return changed
@@ -529,6 +564,7 @@ class SceneHub:
         return self.locks.setdefault(did, asyncio.Lock())
 
     def _enqueue(self, did: str, kind: str, sid: str) -> None:
+        self._cancel_seek(did, "vervangen door een start of stop")  # een echte start of stop wint van de tijdschuif
         q = self.q.setdefault(did, deque())
         q.append({"kind": kind, "sid": sid, "t": self.mono(), "tries": 0})
         while len(q) > MAX_QUEUE:
@@ -689,6 +725,7 @@ class SceneHub:
         """Speel een bibliotheekscène (`{"id"}`) of een gevuld slot (`{"slot"}`) nu."""
         b = b if isinstance(b, dict) else {}
         dev = self._ready(did)
+        self._cancel_seek(did, "vervangen door een start")
         async with self._lock(did):
             if "id" in b:
                 if not isinstance(b["id"], str) or b["id"] not in self.lib.items:
@@ -712,6 +749,7 @@ class SceneHub:
         """Stop wat speelt (`{}`), alleen een slot (`{"slot"}`) of een bibliotheekscène (`{"id"}`: alleen als hij nog speelt)."""
         b = b if isinstance(b, dict) else {}
         dev = self._ready(did)
+        self._cancel_seek(did, "vervangen door een stop")
         async with self._lock(did):
             if "id" in b:
                 if not isinstance(b["id"], str) or b["id"] not in self.lib.items:
@@ -729,6 +767,160 @@ class SceneHub:
         self.hub._kick(did)
         self.hub.engine._emit("espdev", what="scene", device=did, op="stop", log=False)
         return {"ok": True, "message": msg}
+
+    # ------------------------------------------------------------ de tijdschuif: scene/seek (protocol 1.2)
+
+    @staticmethod
+    def _resolve(req: dict | None, result: dict) -> None:
+        if req and not req["fut"].done():
+            req["fut"].set_result(result)
+
+    def _cancel_seek(self, did: str, why: str) -> None:
+        """Wat nog wacht (of onderweg is) van de tijdschuif vervalt: een start, stop of play wint. De wachtende aanroepers krijgen een gewoon antwoord."""
+        rt = self.rt.get(did)
+        if not rt:
+            return
+        for req in (rt["seek_q"], rt["seek_cur"]):
+            if req:
+                req["dead"] = True
+                self._resolve(req, {"ok": True, "message": why, "superseded": True})
+        rt["seek_q"] = None
+        rt["seek_key"] = None
+
+    def _seek_target(self, dev: dict, rt: dict, b: dict) -> dict:
+        """Waar de seek naar kijkt: {"key", "h", "slot", "data"}. `def` en `id` gaan (de eerste keer) met de bytes mee, `slot` met het slotnummer."""
+        given = [k for k in ("def", "id", "slot") if k in b]
+        if len(given) != 1:
+            raise ModelError("geef precies een van def, id of slot")
+        if given[0] == "slot":
+            n = b["slot"]
+            if not _int(n) or not 1 <= n <= dev["scn"]["cap"]["slots"]:
+                raise ModelError("slot: een nummer van een slot van dit apparaat")
+            have = rt["have"].get(n)
+            if not have:
+                raise ModelError(f"slot {n} is leeg")
+            return {"key": ("slot", n, have["h"]), "h": have["h"], "slot": n, "data": None}
+        if given[0] == "id":
+            sid = b["id"]
+            if not isinstance(sid, str) or sid not in self.lib.items:
+                raise ModelError("onbekende scène")
+            if sid not in self.lib.bytes:
+                raise ModelError("de scène compileert niet")
+            data = self.lib.bytes[sid]
+        else:
+            data = self.lib.compile(b["def"])
+        self._fit(dev, data)
+        h = sc.hash_hex(data)
+        return {"key": ("data", h), "h": h, "slot": None, "data": data}
+
+    async def seek(self, did: str, b) -> dict:
+        """De strip toont het beeld van een scène op tijdstip `t_ms` en houdt het vast: `{"def"|"id"|"slot", "t_ms"}`. Seeks naar hetzelfde apparaat worden samengevoegd:
+        er gaat hoogstens een verzoek tegelijk en hoogstens 1 per SEEK_GAP, altijd met het nieuwste tijdstip; de aanroepers van wat vervangen werd krijgen `superseded`."""
+        b = b if isinstance(b, dict) else {}
+        dev = self.hub.devices.get(did)
+        if not dev:
+            raise ModelError("onbekend apparaat")
+        cap = dev["scn"]["cap"]
+        if not cap or not cap.get("seek"):
+            raise ModelError(NO_SEEK)
+        if did not in self.hub.online:
+            raise ModelError("niet verstuurd: geen verbinding met het apparaat")
+        t = b.get("t_ms")
+        if isinstance(t, float) and t.is_integer():
+            t = int(t)
+        if not _int(t) or not 0 <= t <= MAX_SEEK_MS:
+            raise ModelError(f"t_ms: een geheel aantal milliseconden tussen 0 en {MAX_SEEK_MS}")
+        rt = self.rt.setdefault(did, self._new())
+        target = self._seek_target(dev, rt, b)
+        loop = asyncio.get_running_loop()
+        req = {"target": target, "t": t, "fut": loop.create_future(), "dead": False}
+        self._resolve(rt["seek_q"], {"ok": True, "message": "vervangen door een nieuwere", "superseded": True})
+        rt["seek_q"] = req
+        key = f"seek:{did}"
+        task = self.hub.tasks.get(key)
+        if task is None or task.done():
+            self.hub.tasks[key] = loop.create_task(self._seek_worker(did))
+        return await req["fut"]
+
+    async def _seek_worker(self, did: str) -> None:
+        """De enige verzender van seeks van een apparaat: wacht tot de vorige SEEK_GAP geleden is, neemt dan het nieuwste en stuurt het (onder hetzelfde slot als de verzender van
+        de ingangen en de sync, dus nooit twee verzoeken tegelijk)."""
+        loop = asyncio.get_running_loop()
+        rt = self.rt.setdefault(did, self._new())
+        try:
+            while rt["seek_q"] is not None:
+                wait = rt["seek_at"] + SEEK_GAP - loop.time()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                    continue  # nu het nieuwste
+                req, rt["seek_q"] = rt["seek_q"], None
+                rt["seek_cur"] = req
+                try:
+                    async with self._lock(did):
+                        if req["dead"]:
+                            continue
+                        msg = await self._do_seek(did, rt, req)
+                    self._resolve(req, {"ok": True, "message": msg})
+                except _Fail as e:
+                    if not req["fut"].done():
+                        req["fut"].set_exception(ModelError(str(e)))
+                finally:
+                    rt["seek_cur"] = None
+                    rt["seek_at"] = loop.time()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - de aanroeper mag niet blijven wachten
+            log.exception("seek van %s", did)
+            for req in (rt["seek_cur"], rt["seek_q"]):
+                if req and not req["fut"].done():
+                    req["fut"].set_exception(ModelError(f"seek mislukt: {e}"))
+            rt["seek_q"] = None
+        finally:
+            if self.hub.tasks.get(f"seek:{did}") is asyncio.current_task():
+                self.hub.tasks.pop(f"seek:{did}", None)
+
+    async def _do_seek(self, did: str, rt: dict, req: dict) -> str:
+        """Een seek sturen (de aanroeper houdt het slot vast). Dezelfde scène als de vorige en het apparaat houdt hem nog vast: alleen `{"t"}`; anders, of als het
+        apparaat dat weigert ("geen scène om te tonen": zijn hold is verlopen of iets anders nam het over), met de bytes of het slot."""
+        if did not in self.hub.online:
+            raise _Fail("geen verbinding met het apparaat")
+        tg, t = req["target"], req["t"]
+        full = {"slot": tg["slot"]} if tg["slot"] else {"data": _b64(tg["data"])}
+        run = rt["run"]
+        quick = rt["seek_key"] == tg["key"] and bool(run) and run.get("seek") is not None and run["h"] == tg["h"]
+        try:
+            await self._post(did, "/huisdev/scene/seek", {"t": t} if quick else {**full, "t": t})
+        except _Fail as e:
+            if not quick or e.retry:
+                raise
+            await self._post(did, "/huisdev/scene/seek", {**full, "t": t})  # de terugval: het apparaat toonde niets meer
+        shown = bool(rt["run"] and rt["run"].get("seek") is not None)
+        rt["seek_key"] = tg["key"]
+        rt["run"] = {"slot": tg["slot"] or 0, "h": tg["h"], "until": None, "seek": t}
+        if not shown:
+            self.hub._poke()
+        return f"toont {t // 60000}:{t // 1000 % 60:02d}"
+
+    async def seek_stop(self, did: str) -> dict:
+        """Het vasthouden stoppen, maar alleen als het apparaat nu een beeld uit de tijdschuif toont (verse state): iets anders dat speelt blijft ongemoeid."""
+        dev = self.hub.devices.get(did)
+        if not dev:
+            raise ModelError("onbekend apparaat")
+        cap = dev["scn"]["cap"]
+        if not cap or not cap.get("seek"):
+            raise ModelError(NO_SEEK)
+        if did not in self.hub.online:
+            raise ModelError("niet verstuurd: geen verbinding met het apparaat")
+        self._cancel_seek(did, "vervangen door een stop")
+        rt = self.rt.setdefault(did, self._new())
+        async with self._lock(did):
+            await self._fresh(did)
+            if not rt["run"] or rt["run"].get("seek") is None:
+                return {"ok": True, "message": "het apparaat toont geen beeld uit de tijdschuif, niets te stoppen"}
+            await self._post(did, "/huisdev/scene/stop", {})
+            rt["run"] = None
+        self.hub._poke()
+        return {"ok": True, "message": "gestopt"}
 
     # ------------------------------------------------------------ sync: slots en geplande starts
 
@@ -912,6 +1104,6 @@ class SceneHub:
         if rt["run"]:
             r = rt["run"]
             sid = by_slot.get(r["slot"]) if r["slot"] else next((s for s, hh in self.lib.hashes.items() if hh == r["h"]), None)
-            run = {"slot": r["slot"], "h": r["h"], "until": r["until"], "id": sid, "name": self.lib.name(sid) if sid else ""}
+            run = {"slot": r["slot"], "h": r["h"], "until": r["until"], "seek": r.get("seek"), "id": sid, "name": self.lib.name(sid) if sid else ""}
         sched = [{"slot": e["slot"], "at": e["at"], "id": by_slot.get(e["slot"]), "name": self.lib.name(by_slot[e["slot"]]) if e["slot"] in by_slot else ""} for e in rt["sched"]]
         return {"cap": cap, "known": rt["known"], "sel": sel, "have": {str(n): v for n, v in rt["have"].items()}, "run": run, "sched": sched, "time": rt["time"], "note": last.get("scenes", "")}

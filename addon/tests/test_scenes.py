@@ -544,6 +544,138 @@ def test_preview():
         S.preview(b"garbage")
 
 
+# ------------------------------------------------------------ helderheid per scène (0.44)
+
+# De bytes van vóór de helderheid (0.43), vastgelegd met de toenmalige generatoren: bij brightness 100 (of zonder) moet het identiek blijven, anders krijgt elke bestaande scène een nieuwe hash en wordt alles opnieuw gesynchroniseerd.
+BASELINE = [
+    ({"kind": "static"},
+     "4c5301010101640000001400ffff0000000000ff00000100000041260a41260a"),
+    ({"kind": "static", "color": "#412614", "lum": 100, "hold_s": 5, "fade": 3, "resume": 0},
+     "4c53010101016400050003000000000000000064000001000000412614412614"),
+    ({"kind": "static", "color": [255, 255, 255], "lum": 255, "hold_s": 600},
+     "4c5301010101640058021400ffff0000000000ff000001000000ffffffffffff"),
+    ({"kind": "fade", "c1": "#ff0000", "c2": [0, 0, 255], "minutes": 5.5, "hold_s": 10},
+     "4c530102010164000a001400ffff0000e40c01ff000001000000ff0000ff0000000000ff0000010000000000ff0000ff"),
+    ({"kind": "fade", "c1": "#000000", "c2": "#ffa040", "minutes": 10, "lum": 200, "fade": 0},
+     "4c5301020101640000000000ffff0000701701c8000001000000000000000000000000c8000001000000ffa040ffa040"),
+    ({"kind": "sunrise", "minutes": 20},
+     "4c53010c010164000000140058020000420401050000010000000000000000004304011c0000030000000900000900007418007f19007f19007e0400ff5717ff571743040132000003000000120000120000692e007f19007f19007b0a00ff6e2eff6e2e430401490000030000001b00001b00005d46007f19007f1900790e00ff8646ff864643040160000003000000240000240000515e007f19007f1900771200ff9d5dff9d5d430401770000030000002d00002d00004674007f19007f1900741800ffb474ffb4744304018d0000030000003700003700003a8c007f19007f1900721c00ffcb8bffcb8b430401a40000030000004000004000002fa2007f19007f1900702000ffe2a2ffe2a2430401bb00000300000049000049000023ba007f19007f19006d2600fff9b9fff9b9430401d200000300000052000052000017d2007f19007f19006b2a00ffffd1ffffd1430401e80000030000005b00005b00000ce8007f19007f1900692e00ffffe8ffffe8000000ff0000030000006400006400000000007f19007f1900663400ffffffffffff"),
+    ({"kind": "sunrise", "minutes": 30, "sun_pct": 10, "hold_s": 60, "fade": 5, "resume": 120},
+     "4c53010c010164003c00050078000000640601050000010000000000000000006406011c0000030000000900000900007418007f19007f19007f0200ff5717ff571765060132000003000000120000120000692e007f19007f19007e0400ff6e2eff6e2e640601490000030000001b00001b00005d46007f19007f19007d0600ff8646ff864664060160000003000000240000240000515e007f19007f19007b0a00ff9d5dff9d5d650601770000030000002d00002d00004674007f19007f19007a0c00ffb474ffb4746406018d0000030000003700003700003a8c007f19007f1900790e00ffcb8bffcb8b640601a40000030000004000004000002fa2007f19007f1900781000ffe2a2ffe2a2650601bb00000300000049000049000023ba007f19007f1900771200fff9b9fff9b9640601d200000300000052000052000017d2007f19007f1900761400ffffd1ffffd1650601e80000030000005b00005b00000ce8007f19007f1900741800ffffe8ffffe8000000ff0000030000006400006400000000007f19007f1900731a00ffffffffffff"),
+    ({"kind": "sunrise", "minutes": 0.5, "sun_pct": 0},
+     "4c53010c0101640000001400580200001b0001050000010000000000000000001b00011c0000020000000900000900007418007f19007f19001b000132000002000000120000120000692e007f19007f19001c0001490000020000001b00001b00005d46007f19007f19001b000160000002000000240000240000515e007f19007f19001b0001770000020000002d00002d00004674007f19007f19001b00018d0000020000003700003700003a8c007f19007f19001c0001a40000020000004000004000002fa2007f19007f19001b0001bb00000200000049000049000023ba007f19007f19001b0001d200000200000052000052000017d2007f19007f19001c0001e80000020000005b00005b00000ce8007f19007f1900000000ff0000020000006400006400000000007f19007f1900"),
+    ({"kind": "wake"},
+     "4c53010c01016400b004320058020000420401050000010000000000000000004304011c0000030000000900000900007418007f19007f19007e0400ff5717ff571743040132000003000000120000120000692e007f19007f19007b0a00ff6e2eff6e2e430401490000030000001b00001b00005d46007f19007f1900790e00ff8646ff864643040160000003000000240000240000515e007f19007f1900771200ff9d5dff9d5d430401770000030000002d00002d00004674007f19007f1900741800ffb474ffb4744304018d0000030000003700003700003a8c007f19007f1900721c00ffcb8bffcb8b430401a40000030000004000004000002fa2007f19007f1900702000ffe2a2ffe2a2430401bb00000300000049000049000023ba007f19007f19006d2600fff9b9fff9b9430401d200000300000052000052000017d2007f19007f19006b2a00ffffd1ffffd1430401e80000030000005b00005b00000ce8007f19007f1900692e00ffffe8ffffe8000000ff000001000000006400006400"),
+    ({"kind": "wake", "sun_min": 10, "wake_min": 5, "wake_color": "#00ff00", "sun_pct": 50, "fade": 7, "resume": 300},
+     "4c53010c010164002c0107002c010000210201050000010000000000000000002102011c0000030000000900000900007418007f19007f19007a0c00ff5717ff571722020132000003000000120000120000692e007f19007f1900741800ff6e2eff6e2e210201490000030000001b00001b00005d46007f19007f19006f2200ff8646ff864622020160000003000000240000240000515e007f19007f1900692e00ff9d5dff9d5d210201770000030000002d00002d00004674007f19007f1900633a00ffb474ffb4742202018d0000030000003700003700003a8c007f19007f19005d4600ffcb8bffcb8b210201a40000030000004000004000002fa2007f19007f1900575200ffe2a2ffe2a2220201bb00000300000049000049000023ba007f19007f1900515e00fff9b9fff9b9210201d200000300000052000052000017d2007f19007f19004c6800ffffd1ffffd1220201e80000030000005b00005b00000ce8007f19007f1900467400ffffe8ffffe8000000ff00000100000000ff0000ff00"),
+    ({"kind": "rainbow"},
+     "4c5301020001140000001400ffff0000fa0001ff000106002b00ff0000ffff002b2a00ffff0000ff00552b0000ff0000ffff802b0000ffff0000ffab2a000000ffff00ffd52b00ff00ffff0000010000ff000006002b00ff0000ffff002b2a00ffff0000ff00552b0000ff0000ffff802b0000ffff0000ffab2a000000ffff00ffd52b00ff00ffff0000"),
+    ({"kind": "rainbow", "period_s": 8, "fade": 0, "resume": 5},
+     "4c530102000114000000000005000000900101ff000106002b00ff0000ffff002b2a00ffff0000ff00552b0000ff0000ffff802b0000ffff0000ffab2a000000ffff00ffd52b00ff00ffff0000010000ff000006002b00ff0000ffff002b2a00ffff0000ff00552b0000ff0000ffff802b0000ffff0000ffab2a000000ffff00ffd52b00ff00ffff0000"),
+]
+
+
+def test_brightness_100_gives_exactly_the_bytes_of_before():
+    for defn, hexed in BASELINE:
+        want = bytes.fromhex(hexed)
+        assert S.compile_def(defn) == want, defn
+        for b in (100, 100.0):
+            assert S.compile_def({**defn, "brightness": b}) == want, (defn, b)
+    assert S.gen_static(brightness=100) == S.gen_static() and S.gen_rainbow(brightness=100) == S.gen_rainbow()
+    assert S.gen_wake(brightness=100) == S.gen_wake() and S.gen_sunrise(20, brightness=100) == S.gen_sunrise(20) and S.gen_fade(RED, BLU, 5, brightness=100) == S.gen_fade(RED, BLU, 5)
+
+
+def lums(data):
+    return [f.lum for f in S.parse(data).frames]
+
+
+def test_brightness_scales_lum_per_frame_as_light_not_as_code():
+    k = 0.5 ** (1 / 2.2)
+    assert S.parse(S.gen_static(WHT, brightness=50)).frames[0].lum == round(255 * k) == 186
+    assert S.parse(S.gen_static(WHT, lum=100, brightness=50)).frames[0].lum == round(100 * k)
+    assert lums(S.gen_fade(RED, BLU, 5, lum=200, brightness=25)) == [round(200 * 0.25 ** (1 / 2.2))] * 2
+    for gen, args in ((S.gen_sunrise, (20,)), (S.gen_wake, ()), (S.gen_rainbow, ())):
+        full, half = lums(gen(*args)), lums(gen(*args, brightness=50))
+        assert half == [int(v * k + 0.5) for v in full], gen.__name__
+        assert len(full) == len(half) and half != full
+    assert lums(S.gen_wake(brightness=50))[-1] == 186, "ook het laatste frame (de wekkerkleur)"
+    assert lums(S.gen_sunrise(20, brightness=50)) == sorted(lums(S.gen_sunrise(20, brightness=50))), "de zonsopkomst blijft monotoon"
+    # alleen lum verandert: kleuren, tijden en vorm blijven
+    for gen, args in ((S.gen_sunrise, (20,)), (S.gen_wake, ()), (S.gen_rainbow, ()), (S.gen_static, ())):
+        a, b = S.parse(gen(*args)), S.parse(gen(*args, brightness=30))
+        assert (a.tick, a.loops, a.end, a.hold, a.fade, a.resume) == (b.tick, b.loops, b.end, b.hold, b.fade, b.resume)
+        assert [(f.dt, f.ease, f.scroll, f.spans) for f in a.frames] == [(f.dt, f.ease, f.scroll, f.spans) for f in b.frames]
+    # echt de helft van het licht (lineair), tot op de afronding van lum
+    full = S.render(S.parse(S.gen_static(WHT)), 0, 1)[0][0]
+    half = S.render(S.parse(S.gen_static(WHT, brightness=50)), 0, 1)[0][0]
+    assert abs(half / full - 0.5) < 0.01
+    assert S.frame_at({"kind": "static", "color": "#ffffff", "brightness": 50}, 0, 1)["frame"] == [[186, 186, 186]]
+    assert S.compile_def({"kind": "wake", "brightness": 40}) == S.gen_wake(brightness=40)
+
+
+def test_brightness_changes_the_hash_only_when_it_changes():
+    h = lambda d: S.hash_hex(S.compile_def(d))  # noqa: E731
+    base = {"kind": "sunrise", "minutes": 20}
+    assert h(base) == h({**base, "brightness": 100}) == h({**base, "brightness": 100.0})
+    assert h({**base, "brightness": 60}) == h({**base, "brightness": 60}) != h(base)
+    assert h({**base, "brightness": 60}) != h({**base, "brightness": 61})
+    assert S.hash_hex(S.gen_static()) == S.hash_hex(bytes.fromhex(BASELINE[0][1]))
+
+
+@pytest.mark.parametrize("value", [0, -1, 100.5, 101, 1000, "50", None, True, [50], float("nan"), float("inf")], ids=repr)
+def test_brightness_must_be_1_to_100(value):
+    for kind in ({"kind": "static"}, {"kind": "fade", "c1": "#000000", "c2": "#ffffff", "minutes": 1}, {"kind": "sunrise", "minutes": 1}, {"kind": "wake"}, {"kind": "rainbow"}):
+        with pytest.raises(SceneError, match="brightness"):
+            S.compile_def({**kind, "brightness": value})
+
+
+def test_brightness_lower_bound_and_raw():
+    for kind in ({"kind": "static"}, {"kind": "sunrise", "minutes": 1}, {"kind": "wake"}, {"kind": "rainbow"}):
+        assert S.parse(S.compile_def({**kind, "brightness": 1}))  # 1 % mag
+    assert S.parse(S.gen_static(WHT, brightness=1)).frames[0].lum == 31
+    with pytest.raises(SceneError, match="raw.*brightness|brightness.*raw|eigen definitie"):
+        S.compile_def({"kind": "raw", "brightness": 50, "frames": [{}]})
+
+
+# ------------------------------------------------------------ het beeld op tijdstip t (de tijdschuif)
+
+def test_frame_at_is_the_preview_at_that_time():
+    defn = {"kind": "wake", "sun_min": 2, "wake_min": 1}
+    p = S.preview(defn, n=12, samples=30)
+    for i in (0, 7, 15, 29):
+        f = S.frame_at(defn, p["times"][i], 12)
+        assert f["frame"] == p["frames"][i] and f["t_ms"] == p["times"][i]
+        assert (f["total_ms"], f["window_ms"], f["bounded"]) == (p["total_ms"], p["window_ms"], p["bounded"]) == (185_000, 185_000, True)
+    assert S.frame_at(defn, 0)["frame"] and len(S.frame_at(defn, 0)["frame"]) == 24, "n is standaard 24"
+    f = S.frame_at(defn, 60_000, 4)
+    sc = S.parse(S.compile_def(defn))
+    assert f["frame"] == [[int((v / 65535) ** (1 / 2.2) * 255 + 0.5) for v in px] for px in S.render(sc, 60_000, 4)], "dezelfde render als het apparaat"
+    assert S.frame_at(S.compile_def(defn), 60_000, 4) == f, "ook voor bytes"
+    assert S.frame_at(defn, 185_000, 2)["frame"] == [[0, 0, 0]] * 2 and S.frame_at(defn, 86_400_000, 2)["frame"] == [[0, 0, 0]] * 2, "voorbij het einde: uit"
+
+
+def test_frame_at_window_of_an_unbounded_scene_is_a_cycle_or_nothing():
+    r = S.frame_at({"kind": "rainbow", "period_s": 5}, 1000, 6)
+    assert (r["bounded"], r["total_ms"], r["window_ms"]) == (False, None, 5020)
+    assert S.frame_at({"kind": "rainbow", "period_s": 5}, 1000 + 5020, 6)["frame"] == r["frame"], "een lus wikkelt"
+    s = S.frame_at({"kind": "static", "color": "#00ff00"}, 5_000, 3)
+    assert (s["bounded"], s["window_ms"], s["frame"]) == (False, 0, [[0, 255, 0]] * 3)
+    assert S.frame_at({"kind": "static", "hold_s": 60}, 0)["window_ms"] == 60_000 + 2_000 == S.frame_at({"kind": "static", "hold_s": 60}, 0)["total_ms"]
+
+
+def test_frame_at_validates():
+    for t in (-1, 86_400_001, 1.5, "0", None, True):
+        with pytest.raises(SceneError, match="t_ms"):
+            S.frame_at({"kind": "static"}, t)
+    for n in (0, 301, "3", None):
+        with pytest.raises(SceneError, match="n"):
+            S.frame_at({"kind": "static"}, 0, n)
+    with pytest.raises(SceneError):
+        S.frame_at({"kind": "nope"}, 0)
+    with pytest.raises(SceneError):
+        S.frame_at(b"garbage", 0)
+
+
 # ------------------------------------------------------------ gedeelde vectoren met de C++-kant
 
 needs_project = pytest.mark.skipif(not (LEDSCENE / "tools" / "gen_vectors.py").exists(), reason="projectmap niet beschikbaar")

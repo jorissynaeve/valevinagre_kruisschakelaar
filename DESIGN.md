@@ -868,7 +868,7 @@ Code: `reolink.py` (puur: de verzoeken en antwoorden van de camera, de punten, d
   - **Alleen kanaal 0**, geen meerdere kanalen (een Duo is één camera).
   - **Geen ONVIF of Baichuan** (de push van Reolink zelf); alleen deze API en het webhook.
 
-## 42. Scènes voor ledstrips via HUISDEV 1.1 (0.43)
+## 42. Scènes voor ledstrips via HUISDEV 1.1 (0.43), helderheid en tijdschuif met HUISDEV 1.2 (0.44)
 
 Code: `scenehub.py` (bibliotheek, selectie en slots, flanken, sync, geplande starts), `scenesweb.py` (routes), `static/scenes.js` (zijbalk), `scenes.py` (het formaat `ledscene/1`), `protocol/huisdev/` (HUISDEV 1.1, `huisdev.h` 1.1.0), `protocol/ledscene/` (`LEDSCENE.md`, `ledscene.h`, testvectoren), `tests/test_scenehub.py` en `tests/test_scenes.py` met een nagebouwd apparaat (`tests/fakehuisdev.py`).
 
@@ -881,10 +881,10 @@ Code: `scenehub.py` (bibliotheek, selectie en slots, flanken, sync, geplande sta
 
 | Bestand | Rol |
 |---|---|
-| `addon/kkaddon/scenehub.py` | alle logica: bibliotheek, selectie en slots, flanken en verzender, sync, geplande starts, view voor de pagina |
-| `addon/kkaddon/scenesweb.py` | de routes (`/api/scenes...`, `/api/espdev/<id>/scenes`, `.../scene/play`, `.../scene/stop`) |
+| `addon/kkaddon/scenehub.py` | alle logica: bibliotheek, selectie en slots, flanken en verzender, sync, geplande starts, de seeks van de tijdschuif, view voor de pagina |
+| `addon/kkaddon/scenesweb.py` | de routes (`/api/scenes...`, `/api/espdev/<id>/scenes`, `.../scene/play`, `.../scene/stop`, `.../scene/seek`, `.../scene/seek/stop`) |
 | `addon/kkaddon/static/scenes.js` | de sectie "Scènes" in de zijbalk van een apparaat, het formulier en de voorbeeldstrip (geladen na `schema.js`) |
-| `addon/kkaddon/scenes.py` | ledscene/1 (ontleden, bouwen, renderen, `compile_def`, `preview`) |
+| `addon/kkaddon/scenes.py` | ledscene/1 (ontleden, bouwen, renderen, `compile_def`, `preview`, `frame_at`) |
 | `addon/tests/fakehuisdev.py` | het nagebootste apparaat kent nu scènes (`scenes(...)`, `kidswekker()`) |
 | `addon/tests/test_scenehub.py` | de tests |
 
@@ -904,7 +904,7 @@ Code: `scenehub.py` (bibliotheek, selectie en slots, flanken, sync, geplande sta
 
 ### Protocol 1.1 in `espdevhub.py`
 
-* `CURRENT = (1, 1)`. "Upgrade beschikbaar" (`proto_state`) geldt alleen voor `driver == "huisdev"`: Hue, Nuki, Brink, Smappee, Reolink en ESPHome zeggen vast 1.0.
+* `CURRENT = (1, 1)` (sinds 0.44 `(1, 2)`, zie hieronder). "Upgrade beschikbaar" (`proto_state`) geldt alleen voor `driver == "huisdev"`: Hue, Nuki, Brink, Smappee, Reolink en ESPHome zeggen vast 1.0.
 * `clean_descriptor` bewaart een geldig `scenes`-object (formats = lijst strings, 1 <= slots <= 8, 1 <= max_bytes <= 1024, slots * max_bytes <= 6144,
   0 <= sched <= 8); ongeldig is weglaten, nooit falen. De foutcodes `bad_slot`, `too_large` en `bad_data` staan in `ERRORS`.
 * `_on_state` leest `state.scenes`. `time` en `run.until` tellen niet als wijziging voor de pagina (anders ververst de pagina elke 3 s).
@@ -913,7 +913,7 @@ Code: `scenehub.py` (bibliotheek, selectie en slots, flanken, sync, geplande sta
 
 | Route | Body en antwoord |
 |---|---|
-| `GET /api/scenes` | `[{id, name, def, release, hash, bytes, bounded, total_ms}]` |
+| `GET /api/scenes` | `[{id, name, def, release, hash, bytes, bounded, total_ms, window_ms}]` |
 | `POST /api/scenes` | `{name, def, release?}` geeft `{ok, id}` |
 | `PUT /api/scenes/<id>` | `{name?, def?, release?}` |
 | `DELETE /api/scenes/<id>` | ruimt overal op (selectie, bedrading, slot, wat nog wacht); 404 als hij niet bestaat |
@@ -921,9 +921,12 @@ Code: `scenehub.py` (bibliotheek, selectie en slots, flanken, sync, geplande sta
 | `PUT /api/espdev/<id>/scenes` | `{scenes: [ids]}`: welke scènes op dit apparaat staan (een rij en een slot elk) |
 | `POST /api/espdev/<id>/scene/play` | `{id}` (bibliotheekscène) of `{slot}`: nu spelen; geeft `{ok, message}` |
 | `POST /api/espdev/<id>/scene/stop` | `{}` (alles), `{slot}` of `{id}` (alleen als die scène nog speelt) |
+| `POST /api/scenes/frame` | `{def \| id, t_ms, n?}` geeft `{t_ms, total_ms, window_ms, bounded, frame}` (het beeld op dat tijdstip, kleuren 0..255) |
+| `POST /api/espdev/<id>/scene/seek` | `{def \| id \| slot, t_ms}`: de strip toont dat beeld en houdt het vast (1.2); `{ok, message, superseded?}` |
+| `POST /api/espdev/<id>/scene/seek/stop` | stopt het vasthouden (alleen als het apparaat een seek-beeld toont) |
 
 Fouten zijn `400 {"error": "<Nederlandse tekst>"}` zoals overal. `GET /api/state` bevat per apparaat `scn`: `{cap, known, sel: [{id, name, slot, release, state, src, note,
-sched_note}], have, run: {slot, h, until, id, name}, sched: [{slot, at, id, name}], time, note}`; `state` is `ok`, `wait`, `noslot`, `toolarge` of `broken`.
+sched_note}], have, run: {slot, h, until, seek, id, name}, sched: [{slot, at, id, name}], time, note}`; `state` is `ok`, `wait`, `noslot`, `toolarge` of `broken`; `run.seek` is het tijdstip (ms) als het apparaat een beeld uit de tijdschuif toont, anders `null`; `cap.seek` is `true` bij een apparaat dat `scene/seek` kent.
 
 ### Slots
 
@@ -974,6 +977,34 @@ tot 13 dagen vooruit en hoogstens `sched` per scène, en stuurt de lijst van **a
   niet meer bestaat: geen schema en een melding (`sched_note`), de gewone flank blijft werken.
 * Aanvullend op de gewone flank: dubbel starten is onschadelijk (`play` van wat al speelt is een no-op). Een scène of ingang weghalen, of de bron ontkoppelen, wist de regels bij de volgende sync.
 
+### Helderheid per scène (0.44, geen protocolwijziging)
+
+`compile_def` kent voor alle soorten behalve `raw` het veld `brightness` (1..100, standaard 100, een getal; 0 is niet toegestaan: een volledig zwarte scène heeft geen zin). Het is een
+percentage **licht**: elk frame krijgt `lum' = round(lum * (brightness/100) ** (1/2.2))` (`lum` is gamma-gecodeerd), zodat 50 echt de helft van het licht is. Het werkt bovenop de
+`brightness` van het apparaat. **Bij 100 zijn de bytes identiek aan die van 0.43** (vastgelegd als hex in `test_scenes.py`): een bestaande scène krijgt geen nieuwe hash en niets wordt opnieuw
+gesynchroniseerd. Bij `raw` is het veld een fout (de gebruiker zet `lum` per frame). De hash verandert dus alleen als de helderheid verandert.
+
+### Tijdschuif en `scene/seek` (0.44, protocol 1.2)
+
+* `POST /api/scenes/frame {def | id, t_ms, n?}` geeft `{t_ms, total_ms, window_ms, bounded, frame: [[r,g,b]...]}`: het beeld op dat tijdstip, met dezelfde `render` als het apparaat en kleuren 0..255 zoals
+  `preview` (`scenes.frame_at`, 0 <= t_ms <= 86 400 000, n standaard 24). `window_ms` is wat de schuif beslaat: de duur (`total_ms`), bij een onbegrensde scène een ronde van de lus of de speelduur
+  (0 bij een scène die niet verandert; de schuif staat dan uit). De bibliotheek (`GET /api/scenes`) geeft per scène ook `window_ms`.
+* `CURRENT = (1, 2)`; `clean_descriptor` bewaart `scenes.seek` (alleen als het `true` is). Een 1.1-apparaat verandert niet en toont "upgrade beschikbaar".
+* `POST /api/espdev/<id>/scene/seek {def | id | slot, t_ms}` laat de strip het beeld op `t_ms` tonen en vasthouden (`scene/seek` van HUISDEV §16); antwoord `{ok, message: "toont m:ss"}`, of `{ok, message, superseded: true}` als er
+  intussen een nieuwere seek of een start/stop kwam. `POST .../scene/seek/stop` stopt het vasthouden, maar alleen als de verse state een `run.seek` toont (iets anders dat speelt blijft ongemoeid).
+  Zonder `seek` in de descriptor: 400 "dit apparaat kan niet door een scène scrollen (firmware ouder dan 1.2)"; offline: 400 "niet verstuurd: geen verbinding", niets in een wachtrij.
+* **Samenvoegen** (`SceneHub.seek`, `_seek_worker`): een verzender per apparaat (`hub.tasks["seek:<did>"]`, onder dezelfde `asyncio.Lock` als de ingangen en de sync, dus nooit twee verzoeken tegelijk). Een nieuwe seek vervangt
+  wat nog wacht (de oude aanroeper krijgt `superseded`); de verzender wacht `SEEK_GAP` (0,125 s, dus hoogstens 8 per seconde) na de vorige en stuurt dan het **nieuwste** tijdstip.
+* **Bytes of alleen `{"t"}`**: de eerste seek, of een andere scène/definitie/hash, gaat met `data` (base64; `{"slot": n}` bij een slotseek); daarna alleen `{"t": ms}`, zolang de vorige seek dezelfde scène was en
+  `run.seek` er nog is. Weigert het apparaat zo'n `{"t"}` ("geen scène om te tonen": het vasthouden verliep na 300 s, een herstart, iets anders nam het over), dan een tweede keer met `data`.
+* **Een start of stop wint**: een flank van een scène-ingang (`_enqueue`), `play` en `stop` vanaf de pagina gooien wat nog wacht weg (`_cancel_seek`) en vergeten welke scène vastgehouden werd, zodat de volgende seek weer met de
+  bytes gaat. Een geplande start op het apparaat vervangt het vasthouden zelf.
+* **Raakt niets anders**: een seek komt niet in `stores`, `tried` of `sched_tries` (de uurplafonds), `sched`, de slots of de sync-bewaking; de sync slaat een ronde over als de verzender juist bezig is.
+  `state.scenes.run.seek` komt in `rt["run"]["seek"]` en in `view().run.seek`; alleen het verschijnen of verdwijnen telt als wijziging voor de pagina, het tijdstip niet.
+* **Pagina** (`scenes.js`): onder de voorbeeldstrip en bij elke scène een `<input type="range">` met een tijdlabel (mm:ss) en een strip van het beeld; een streepje in de voorbeeldstrip toont de plek. Slepen haalt hoogstens 10 beelden per seconde
+  (een tegelijk, het nieuwste wint). Het vinkje "ook op de strip van dit apparaat" (alleen bij `cap.seek`) stuurt elke beweging ook als seek (hoogstens 8 per seconde); wijzig je het formulier terwijl de schuif aanstaat, dan gaat de nieuwe definitie mee.
+  Uitzetten, de editor sluiten, een ander blok kiezen of de pagina verlaten (`pagehide`, `fetch` met `keepalive`) stuurt een stop. De status komt uit `scn.run.seek` ("apparaat toont: mm:ss").
+
 ### Op de pagina
 
 Sectie "Scènes" in de zijbalk van een apparaat met `scenes`: de bibliotheek met een vinkje "op dit apparaat", ▶ en ■, een formulier (naam, soort, parameters, stoppen of laten uitlopen),
@@ -982,12 +1013,14 @@ een voorbeeldstrip (de server rekent, `scenes.js` tekent de kleuren op een `<can
 
 ### Bewust
 
-* Een apparaat zonder `scenes` verandert niet. Een 1.0-apparaat krijgt "upgrade beschikbaar" (zo staat het in HUISDEV §13); het werkt gewoon door.
+* Een apparaat zonder `scenes` verandert niet. Een 1.0- (of 1.1-) apparaat krijgt "upgrade beschikbaar" (zo staat het in HUISDEV §13); het werkt gewoon door.
+* Een seek wordt niet in de wachtrij gezet en niet opnieuw geprobeerd: de schuif stuurt zo de volgende. Een netwerkfout is een melding bij de schuif.
+* De pagina houdt het vasthouden niet zelf in leven: na 300 s zonder seek eindigt het op het apparaat (een stop bij sluiten is netjes, geen vereiste).
 * De sync wist slots die aan geen geselecteerde scène horen. Wie op een apparaat zelf scènes bewaart (bijvoorbeeld via zijn eigen pagina), verliest die zodra de add-on dat apparaat beheert.
 * Een bron die geen timer is, krijgt geen geplande start. Een module met `Tussen` of `Na` is niet vooruit te berekenen zonder de hele module-boom te simuleren.
 
 ### Niet gedaan
 
 - Geen Home Assistant-entiteiten of MQTT voor scènes (een knop per scène kan later).
-- De pagina is niet in een echte browser bekeken; de JS is op syntaxis en met een stub-DOM getest.
+- De pagina is niet in een echte browser bekeken; de JS is op syntaxis en met een stub-DOM getest (ook de tijdschuif: tempo, het nieuwste wint, het vinkje, de editor, de stop).
 - Het nagebouwde apparaat is gebouwd naar de spec, de echte `huisdev.h` is er niet tegenaan gedraaid (wel de host-tests van de header zelf).

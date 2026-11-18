@@ -50,7 +50,7 @@ from .model import ModelError, fits, source_type
 log = logging.getLogger("kk.espdev")
 
 UDP_PORT = 47500
-CURRENT = (1, 1)  # het protocol zoals de add-on het kent (protocol/huisdev/HUISDEV.md); een lagere minor van een apparaat toont "upgrade beschikbaar"
+CURRENT = (1, 2)  # het protocol zoals de add-on het kent (protocol/huisdev/HUISDEV.md); een lagere minor van een apparaat toont "upgrade beschikbaar"
 SUPPORTED_MAJORS = (1,)
 MAX_DEVICES = 80  # een Hue-installatie alleen al heeft gauw dertig lampen
 MAX_BRIDGES = 4

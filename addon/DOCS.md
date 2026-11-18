@@ -552,6 +552,10 @@ Een apparaat met een ledstrip (HUISDEV 1.1, bijvoorbeeld de kidswekker) krijgt i
 
 Een onbegrensde scène (bijvoorbeeld een nachtlampje zonder duur) wordt door het apparaat zelf begrensd (de kidswekker: instelbaar, standaard 60 minuten). De add-on wist op een apparaat elk slot dat niet bij een aangevinkte scène hoort.
 
+**Helderheid per scène**: bij elke soort behalve de eigen definitie (JSON) staat een veld **Helderheid (%)**, standaard 100, van 1 tot 100. Het is een percentage *licht*: 50 is de helft van het licht, niet de helft van de waarde. Het werkt bovenop de helderheid van het apparaat zelf, dus een nachtlamp op 10 % is donkerder dan dezelfde scène op 100 %. Een scène die je al had en niet wijzigt (100 %) blijft precies zoals hij was en wordt dus niet opnieuw naar het apparaat gestuurd. In een eigen definitie zet je de helderheid zelf per frame (`lum`).
+
+**Tijdschuif**: onder de voorbeeldstrip in het formulier en bij elke scène in de lijst staat een schuif met de tijd (mm:ss). Sleep je hem, dan zie je het beeld op dat tijdstip: de pagina rekent het met dezelfde renderer als het apparaat, dus ook bij een scène van een uur of een zonsopkomst hoef je niet te wachten. Heeft het apparaat firmware met HUISDEV 1.2, dan staat er bovenaan de sectie een vinkje **ook op de strip van dit apparaat**: zolang dat aanstaat, laat elke beweging van de schuif het beeld ook op de echte strip zien (op volle sterkte; de tijd loopt niet door). Pas je ondertussen de scène aan, dan volgt de strip. Zet je het vinkje uit, sluit je het formulier of verlaat je de pagina, dan stopt dit. Anders doet het apparaat dat zelf 5 minuten na de laatste beweging. Het beeld wordt niet bewaard: het raakt je slots, geplande starts en wekker niet, en een echte start (een ingang, een timer of ▶) neemt het over. Een apparaat met oudere firmware toont de schuif alleen op de pagina.
+
 ## Loxone (in plaats van JavaLox)
 
 Instellingen → **Loxone** koppelt de add-on aan een Loxone Miniserver. Elk signaal is een kort bericht `kk.<naam>=<getal>`; een aan/uit is 1 of 0 en een keuze (scene, ventilatiestand) is het nummer ervan.
