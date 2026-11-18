@@ -541,6 +541,17 @@ De camera heeft een vast IP nodig (reserveer het in je router). Zonder webhook v
 * De camera zet de schijnwerper na een tijd zelf weer uit.
 * Er is niets tegen een echte camera geprobeerd: meld wat jouw camera doet.
 
+## Scènes voor ledstrips (de kidswekker)
+
+Een apparaat met een ledstrip (HUISDEV 1.1, bijvoorbeeld de kidswekker) krijgt in zijn zijbalk een sectie **Scènes**.
+
+1. **Maken**: kies een soort (statisch, kleurverloop, zonsopkomst, wekker, regenboog), vul de parameters in en bewaar. De voorbeeldstrip toont wat de scène doet. Bij *bij uitgang naar 0* kies je of de scène stopt of uitloopt.
+2. **Op het apparaat zetten**: vink de scène aan bij het apparaat. De scène krijgt een rij met een ingang op het blok en de add-on zet hem in een van de slots van het apparaat.
+3. **Koppelen**: sluit een bron aan op de ingang. 0 naar 1 start de scène, 1 naar 0 stopt hem (bij *stoppen*). Het apparaat speelt de scène daarna zelf af, ook als de verbinding wegvalt.
+4. **Wekker zonder verbinding**: sluit je een **timer** aan op de ingang, dan rekent de add-on de eerstvolgende starts uit (tot twee weken vooruit) en bewaart ze op het apparaat. Het apparaat start de scène dan zelf, ook als wifi of de add-on op dat moment weg is.
+
+Een onbegrensde scène (bijvoorbeeld een nachtlampje zonder duur) wordt door het apparaat zelf begrensd (de kidswekker: instelbaar, standaard 60 minuten). De add-on wist op een apparaat elk slot dat niet bij een aangevinkte scène hoort.
+
 ## Loxone (in plaats van JavaLox)
 
 Instellingen → **Loxone** koppelt de add-on aan een Loxone Miniserver. Elk signaal is een kort bericht `kk.<naam>=<getal>`; een aan/uit is 1 of 0 en een keuze (scene, ventilatiestand) is het nummer ervan.

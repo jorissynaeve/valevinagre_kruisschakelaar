@@ -1,7 +1,7 @@
 """Scènes voor HUISDEV-apparaten (protocol 1.1, protocol/huisdev/HUISDEV.md §16) aan de kant van de add-on.
 
 Een scène is een kleine binaire beschrijving van een lichtverloop (protocol/ledscene/LEDSCENE.md, gemaakt door scenes.py) die een ESP zelf
-opslaat en afspeelt. Dit bestand is alles wat de add-on daarvoor doet; espdevhub.py roept het op een handvol plaatsen aan (zie ADDON.md).
+opslaat en afspeelt. Dit bestand is alles wat de add-on daarvoor doet; espdevhub.py roept het op een handvol plaatsen aan (zie DESIGN.md §42).
 
   bibliotheek   /data/scenes.json: id (s1, s2, ... nooit hergebruikt), naam, definitie (kind static, fade, sunrise, wake, rainbow, raw) en `release`
   per apparaat  dev["scn"] = {"sel": [ids], "slots": {id: slot}, "cap": wat het apparaat in zijn descriptor meldt}; de rij van een scène is een
