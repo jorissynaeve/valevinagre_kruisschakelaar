@@ -24,6 +24,7 @@ import re
 import socket
 import time
 from collections import OrderedDict, deque
+from datetime import date
 from pathlib import Path
 
 from aiohttp import web
@@ -178,7 +179,8 @@ class LoxoneHub:
         for sid, e in (raw if isinstance(raw, dict) else {}).items():
             if isinstance(e, dict) and isinstance(e.get("raw"), str):
                 self.vals[sid] = {"v": e.get("v"), "raw": e["raw"][:lx.MAX_TEXT], "min": e.get("min") if isinstance(e.get("min"), int) else None,
-                                  "date": e.get("date") if isinstance(e.get("date"), str) else None, "wall": e.get("wall") if isinstance(e.get("wall"), (int, float)) else None}
+                                  "date": e.get("date") if isinstance(e.get("date"), str) else None, "wall": e.get("wall") if isinstance(e.get("wall"), (int, float)) else None,
+                                  "keep": e.get("keep") if isinstance(e.get("keep"), dict) and isinstance(e["keep"].get("min"), int) and isinstance(e["keep"].get("date"), str) else None}
 
     def _save_vals(self) -> None:
         path = self.path.parent / "loxone_values.json"
@@ -631,12 +633,35 @@ class LoxoneHub:
             log.info("%s=%s geweigerd: %s", sid, value, ex)
             return str(ex)
         old = self.vals.get(sid)
+        e["keep"] = self._kept(old, e) if kind == "time" and old else None
         self.vals[sid] = e
-        if old and all(old.get(k) == e[k] for k in ("v", "raw", "min", "date")):
+        if old and all(old.get(k) == e[k] for k in ("v", "raw", "min", "date", "keep")):
             return "zelfde"
         self._save_vals()
         self._poke()
         return "ok"
+
+    def _now_min(self) -> int:
+        n = self.engine.local_now()
+        return n.hour * 60 + n.minute
+
+    def _kept(self, old: dict, new: dict) -> dict | None:
+        """De wekkertijd van vandaag die na het afgaan nog even moet blijven. Zodra de wekker afgaat meldt Loxone meteen de volgende (`Morgen, 6:45`, `Geen wekker`) en dan zou
+        de tijd van vandaag verdwijnen terwijl de regel van de ledstrip die nog nodig heeft (`minuten erna`). Een nieuwe tekst voor een andere dag laat de tijd van vandaag dus
+        staan tot middernacht, **als** die al was aangebroken (anders heeft de gebruiker de wekker van vandaag gewijzigd of uitgezet: dan geldt hij niet meer)."""
+        today = self._today().isoformat()
+
+        def covers_today(x: dict) -> bool:
+            return x.get("min") is not None and x.get("date") in (None, today)
+
+        if covers_today(new):
+            return None
+        k = old.get("keep")
+        if k and k.get("date") == today:
+            return k
+        if covers_today(old) and old["min"] <= self._now_min() + 1:  # een minuut speling voor het verschil tussen de klok van de Miniserver en deze
+            return {"min": old["min"], "date": today}
+        return None
 
     def value_of(self, ref: str):
         """De waarde van een bron `x:<signaal>` voor de engine: een bool, een getal, of de tijd in minuten sinds middernacht; None als ze onbekend is (nog niets ontvangen, geen tijd, uitgezet).
@@ -650,9 +675,11 @@ class LoxoneHub:
             return None
         if s["kind"] != "time":
             return e["v"]
-        if e["min"] is None or (e["date"] is not None and e["date"] != self._today().isoformat()):
-            return None
-        return e["min"]
+        today = self._today().isoformat()
+        if e["min"] is not None and e["date"] in (None, today):
+            return e["min"]
+        k = e.get("keep")  # de volgende wekker staat er al, maar die van vandaag is net afgegaan en blijft tot middernacht
+        return k["min"] if k and k["date"] == today else None
 
     def type_of(self, ref: str) -> str | None:
         """Wat de bron `x:<signaal>` geeft (bool, getal of tijd), of None als het signaal niet bestaat."""
@@ -662,11 +689,33 @@ class LoxoneHub:
             return None
         return {"bool": BOOL, "time": TIME}.get(s["kind"], NUMBER)
 
+    _WD = ("ma", "di", "wo", "do", "vr", "za", "zo")
+
+    def _pending(self, s: dict, e: dict | None) -> bool:
+        """Een wekker voor een latere dag: bekend, maar voor de logica pas op die dag."""
+        return s["kind"] == "time" and bool(e) and e["min"] is not None and e["date"] not in (None, self._today().isoformat())
+
+    def _held(self, s: dict, e: dict | None) -> str | None:
+        """De tijd van vandaag die nog geldt terwijl de volgende wekker al bekend is (`06:45`)."""
+        k = (e or {}).get("keep")
+        if s["kind"] == "time" and k and k["date"] == self._today().isoformat():
+            return f"{k['min'] // 60:02d}:{k['min'] % 60:02d}"
+        return None
+
     def _text_of(self, s: dict, v, e: dict | None) -> str:
+        """Wat er te zien is: bij een tijd de tijd met de echte dag (`vr 20-11 06:45`), ook als ze voor de logica nog onbekend is; zonder tijd de tekst van Loxone."""
+        if s["kind"] == "time":
+            if not e:
+                return "onbekend"
+            if e["min"] is None:
+                return e["raw"] or "onbekend"
+            hm = f"{e['min'] // 60:02d}:{e['min'] % 60:02d}"
+            if not e["date"]:
+                return hm
+            d = date.fromisoformat(e["date"])
+            return f"{self._WD[d.weekday()]} {d.day:02d}-{d.month:02d} {hm}"
         if v is None:
             return (e["raw"] if e else "") or "onbekend"
-        if s["kind"] == "time":
-            return f"{v // 60:02d}:{v % 60:02d}"
         return "aan" if v is True else "uit" if v is False else lx.fmt(v, s["decimals"])
 
     def in_view(self) -> list[dict]:
@@ -677,7 +726,7 @@ class LoxoneHub:
                 continue
             v, e = self.value_of(s["ref"]), self.vals.get(sid)
             out.append({"id": sid, "label": s["label"] or sid, "kind": s["kind"], "type": self.type_of(s["ref"]), "ref": s["ref"], "value": v, "raw": e["raw"] if e else "",
-                        "text": self._text_of(s, v, e), "wall": e["wall"] if e else None})
+                        "text": self._text_of(s, v, e), "pending": self._pending(s, e), "held": self._held(s, e), "wall": e["wall"] if e else None})
         return sorted(out, key=lambda o: o["label"].lower())
 
     async def _apply_one(self, sid: str, value, via: str = "udp") -> str:
@@ -811,7 +860,8 @@ class LoxoneHub:
                 except Exception:  # noqa: BLE001
                     v = None
                 row.update(value=v, last=g["wall"] if g else None, got=g["v"] if g else None, result=g["result"] if g else "", logic=bool(X_RE.match(s["ref"])),
-                           text=self._text_of(s, v, self.vals.get(sid)) if X_RE.match(s["ref"]) else None)
+                           text=self._text_of(s, v, self.vals.get(sid)) if X_RE.match(s["ref"]) else None,
+                           pending=self._pending(s, self.vals.get(sid)), held=self._held(s, self.vals.get(sid)))
             sigs.append(row)
         return {"miniserver": self.miniserver, "out_port": self.out_port, "addon_host": self.addon_host, "me": self.me(), "transport": self.transport,
                 "port": self.port, "udp": self.udp_port, "http": self.http_port, "listen_error": self.error, "stats": dict(self.stats), "queue": len(self.queue),

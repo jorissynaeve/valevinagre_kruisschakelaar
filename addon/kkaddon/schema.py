@@ -386,7 +386,7 @@ def _loxone_blocks(snap: dict) -> list[dict]:
     ins = snap.get("loxone_in", [])
     if not ins:
         return []
-    outs = [{"name": i["id"], "type": i["type"], "label": i["label"], "unit": "", "ref": i["ref"], "value": i["value"], "text": i["text"]} for i in ins]
+    outs = [{"name": i["id"], "type": i["type"], "label": i["label"], "unit": "", "ref": i["ref"], "value": i["value"], "text": i["text"], "pending": i["pending"], "held": i["held"]} for i in ins]
     return [{"id": "loxone", "name": "Loxone", "key": "x:loxone", "kind": "loxone", "source": "loxone", "tech": "Miniserver · wat Loxone stuurt", "alias": "", "room": "", "online": True,
              "rows": len(outs), "ports": [], "outs": outs, "all": outs}]
 

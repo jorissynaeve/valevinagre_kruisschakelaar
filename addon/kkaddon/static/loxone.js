@@ -15,7 +15,7 @@ function loxSlug(name) {
 }
 
 function loxValue(s) {
-  if (s.logic) return s.value === null || s.value === undefined ? `<span class="sub">onbekend</span>${s.text && s.text !== 'onbekend' ? ` <span class="sub">(${esc(s.text)})</span>` : ''}` : esc(s.text);
+  if (s.logic) return s.held ? `${esc(s.text)}<div class="sub">voor de logica vandaag nog ${esc(s.held)}</div>` : s.pending ? `${esc(s.text)}<div class="sub">voor de logica pas bekend op die dag</div>` : s.value === null || s.value === undefined ? `<span class="sub">${esc(s.text || 'onbekend')}</span>` : esc(s.text);
   if (s.action) return s.danger ? '<span style="color:var(--warn)">opent de deur</span>' : '<span class="sub">actie</span>';
   if (s.value === null || s.value === undefined) return '<span class="sub">onbekend</span>';
   if (s.kind === 'bool') return s.value ? 'aan (1)' : 'uit (0)';

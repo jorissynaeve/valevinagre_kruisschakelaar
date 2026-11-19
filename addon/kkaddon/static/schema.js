@@ -354,7 +354,7 @@ const SC_AC_SWV = { default: 'standaard', swing: 'zwaaien', top: 'boven', upper_
 const SC_AC_SWH = { default: 'standaard', swing: 'zwaaien', left: 'links', left_center: 'links-midden', center: 'midden', right_center: 'rechts-midden', right: 'rechts' };
 const SC_AC_SW = { turbo: 'Turbo', quiet: 'Stil', light: 'Licht', xfan: 'X-fan (nadrogen)', health: 'Health', save: 'Energiebesparing', heat8: '8 °C-verwarming', sleep: 'Slaapstand' };
 
-const scAcOutText = (o) => (o.value === null || o.value === undefined ? '?' : o.type === 'bool' ? (o.value ? '1' : '0') : o.text ? o.text : `${o.value} ${o.unit === undefined ? '°C' : o.unit}`.trim());
+const scAcOutText = (o) => (o.type === 'time' && o.text ? o.text : o.value === null || o.value === undefined ? '?' : o.type === 'bool' ? (o.value ? '1' : '0') : o.text ? o.text : `${o.value} ${o.unit === undefined ? '°C' : o.unit}`.trim());
 function scAcOuts(type) { // de uitgangen van alle airco's van deze soort, als bron voor een ingang
   return scBlocks().filter((b) => b.kind === 'airco' || b.kind === 'solar' || b.kind === 'espdev' || b.kind === 'loxone').flatMap((b) => (b.all || b.outs).filter((o) => o.type === type).map((o) => ({ key: o.ref, block: b.key, name: `${b.name} · ${o.label}`, out: scAcOutText(o) })));
 }
@@ -488,7 +488,7 @@ function scSolar(b) {
 function scLoxonePanel(b, props) { // wat de Miniserver stuurt en waar het wordt gebruikt
   const rows = b.outs.map((o) => {
     const users = scAcUsers(o.ref);
-    return `<div class="sub"><b>${esc(o.label)}</b> <code>${esc(o.name)}</code>: ${esc(scAcOutText(o))}${o.type === 'time' && o.value == null && o.text ? ` <span class="sub">(${esc(o.text)})</span>` : ''}
+    return `<div class="sub"><b>${esc(o.label)}</b> <code>${esc(o.name)}</code>: ${esc(scAcOutText(o))}${o.held ? ` <span class="sub">(voor de logica vandaag nog ${esc(o.held)})</span>` : o.pending ? ' <span class="sub">(voor de logica pas bekend op die dag)</span>' : ''}
       ${users.length ? '→ ' + users.map((u) => `<a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.text)}</a>`).join(', ') : '· nog nergens gebruikt'}</div>`;
   }).join('');
   return `<h3>${esc(b.name)}</h3>

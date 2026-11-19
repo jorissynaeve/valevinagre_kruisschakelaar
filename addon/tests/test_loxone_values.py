@@ -94,6 +94,7 @@ def make(tmp_path, today=THU):
     hub = LoxoneHub(tmp_path, r.engine, None, port=0, gap=0.001, start_delay=0, tick=0.02)
     hub.miniserver = "127.0.0.1"
     hub._today = lambda: today
+    hub._now_min = lambda: 300  # 05:00, voor de wekker van 06:45 (zonder dit hangt een test af van het uur van de dag)
     return r, hub
 
 
@@ -257,8 +258,8 @@ def test_the_view_shows_what_was_received_and_what_it_means(tmp_path):
         alarm(hub)
         await hub.apply([("wekker", "Vandaag, 6:45")])
         row = hub.view()["signals"][0]
-        assert (row["logic"], row["text"], row["got"], row["value"]) == (True, "06:45", "Vandaag, 6:45", 405)
-        assert hub.in_view() == [{"id": "wekker", "label": "Wekker", "kind": "time", "type": TIME, "ref": "x:wekker", "value": 405, "raw": "Vandaag, 6:45", "text": "06:45", "wall": hub.vals["wekker"]["wall"]}]
+        assert (row["logic"], row["text"], row["got"], row["value"], row["pending"]) == (True, "do 19-11 06:45", "Vandaag, 6:45", 405, False)
+        assert hub.in_view() == [{"id": "wekker", "label": "Wekker", "kind": "time", "type": TIME, "ref": "x:wekker", "value": 405, "raw": "Vandaag, 6:45", "text": "do 19-11 06:45", "pending": False, "held": None, "wall": hub.vals["wekker"]["wall"]}]
 
     run(go())
 
@@ -368,7 +369,7 @@ def test_the_schema_has_one_block_with_a_row_per_value_and_none_without(tmp_path
         b = blocks["x:loxone"]
         assert (b["kind"], b["rows"], b["page"]) == ("loxone", 2, None)
         outs = {o["ref"]: o for o in b["outs"]}
-        assert outs["x:wekker"]["type"] == "time" and outs["x:wekker"]["text"] == "06:45" and outs["x:wekker"]["value"] == 405
+        assert outs["x:wekker"]["type"] == "time" and outs["x:wekker"]["text"] == "do 19-11 06:45" and outs["x:wekker"]["value"] == 405
         assert outs["x:thuis"]["type"] == "bool" and outs["x:thuis"]["value"] is True
         r.model.set_schema({"pages": [{"id": "woonkamer", "name": "Woonkamer"}], "blocks": {}, "switches": {}, "names": {}})
         schema.place(r.model, r.engine.snapshot(), "x:loxone", "woonkamer", 40, 60)  # op een ruimte zetten, zoals de pagina doet
@@ -377,5 +378,89 @@ def test_the_schema_has_one_block_with_a_row_per_value_and_none_without(tmp_path
         schema.place(r.model, r.engine.snapshot(), "x:loxone", None)  # en er weer af halen
         hub.update_signal("wekker", {"enabled": False})
         assert [o["ref"] for o in {b["key"]: b for b in schema.view(r.model, r.engine.snapshot())["blocks"]}["x:loxone"]["outs"]] == ["x:thuis"]
+
+    run(go())
+
+
+def test_the_view_shows_the_real_day_and_time_even_when_the_logic_does_not_know_it_yet(tmp_path):
+    async def go():
+        _, hub = make(tmp_path)
+        alarm(hub)
+        for text, shown, pending in (("Morgen, 06:45", "vr 20-11 06:45", True), ("Zaterdag, 07:00", "za 21-11 07:00", True), ("Vandaag, 6:45", "do 19-11 06:45", False),
+                                     ("6:45", "06:45", False), ("Geen wekker", "Geen wekker", False)):
+            await hub.apply([("wekker", text)])
+            v = hub.in_view()[0]
+            assert (v["text"], v["pending"]) == (shown, pending), text
+            assert hub.view()["signals"][0]["text"] == shown
+            assert (hub.value_of("x:wekker") is None) == (pending or text == "Geen wekker"), "voor de logica blijft het onbekend tot de dag zelf"
+
+    run(go())
+
+
+def test_todays_alarm_stays_after_it_went_off_and_loxone_announced_the_next_one(tmp_path):
+    async def go():
+        _, hub = make(tmp_path)
+        alarm(hub)
+        await hub.apply([("wekker", "Vandaag, 6:45")])
+        assert hub.value_of("x:wekker") == 405
+        hub._now_min = lambda: 405  # de wekker gaat af en Loxone meldt meteen de volgende
+        await hub.apply([("wekker", "Zaterdag, 07:00")])
+        assert hub.value_of("x:wekker") == 405, "de tijd van vandaag blijft, voor de regel die nog minuten erna nodig heeft"
+        v = hub.in_view()[0]
+        assert (v["text"], v["pending"], v["held"]) == ("za 21-11 07:00", True, "06:45"), "het blok toont de volgende, en dat vandaag nog 06:45 geldt"
+        await hub.apply([("wekker", "Zaterdag, 07:00")])  # Loxone herhaalt zich: de tijd van vandaag blijft
+        assert hub.value_of("x:wekker") == 405
+        await hub.apply([("wekker", "Geen wekker")])  # de laatste wekker ging af en er komt geen andere
+        assert hub.value_of("x:wekker") == 405
+        hub._today = lambda: date(2026, 11, 20)  # middernacht
+        assert hub.value_of("x:wekker") is None and hub.in_view()[0]["held"] is None
+        await hub.apply([("wekker", "Vandaag, 7:00")])
+        assert hub.value_of("x:wekker") == 420
+
+    run(go())
+
+
+def test_a_snooze_later_today_replaces_the_time_that_just_went_off(tmp_path):
+    async def go():
+        _, hub = make(tmp_path)
+        alarm(hub)
+        await hub.apply([("wekker", "Vandaag, 6:45")])
+        hub._now_min = lambda: 405
+        await hub.apply([("wekker", "Vandaag, 6:54")])
+        assert hub.value_of("x:wekker") == 414 and hub.in_view()[0]["held"] is None
+
+    run(go())
+
+
+def test_changing_or_cancelling_todays_alarm_before_it_went_off_does_not_keep_it(tmp_path):
+    async def go():
+        _, hub = make(tmp_path)
+        alarm(hub)
+        await hub.apply([("wekker", "Vandaag, 6:45")])  # het is 05:00: hij is nog niet afgegaan
+        await hub.apply([("wekker", "Morgen, 6:45")])
+        assert hub.value_of("x:wekker") is None
+        await hub.apply([("wekker", "Vandaag, 6:45")])
+        await hub.apply([("wekker", "Geen wekker")])
+        assert hub.value_of("x:wekker") is None
+
+    run(go())
+
+
+def test_the_kept_time_survives_a_restart_and_a_fresh_start_keeps_nothing(tmp_path):
+    async def go():
+        r, hub = make(tmp_path)
+        alarm(hub)
+        await hub.apply([("wekker", "Vandaag, 6:45")])
+        hub._now_min = lambda: 405
+        await hub.apply([("wekker", "Morgen, 6:45")])
+        hub2 = LoxoneHub(tmp_path, r.engine, None, port=0)
+        hub2._today = lambda: THU
+        assert hub2.value_of("x:wekker") == 405
+        (tmp_path / "leeg").mkdir()
+        _, fresh = make(tmp_path / "leeg")
+        alarm(fresh)
+        fresh._now_min = lambda: 700
+        await fresh.apply([("wekker", "Morgen, 6:45")])
+        assert fresh.value_of("x:wekker") is None, "na een eerste bericht is er niets om vast te houden"
 
     run(go())
