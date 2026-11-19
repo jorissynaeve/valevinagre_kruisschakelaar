@@ -370,7 +370,11 @@ def test_the_schema_has_one_block_with_a_row_per_value_and_none_without(tmp_path
         outs = {o["ref"]: o for o in b["outs"]}
         assert outs["x:wekker"]["type"] == "time" and outs["x:wekker"]["text"] == "06:45" and outs["x:wekker"]["value"] == 405
         assert outs["x:thuis"]["type"] == "bool" and outs["x:thuis"]["value"] is True
-        schema.place(r.model, r.engine.snapshot(), "x:loxone", None)  # een plek kiezen kan zoals bij elk blok
+        r.model.set_schema({"pages": [{"id": "woonkamer", "name": "Woonkamer"}], "blocks": {}, "switches": {}, "names": {}})
+        schema.place(r.model, r.engine.snapshot(), "x:loxone", "woonkamer", 40, 60)  # op een ruimte zetten, zoals de pagina doet
+        assert r.model.schema["blocks"]["x:loxone"] == {"page": "woonkamer", "x": 40, "y": 60}
+        assert {b["key"]: b for b in schema.view(r.model, r.engine.snapshot())["blocks"]}["x:loxone"]["page"] == "woonkamer"
+        schema.place(r.model, r.engine.snapshot(), "x:loxone", None)  # en er weer af halen
         hub.update_signal("wekker", {"enabled": False})
         assert [o["ref"] for o in {b["key"]: b for b in schema.view(r.model, r.engine.snapshot())["blocks"]}["x:loxone"]["outs"]] == ["x:thuis"]
 
