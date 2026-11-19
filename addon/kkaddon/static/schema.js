@@ -1357,7 +1357,11 @@ const SC_MENU = [
 function scEspFound() { // zelfbouwapparaten die zich meldden maar nog niet gekoppeld zijn (HUISDEV)
   const found = S.espdev_found || [];
   const item = (f) => `<button class="scmenuitem" type="button" data-sc="esclaim" data-hid="${esc(f.hid)}" ${f.claimable ? '' : 'disabled'}><b>${esc(f.name)}</b><span class="sub">${esc(f.type || 'apparaat')} · ${esc(f.ip)}${f.claimed ? ' · al geclaimd: wis de claim op het apparaat' : f.proto_state === 'unsupported' ? ` · protocol ${esc(f.proto)} niet ondersteund` : ''}</span></button>`;
-  return `<div class="scmenugroup"><h2>Zelfbouw (HUISDEV) en ESPHome</h2>${found.map(item).join('') || '<div class="sub">Nog niets gevonden.</div>'}<button class="scmenuitem" type="button" data-sc="esscan"><b>Zoeken op het netwerk</b><span class="sub">ESP's met huisdev.h melden zich vanzelf</span></button><button class="scmenuitem" type="button" data-sc="esadd"><b>ESPHome-toestel toevoegen</b><span class="sub">met het IP-adres; de YAML hoeft niet te veranderen, wel <code>web_server:</code></span></button><button class="scmenuitem" type="button" data-sc="reoadd"><b>Reolink-camera toevoegen</b><span class="sub">met het IP-adres en een eigen gebruiker op de camera</span></button></div>`;
+  return `<div class="scmenugroup"><h2>Zelfbouw (HUISDEV) en ESPHome</h2>${found.map(item).join('') || '<div class="sub">Nog niets gevonden.</div>'}<button class="scmenuitem" type="button" data-sc="esscan"><b>Zoeken op het netwerk</b><span class="sub">ESP's met huisdev.h melden zich vanzelf</span></button><button class="scmenuitem" type="button" data-sc="esadd"><b>ESPHome-toestel toevoegen</b><span class="sub">met het IP-adres; de YAML hoeft niet te veranderen, wel <code>web_server:</code></span></button></div>`;
+}
+
+function scReolinkMenu() { // Reolink-camera's: rechtstreeks via hun eigen API, zonder account
+  return `<div class="scmenugroup scmenuwide"><h2>Reolink (camera)</h2><button class="scmenuitem" type="button" data-sc="reoadd"><b>Reolink-camera toevoegen</b><span class="sub">met het IP-adres en een eigen gebruiker op de camera</span></button></div>`;
 }
 
 function scHueMenu() { // Hue-bridges: wat ze aanbieden en nog niet op een pagina staat
@@ -1421,7 +1425,7 @@ const SC_MENU_ICON = { Toestellen: 'lamp', Tijd: 'time', Waarden: 'number', Reke
 function scMenuCats() { // [id, titel, pictogram, paneel]: links de rubrieken, rechts wat erin zit
   const fixed = SC_MENU.map(([title, items]) => [`c-${title}`, title, SC_MENU_ICON[title] || 'cpu',
     `<div class="scmenugroup"><h2>${title}</h2><div class="scmenulist">${items.map(([type, name, sub]) => `<button class="scmenuitem mi" type="button" data-sc="add" data-type="${type}">${ico(MENU_ICON[type] || 'cpu', 20)}<span><b>${name}</b><span class="sub">${sub}</span></span></button>`).join('')}</div></div>`]);
-  return [...fixed, ['esp', 'Zelfbouw en ESPHome', 'cpu', scEspFound()], ['hue', 'Philips Hue', 'lamp', scHueMenu()], ['nuki', 'Nuki', 'lock', scNukiMenu()], ['brink', 'Brink Home', 'wind', scBrinkMenu()], ['smappee', 'Smappee', 'charge', scSmappeeMenu()]];
+  return [...fixed, ['esp', 'Zelfbouw en ESPHome', 'cpu', scEspFound()], ['hue', 'Philips Hue', 'lamp', scHueMenu()], ['nuki', 'Nuki', 'lock', scNukiMenu()], ['brink', 'Brink Home', 'wind', scBrinkMenu()], ['reolink', 'Reolink', 'camera', scReolinkMenu()], ['smappee', 'Smappee', 'charge', scSmappeeMenu()]];
 }
 
 function scMenuBody() {
