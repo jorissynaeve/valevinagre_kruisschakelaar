@@ -130,7 +130,7 @@ Wat er op het scherm staat, bouw je uit **kaarten**: eigen blokken op het schema
 | Kaart | Wat ze toont |
 |---|---|
 | **Knoppen** | Een raster tot 8 knoppen (of een lijst tot 4). Een knop bedient een **lamp** van het schema, een **entiteit** uit HA, of opent een **subpagina**. |
-| **Laadpaal** | Start/stop, de status, de laadtijd, de geladen kWh en de prijs van één laadsessie. Kies bij de kaart een **laadpaal** (het blok *Laadpaal*, hier of van een andere installatie, zie *Laadpaal met sessies*). Buiten een sessie toont de kaart alleen de status; tijdens jouw sessie ook tijd, kWh en prijs; tijdens een sessie van een ander huis alleen *Laadpaal bezet*. |
+| **Laadpaal** | Start/stop, de status, de laadtijd, de geladen kWh en de prijs van één laadsessie. Kies bij de kaart een **laadpaal** (het blok *Laadpaal*, hier of van een andere installatie, zie *Laadpaal met sessies*). Buiten een sessie toont de kaart alleen de status; tijdens jouw sessie ook tijd, kWh en prijs; tijdens een sessie van een ander huis alleen *Laadsessie bezig* (en *Bezet* bij tijd, kWh en prijs), zonder knop en zonder de gegevens van die sessie. De knop is groen om te starten of te hervatten, oranje om te pauzeren en rood om te stoppen; de tekstgrootte zelf ligt vast in het scherm. |
 | **Screensaver** | Het startscherm: klok, datum, weer met 4 dagen voorspelling, een temperatuur binnen en tot 2 statuspictogrammen. Eén per paneel; ze is geen pagina. |
 | **Energie** | Het energieschema, tot 6 sensoren, met per sensor eventueel twee grenzen voor de kleur (groen, oranje, rood). |
 | **Wifi (QR)** | Een QR-code voor het gastnetwerk, met de naam en het wachtwoord ernaast. |

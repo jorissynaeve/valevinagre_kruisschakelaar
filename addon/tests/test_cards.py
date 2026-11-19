@@ -144,11 +144,11 @@ def test_the_charger_rows(tmp_path):
     m, hub = charger(tmp_path, t, price=0.3, price_entity="sensor.tarief")
     hub.state = lambda e: ("0.2", {}) if e == "sensor.tarief" else None
     live = cards.Live(m, tuya=t, charge=hub)
-    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Aangesloten", "value": "Start", "color": cards.DEFAULT_COLOR}
+    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Aangesloten", "value": "START", "color": cards.CHARGE_COLOR}
     assert live.value("kk.laadpaal__energy", "nl")["value"] == "—", "buiten een sessie toont de kaart niets van de vorige"
     assert live.press("kk.laadpaal__run", "button", None) is True and t.sent == [("124", "OpenCharging")]
     t.values.update({"101": "charing", "25": 12.5})
-    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Aan het laden", "value": "Stop", "color": cards.CHARGE_COLOR}
+    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Aan het laden", "value": "STOP", "color": cards.STOP_COLOR}
     assert live.value("kk.laadpaal__run", "en")["name"] == "Charging"
     assert live.value("kk.laadpaal__energy", "nl")["value"] == "2.50 kWh", "de kWh van deze sessie, niet de meterstand"
     assert live.value("kk.laadpaal__time", "nl")["value"] == "02:00:00"
@@ -176,16 +176,16 @@ def test_the_status_decides_start_from_two_lists(tmp_path):
     assert live.value("kk.laadpaal__run", "nl") == {"kind": "text", "name": "Wacht", "value": "", "color": cards.DEFAULT_COLOR}, "in de stoplijst en geen sessie: niets te starten"
     assert live.press("kk.laadpaal__run", "button", None) is False and t.sent == []
     t.values["101"] = "finish"  # hoofdletters tellen niet
-    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Klaar", "value": "Start", "color": cards.DEFAULT_COLOR}
+    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Klaar", "value": "START", "color": cards.CHARGE_COLOR}
     assert live.press("kk.laadpaal__run", "button", None) is True and t.sent == [("124", "OpenCharging")]
     t.values["101"] = "wait"
-    assert live.value("kk.laadpaal__run", "nl")["value"] == "Stop", "in een sessie kun je altijd stoppen"
+    assert live.value("kk.laadpaal__run", "nl")["value"] == "STOP", "in een sessie kun je altijd stoppen"
     hub.stop(cid, hub.who_self())
     t.values = {"124": "CloseCharging"}
     assert live.value("kk.laadpaal__run", "nl")["kind"] == "text", "status niet te lezen: niets"
     hub.update(cid, {"inputs": {"status": ""}})
     t.values = {"124": "CloseCharging"}
-    assert live.value("kk.laadpaal__run", "nl")["value"] == "Start", "zonder status-ingang: starten zolang hij niet laadt"
+    assert live.value("kk.laadpaal__run", "nl")["value"] == "START", "zonder status-ingang: starten zolang hij niet laadt"
     with pytest.raises(ModelError, match="starten én stoppen"):
         hub.update(cid, {"start_when": ["connect"], "stop_when": ["Connect"]})
     with pytest.raises(ModelError, match="40 tekens"):
@@ -223,7 +223,7 @@ def test_a_dynamic_row_on_the_screen_asks_the_env_and_a_press_goes_back_to_it(tm
     p.on_screen("event,startup,59,eu")
     p.on_screen("event,buttonPress2,screensaver,bExit,2")
     page = out[-1]
-    assert page.startswith("entityUpd~Laadpaal~") and "~button~kk.laadpaal__run~~17299~Aangesloten~Start" in page
+    assert page.startswith("entityUpd~Laadpaal~") and f"~button~kk.laadpaal__run~~{cards.CHARGE_COLOR}~Aangesloten~START" in page
     p.on_screen("event,buttonPress2,kk.laadpaal__run,button")
     assert t.sent == [("124", "OpenCharging")]
 

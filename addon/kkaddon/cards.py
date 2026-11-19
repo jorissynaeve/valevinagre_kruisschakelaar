@@ -68,10 +68,12 @@ def same(value, want: str) -> bool:
 
 
 CHARGE_COLOR = rgb565([0, 200, 80])
+STOP_COLOR = rgb565([255, 60, 40])  # de knop die een sessie stopt
+PAUSE_COLOR = rgb565([255, 165, 0])
 WORDS = {
-    "nl": {"time": "Laadtijd", "energy": "Geladen", "price": "Prijs", "start": "Start", "stop": "Stop", "pause": "Pauze", "resume": "Hervat", "amps": "Stroom", "offline": "Laadpaal offline", "offline_short": "offline", "none": "Geen laadpaal gekozen", "busy": "Laadpaal bezet",
+    "nl": {"time": "Laadtijd", "energy": "Geladen", "price": "Prijs", "start": "START", "stop": "STOP", "pause": "PAUZE", "resume": "HERVAT", "amps": "Stroom", "offline": "Laadpaal offline", "offline_short": "offline", "none": "Geen laadpaal gekozen", "busy": "Laadsessie bezig", "busy_val": "Bezet",
            "ssid": "Netwerk", "password": "Wachtwoord", "missing": "Niet gevonden"},
-    "en": {"time": "Charge time", "energy": "Charged", "price": "Price", "start": "Start", "stop": "Stop", "pause": "Pause", "resume": "Resume", "amps": "Current", "offline": "Charger offline", "offline_short": "offline", "none": "No charger chosen", "busy": "Charger in use",
+    "en": {"time": "Charge time", "energy": "Charged", "price": "Price", "start": "START", "stop": "STOP", "pause": "PAUSE", "resume": "RESUME", "amps": "Current", "offline": "Charger offline", "offline_short": "offline", "none": "No charger chosen", "busy": "Charging session active", "busy_val": "In use",
            "ssid": "Network", "password": "Password", "missing": "Not found"},
 }
 
@@ -367,22 +369,24 @@ class Live:
                 return {"kind": "text", "name": w["none"], "value": "", "color": DEFAULT_COLOR}
             if v is None or not v.get("online"):
                 return {"kind": "text", "name": w["offline"], "value": "", "color": DEFAULT_COLOR}
-            if v.get("phase") == "busy":  # een sessie van een andere installatie: niets dan dat, en geen knop
-                return {"kind": "text", "name": w["busy"], "value": "", "color": DEFAULT_COLOR}
+            if v.get("phase") == "busy":  # een sessie van een andere installatie: we mogen er niets van zien, maar wel dat er een bezig is (anders lijkt de kaart stuk)
+                return {"kind": "text", "name": w["busy"], "value": "", "color": CHARGE_COLOR}
             st = v.get("status")
             name = STATUS[lang].get(str(st), str(st)) if st is not None else _clean(v.get("name"))
             if v.get("act") is None:  # de status laat niets toe: geen knop, alleen de status
                 return {"kind": "text", "name": _clean(name), "value": "", "color": CHARGE_COLOR if v.get("charging") else DEFAULT_COLOR}
             if v["act"] in ("pause", "resume"):  # een Smappee-laadpaal: pauzeren of hervatten, nooit start of stop (dat doet de badge)
-                return {"kind": "button", "name": _clean(name), "value": w[v["act"]], "color": CHARGE_COLOR if v.get("charging") else DEFAULT_COLOR}
+                return {"kind": "button", "name": _clean(name), "value": w[v["act"]], "color": PAUSE_COLOR if v["act"] == "pause" else CHARGE_COLOR}
             on = v["act"] == "stop"
-            return {"kind": "button", "name": _clean(name), "value": w["stop"] if on else w["start"], "color": CHARGE_COLOR if on else DEFAULT_COLOR}
+            return {"kind": "button", "name": _clean(name), "value": w["stop"] if on else w["start"], "color": STOP_COLOR if on else CHARGE_COLOR}
         if part == "amps":  # de stroom: een regelaar (`getal|min|max`) op het paneel; een scherm met openHASP toont `text`
             ok = v is not None and v.get("online") and v.get("amps") is not None and v.get("amp_min") is not None and v.get("amp_max") is not None and v.get("phase") != "busy"
             if not ok:
                 return {"kind": "text", "value": "—"}
             return {"kind": "number", "value": f"{int(v['amps'])}|{int(v['amp_min'])}|{int(v['amp_max'])}", "text": f"{int(v['amps'])} A"}
         mine = v is not None and v.get("online") and v.get("phase") in ("mine", "other")
+        if v is not None and v.get("online") and v.get("phase") == "busy" and part in ("time", "energy", "price"):
+            return {"kind": "text", "value": w["busy_val"], "color": CHARGE_COLOR}  # geen gegevens van een ander, maar ook geen kaal streepje
         if part == "time":
             t = v.get("time") if mine else None
             return {"kind": "text", "value": _clean(t) if t not in (None, "") else "—"}

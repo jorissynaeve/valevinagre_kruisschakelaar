@@ -351,11 +351,11 @@ def test_the_rows_show_the_state_a_pause_button_and_a_slider_for_the_current(tmp
     assert (run_row()["kind"], run_row()["name"]) == ("text", "Aangesloten"), "niet aan het laden: alleen de status, geen knop"
     esp.values["state"] = smappee.S_CHARGING
     r = run_row()
-    assert (r["kind"], r["name"], r["value"]) == ("button", "Aan het laden", "Pauze")
+    assert (r["kind"], r["name"], r["value"]) == ("button", "Aan het laden", "PAUZE")
     esp.values["state"] = smappee.S_PAUSED
     r = run_row()
-    assert (r["kind"], r["name"], r["value"]) == ("button", "Gepauzeerd", "Hervat")
-    assert live.value(f"kk.{name}__run", "en")["value"] == "Resume"
+    assert (r["kind"], r["name"], r["value"]) == ("button", "Gepauzeerd", "HERVAT")
+    assert live.value(f"kk.{name}__run", "en")["value"] == "RESUME"
     a = live.value(f"kk.{name}__amps", "nl")
     assert a == {"kind": "number", "value": "19|6|32", "text": "19 A"}
     esp.values["current"] = None  # Slim of Zon: geen regelaar
@@ -397,7 +397,7 @@ def test_a_tuya_charger_card_is_unchanged(tmp_path):
     m.set_card(name, charger=f"k:{cid}")
     live = cards.Live(m, tuya=t, charge=hub)
     r = live.value(f"kk.{name}__run", "nl")
-    assert (r["kind"], r["value"]) == ("button", "Start") and live.value(f"kk.{name}__amps", "nl") == {"kind": "text", "value": "—"}
+    assert (r["kind"], r["value"]) == ("button", "START") and live.value(f"kk.{name}__amps", "nl") == {"kind": "text", "value": "—"}
     assert hub.view(cid, None).get("ctl") is None and "amps" not in hub.view(cid, None)
 
 

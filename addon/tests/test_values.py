@@ -229,10 +229,10 @@ def test_a_charger_card_of_before_0_28_becomes_a_block_once(tmp_path):
     hub.tick()
     assert hub.active["meter"]["by"] == "-", "een sessie die niet via de add-on begon staat als lokaal"
     run = live.value("kk.stekker__run", "nl")
-    assert run["kind"] == "button" and run["name"] == "Stekker" and run["value"] == "Stop", "aan staat op de startwaarde: Stop; zonder status de naam van de kaart"
+    assert run["kind"] == "button" and run["name"] == "Stekker" and run["value"] == "STOP", "aan staat op de startwaarde: Stop; zonder status de naam van de kaart"
     assert live.press("kk.stekker__run", "button", None) and hub.tuya.sent == [("meter", "1", "OFF")]
     assert hub.log[-1]["name"] == "Lokaal (aan de laadpaal)" and hub.log[-1]["reason"] == "gestopt door de eigenaar"
-    assert live.value("kk.stekker__run", "nl")["value"] == "Start" and live.press("kk.stekker__run", "button", None) and hub.tuya.sent[-1] == ("meter", "1", "ON")
+    assert live.value("kk.stekker__run", "nl")["value"] == "START" and live.press("kk.stekker__run", "button", None) and hub.tuya.sent[-1] == ("meter", "1", "ON")
     hub.update("meter", {"target": {"off": ""}})
     assert live.press("kk.stekker__run", "button", None) is False and len(hub.tuya.sent) == 2, "geen stopwaarde gekozen: dan niets"
 

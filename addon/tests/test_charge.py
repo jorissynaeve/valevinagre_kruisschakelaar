@@ -201,17 +201,18 @@ def test_three_houses_the_owner_logs_who_charges_and_the_others_see_busy(tmp_pat
                 h.engine.model.add_card("charger")
                 h.engine.model.set_card("laadpaal", charger="r:atelier:k:lader")
             live_a, live_c = (cards.Live(h.engine.model, link=h.hub) for h in (a, c))
-            await until(lambda: live_a.value("kk.laadpaal__run", "nl")["value"] == "Start" and live_c.value("kk.laadpaal__run", "nl")["value"] == "Start", what="beide kunnen starten")
+            await until(lambda: live_a.value("kk.laadpaal__run", "nl")["value"] == "START" and live_c.value("kk.laadpaal__run", "nl")["value"] == "START", what="beide kunnen starten")
 
             assert live_a.press("kk.laadpaal__run", "button", None) is True
             await until(lambda: "lader" in b.hub.charge.active, what="sessie bij de eigenaar")
             assert b.hub.charge.active["lader"]["by"] == "hoofdhuis" and b.hub.charge.active["lader"]["name"] == "Hoofdhuis", "de eigenaar noteert wie het was, uit de koppeling"
             assert b.hub.tuya.sent == [("124", "OpenCharging")]
             b.hub.tuya.points.update({"101": "charing", "25": 5.0})
-            await until(lambda: live_a.value("kk.laadpaal__run", "nl")["value"] == "Stop", what="de starter kan stoppen")
-            await until(lambda: live_c.value("kk.laadpaal__run", "nl")["name"] == "Laadpaal bezet", what="de ander ziet bezet")
+            await until(lambda: live_a.value("kk.laadpaal__run", "nl")["value"] == "STOP", what="de starter kan stoppen")
+            await until(lambda: live_c.value("kk.laadpaal__run", "nl")["name"] == "Laadsessie bezig", what="de ander ziet bezet")
             assert live_a.value("kk.laadpaal__energy", "nl")["value"] == "3.00 kWh" and live_a.value("kk.laadpaal__price", "nl")["value"] == "€ 1.50"
-            assert live_c.value("kk.laadpaal__energy", "nl")["value"] == "—" and live_c.value("kk.laadpaal__price", "nl")["value"] == "—"
+            assert live_c.value("kk.laadpaal__energy", "nl")["value"] == "Bezet" and live_c.value("kk.laadpaal__price", "nl")["value"] == "Bezet", "wel dat er iets bezig is, niet wat"
+            assert live_c.value("kk.laadpaal__run", "nl")["kind"] == "text", "en geen knop"
             assert c.hub.object("atelier", "k:lader") == {"kind": "charger", "name": "Laadpaal", "online": True, "phase": "busy", "act": None}, "ook niet over de lijn"
             assert c.hub.conns["atelier"].ws is not None and "Hoofdhuis" not in json.dumps(c.hub.remote), "de naam van de starter bereikt de ander niet"
 
@@ -234,7 +235,7 @@ def test_three_houses_the_owner_logs_who_charges_and_the_others_see_busy(tmp_pat
             b.hub.charge.tick()
             e = b.hub.charge.log[-1]
             assert e["name"] == "Hoofdhuis" and e["kwh"] == 3.0 and e["cost"] == 1.5 and e["reason"] == "klaar of losgekoppeld"
-            await until(lambda: live_c.value("kk.laadpaal__run", "nl")["value"] == "Start", what="weer vrij voor de ander")
+            await until(lambda: live_c.value("kk.laadpaal__run", "nl")["value"] == "START", what="weer vrij voor de ander")
             assert live_c.value("kk.laadpaal__run", "nl")["name"] == "Aangesloten" or live_c.value("kk.laadpaal__run", "nl")["name"] == "Klaar"
         finally:
             for h in (a, b, c):
