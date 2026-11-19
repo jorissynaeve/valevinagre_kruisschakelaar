@@ -18,11 +18,11 @@ class Tuya:
     def __init__(self, **v):
         self.devices = {"lader": {}}
         self.values = {"101": "connect", "25": 10.0, "120": "00:00:00", "124": "CloseCharging", **v}
-        self.online, self.sent = True, []
+        self.online, self.sent, self.once = True, [], False  # once: dp 25 is "energie laatste beurt" (Feyree), geen lopende teller
 
     def status(self):
         return [{"id": "lader", "name": "Lader", "online": self.online, "product": "Feyree EV-lader",
-                 "points": [{"dp": dp, "name": f"Punt {dp}", "value": v, "unit": "", "rw": dp == "124"} for dp, v in self.values.items()]}]
+                 "points": [{"dp": dp, "name": f"Punt {dp}", "code": "charge_energy_once" if self.once and dp == "25" else "", "value": v, "unit": "", "rw": dp == "124"} for dp, v in self.values.items()]}]
 
     def set(self, did, dp, value):
         self.sent.append((dp, value))
@@ -296,3 +296,87 @@ def test_the_web_api_adds_runs_and_removes_a_charger_and_serves_the_log(tmp_path
             await c.close()
 
     run(go())
+
+
+def feyree(tmp_path):
+    hub, t, clock = make(tmp_path, **{"25": 27.24})  # het totaal van de vorige beurt
+    t.once = True
+    return hub, t, clock
+
+
+def _charge(hub, t, clock, seconds=7200):
+    hub.start("lader", hub.who_peer("hoofdhuis"))
+    t.values["101"] = "charing"
+    hub.tick()
+    clock.t += seconds
+    hub.tick()  # tijdens de sessie blijft dp 25 het totaal van de vorige beurt
+    t.values["101"] = "finish"
+    hub.tick()
+    clock.t += 30
+
+
+def test_a_total_that_arrives_after_the_session_ended_is_filled_in_afterwards(tmp_path):
+    hub, t, clock = feyree(tmp_path)
+    _charge(hub, t, clock)
+    hub.tick()
+    e = hub.log[-1]
+    assert "lader" not in hub.active and e["kwh"] is None and e["cost"] is None and e["wait"] > e["end"], "nog onbekend, niet 0,00"
+    clock.t += 120
+    hub.tick()
+    assert hub.log[-1]["kwh"] is None, "zolang de laadpaal niets nieuws meldt blijft het wachten"
+    t.values["25"] = 31.5  # de laadpaal meldt het totaal van de beurt: groter dan dat van de vorige, en toch niet min de oude waarde
+    hub.tick()
+    e = hub.log[-1]
+    assert e["kwh"] == 31.5 and e["cost"] == 7.88 and "wait" not in e and "from" not in e
+    assert json.loads((tmp_path / "charge.json").read_text(encoding="utf-8"))["log"][-1]["kwh"] == 31.5
+
+
+def test_a_total_that_arrives_before_the_end_is_used_as_is(tmp_path):
+    hub, t, clock = feyree(tmp_path)
+    hub.start("lader", hub.who_peer("hoofdhuis"))
+    t.values["101"] = "charing"
+    hub.tick()
+    t.values.update({"25": 5.83, "101": "finish"})  # kleiner dan het vorige totaal
+    hub.tick()
+    assert hub.view("lader", "hoofdhuis")["energy"] == 5.83
+    clock.t += 30
+    hub.tick()
+    e = hub.log[-1]
+    assert e["kwh"] == 5.83 and "wait" not in e
+
+
+def test_a_total_that_never_arrives_stays_unmeasured_and_a_new_session_cannot_claim_it(tmp_path):
+    hub, t, clock = feyree(tmp_path)
+    _charge(hub, t, clock)
+    hub.tick()
+    assert "wait" in hub.log[-1]
+    clock.t += 1000
+    t.values["101"] = "connect"
+    hub.tick()
+    e = hub.log[-1]
+    assert e["kwh"] is None and "wait" not in e, "na het venster is het niet gemeten"
+    _charge(hub, t, clock, 600)
+    hub.tick()
+    first, second = hub.log[-2], hub.log[-1]
+    t.values["25"] = 9.0
+    hub.tick()
+    assert first["kwh"] is None and second["kwh"] == 9.0, "een nieuw totaal hoort bij de sessie die erop wacht"
+    hub.start("lader", hub.who_peer("garage"))
+    t.values["101"] = "charing"
+    hub.tick()
+    clock.t += 100
+    t.values["101"] = "finish"
+    hub.tick()
+    clock.t += 30
+    hub.tick()
+    pending = hub.log[-1]
+    hub.start("lader", hub.who_peer("hoofdhuis"))
+    assert "wait" not in pending, "een nieuwe start sluit het wachten op de vorige af"
+
+
+def test_a_session_that_never_charged_does_not_wait_for_a_total(tmp_path):
+    hub, t, clock = feyree(tmp_path)
+    hub.start("lader", hub.who_peer("hoofdhuis"))
+    clock.t += 200
+    hub.tick()
+    assert hub.log[-1]["reason"] == "niet gestart" and "wait" not in hub.log[-1]

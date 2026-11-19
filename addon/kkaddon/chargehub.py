@@ -55,8 +55,10 @@ MAX_LOG = 500
 MAX_IMPORTED = 300
 START_GRACE = 180.0  # s: na een start wachten tot de laadpaal echt laadt; anders is het niet gelukt
 END_AFTER = 20.0  # s: zolang de laadpaal niet meer laadt voor de sessie eindigt (een korte hapering is geen einde)
+SETTLE = 900.0  # s: een laadpaal die het totaal van de beurt pas na afloop meldt (Feyree): zo lang wachten we er na het einde nog op
+ONCE = "charge_energy_once"  # code van het datapunt "energie laatste beurt": constant tijdens de sessie, het nieuwe totaal komt erna
 ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
-LOCAL = "-"  # starter van een sessie die aan de laadpaal zelf begon
+LOCAL = "-" # starter van een sessie die aan de laadpaal zelf begon
 INPUTS = ("status", "time", "energy")
 TAG_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 HOUSE_RE = re.compile(r"^[a-z0-9_]{1,40}$")
@@ -392,10 +394,21 @@ class ChargeHub:
                 return c["price"]
         return c["price"]
 
+    def _once(self, c: dict) -> bool:
+        """Is de kWh-ingang het totaal van de laatste beurt (geen lopende teller)? Dan blijft hij tijdens de sessie gelijk aan de vorige beurt."""
+        p = self._point(c, c["inputs"].get("energy", ""))
+        return bool(p and p.get("code") == ONCE)
+
     @staticmethod
     def _session_kwh(s: dict) -> float | None:
+        """De kWh van de sessie, of None zolang ze niet bekend is. Bij een lopende teller: nu min bij de start. Bij het totaal van de laatste
+        beurt: de nieuwe waarde zelf (niet min de oude), en onbekend zolang de laadpaal er geen nieuwe heeft gemeld."""
         e, base = s.get("last_e"), s.get("base")
-        return None if e is None or base is None else max(0.0, e - base)
+        if e is None or base is None:
+            return None
+        if s.get("once"):
+            return e if e != base and e > 0 else None
+        return max(0.0, e - base)
 
     # ------------------------------------------------------------ wie ziet wat
 
@@ -462,6 +475,7 @@ class ChargeHub:
             raise ModelError("de status van de laadpaal laat geen start toe")
         self.points.set(c["device"], c["target"]["dp"], c["target"]["on"])  # ModelError als het toestel het weigert
         e = self.energy(c)
+        self._drop_wait(cid)
         self.active[cid] = {"by": who["id"], "name": who["name"], "start": self._clock(), "seen": False, "last_chg": None, "base": e, "last_e": e}
         log.info("laadpaal %s: gestart door %s", c["name"], who["name"])
         self._save()
@@ -657,6 +671,7 @@ class ChargeHub:
         e = self.energy(c)
         if e is None:
             return
+        s["once"] = self._once(c)
         if s.get("last_e") is not None and e < s["last_e"] - 1e-9:
             s["base"] = 0.0
         if s.get("base") is None:
@@ -670,11 +685,39 @@ class ChargeHub:
         entry = {"n": self.seq, "charger": cid, "by": s["by"], "name": s["name"], "start": int(s["start"]), "end": int(now), "seconds": int(now - s["start"]),
                  "kwh": None if kwh is None else round(kwh, 3), "tariff": self.tariff(c), "reason": reason, "stopped_by": stopped_by}
         entry["cost"] = None if kwh is None else round(kwh * entry["tariff"], 2)
+        if kwh is None and s.get("once") and s["seen"]:
+            entry["wait"], entry["from"] = int(now + SETTLE), s["base"]  # het totaal van deze beurt komt nog: `_settle` vult het aan
         self.log.append(entry)
         del self.log[:-MAX_LOG]
         log.info("laadpaal %s: sessie van %s voorbij (%s, %s kWh)", c["name"], s["name"], reason, entry["kwh"])
         self._save()
         self._poke()
+
+    def _drop_wait(self, cid: str) -> None:
+        """Een nieuwe sessie op de laadpaal: een nieuw totaal hoort dan bij die sessie, niet meer bij een afgesloten sessie."""
+        for e in self.log[-20:]:
+            if e.get("charger") == cid and "wait" in e:
+                e.pop("wait", None)
+                e.pop("from", None)
+
+    def _settle(self, cid: str, c: dict) -> None:
+        """Een afgesloten sessie wacht op het totaal van de laadpaal: een nieuwe waarde is de kWh van die sessie. Na SETTLE blijft het onbekend."""
+        now, changed = self._clock(), False
+        for e in self.log[-20:]:
+            if e.get("charger") != cid or "wait" not in e:
+                continue
+            v = self.energy(c)
+            if v is not None and v != e["from"] and v > 0:
+                e["kwh"], e["cost"] = round(v, 3), round(v * e["tariff"], 2)
+                log.info("laadpaal %s: sessie van %s kreeg achteraf %s kWh", c["name"], e["name"], e["kwh"])
+            elif now <= e["wait"]:
+                continue
+            e.pop("wait", None)
+            e.pop("from", None)
+            changed = True
+        if changed:
+            self._save()
+            self._poke()
 
     def tick(self) -> None:
         """Elke seconde: een sessie die aan de laadpaal zelf begint opmerken, de meter volgen, en een sessie laten eindigen als de laadpaal klaar is."""
@@ -687,8 +730,10 @@ class ChargeHub:
                 continue  # niets weten is niet hetzelfde als gestopt: de sessie loopt door
             chg, s = self.charging(c), self.active.get(cid)
             if s is None:
+                self._settle(cid, c)
                 if chg:
                     e = self.energy(c)
+                    self._drop_wait(cid)
                     self.active[cid] = {"by": LOCAL, "name": "Lokaal (aan de laadpaal)", "start": now, "seen": True, "last_chg": now, "base": e, "last_e": e}
                     log.info("laadpaal %s: laadt zonder dat de add-on startte, genoteerd als lokaal", c["name"])
                     self._save()

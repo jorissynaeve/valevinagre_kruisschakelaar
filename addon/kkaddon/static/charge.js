@@ -22,6 +22,7 @@ const chDay = (s, end) => { // 'YYYY-MM-DD' (lokale tijd) -> seconden; end = het
 const chDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const chStamp = (t) => new Date(t * 1000).toLocaleString('nl-BE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 const chDur = (s) => `${Math.floor(s / 3600)}u${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}`;
+const chKwhE = (e) => (e.wait ? 'wordt gemeten…' : chKwh(e.kwh)); // een sessie die nog op het totaal van de laadpaal wacht
 const chKwh = (v) => (v == null ? '—' : v.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const chEur = (v) => (v == null ? '—' : `€ ${v.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const chTariff = (v) => `€ ${v.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
@@ -55,7 +56,7 @@ function viewChargeBody() {
   const opt = (v, cur, l) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`;
   const lokaal = CHF.house === '-';
   const body = rows.map((e) => `<tr>${many ? `<td>${esc(CH.chargers[e.charger] || e.charger)}</td>` : ''}<td>${esc(e.name)}</td><td>${chStamp(e.start)}</td><td>${chStamp(e.end)}</td><td>${chDur(e.seconds)}</td>
-      <td class="num">${chKwh(e.kwh)}</td><td class="num">${chTariff(e.tariff)}</td><td class="num">${chEur(e.cost)}</td><td>${esc(e.reason)}</td></tr>`).join('');
+      <td class="num">${chKwhE(e)}</td><td class="num">${chTariff(e.tariff)}</td><td class="num">${chEur(e.cost)}</td><td>${esc(e.reason)}</td></tr>`).join('');
   const running = (CH.active || []).map((a) => `<div class="sub">Nu bezig: <b>${esc(a.name)}</b> op ${esc(CH.chargers[a.charger] || a.charger)} sinds ${chStamp(a.start)} (komt in de lijst als ze eindigt)</div>`).join('');
   return `<div class="card noprint" id="lgfilter"><div class="row" style="flex-wrap:wrap;gap:10px">
       <div><label>Huis</label><select data-lg="house"><option value="">alle huizen</option>${houses.map(([id, n]) => opt(id, CHF.house, id === '-' ? n : n)).join('')}</select></div>
