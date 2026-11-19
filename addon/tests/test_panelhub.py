@@ -366,12 +366,12 @@ def test_a_lamp_of_the_addon_and_the_charger_are_shown_and_operated_from_the_pan
             await e.until(lambda: any(s.startswith("entityUpd~Laadpaal~") for s in e.fake.screen()), what="laadpaal")
             page = next(s for s in e.fake.screen() if s.startswith("entityUpd~Laadpaal~"))
             assert "~button~kk.laadpaal__run~" in page and "~Aangesloten~START" in page
-            assert "~Laadtijd~—" in page and "~Geladen~—" in page, "buiten een sessie toont de kaart niets van de vorige"
+            assert "~Laadtijd~—" in page and "~kWh~—" in page, "buiten een sessie toont de kaart niets van de vorige"
             e.touch("event,buttonPress2,kk.laadpaal__run,button")
             await e.until(lambda: e.hub.tuya.sent == [("lader", "124", "OpenCharging")], what="starten")
             e.hub.tuya.values["25"] = 4.5
             await e.until(lambda: any("~Aangesloten~STOP" in s for s in e.fake.screen()), what="knop wordt STOP")
-            await e.until(lambda: any("~Laadtijd~01:02:03" in s and "~Geladen~1.00 kWh" in s and "~Prijs~€ 0.25" in s for s in e.fake.screen()), what="de sessie op het scherm")
+            await e.until(lambda: any("~Laadtijd~01:02:03" in s and "~kWh~1.00 kWh" in s and "~Euro~€ 0.25" in s and "~1:02~" in s and "~1.00~" in s for s in e.fake.screen()), what="de sessie op het scherm")
             e.hub.tuya.online = False
             await e.until(lambda: any("~Laadpaal offline~" in s for s in e.fake.screen()), what="offline")
             e.touch("event,buttonPress2,kk.laadpaal__run,button")

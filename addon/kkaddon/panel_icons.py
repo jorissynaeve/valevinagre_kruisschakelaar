@@ -113,6 +113,9 @@ ICONS = {
     # voor de laadpaalkaart; afgeleid uit het MDI-codepunt (teken = codepunt - 0xF0001 + 0xE000, zoals de rest van deze tabel), niet op de TFT gezien
     "ev-station": "\ue5f0",
     "currency-eur": "\ue1ac",
+    "play": "",  # voor de knop op de laadpaalkaart (raster); ook afgeleid, niet op de TFT gezien
+    "pause": "",
+    "stop": "",
     # voor de airco-kaart (cardThermo): de tekens uit icon_mapping.py van nspanel-lovelace-ui
     "power": "\ue424",
     "calendar-sync": "\uee8d",

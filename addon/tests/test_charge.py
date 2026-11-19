@@ -209,7 +209,7 @@ def test_three_houses_the_owner_logs_who_charges_and_the_others_see_busy(tmp_pat
             assert b.hub.tuya.sent == [("124", "OpenCharging")]
             b.hub.tuya.points.update({"101": "charing", "25": 5.0})
             await until(lambda: live_a.value("kk.laadpaal__run", "nl")["value"] == "STOP", what="de starter kan stoppen")
-            await until(lambda: live_c.value("kk.laadpaal__run", "nl")["name"] == "Laadsessie bezig", what="de ander ziet bezet")
+            await until(lambda: live_c.value("kk.laadpaal__run", "nl")["name"] == "Sessie bezig", what="de ander ziet bezet")
             assert live_a.value("kk.laadpaal__energy", "nl")["value"] == "3.00 kWh" and live_a.value("kk.laadpaal__price", "nl")["value"] == "€ 1.50"
             assert live_c.value("kk.laadpaal__energy", "nl")["value"] == "Bezet" and live_c.value("kk.laadpaal__price", "nl")["value"] == "Bezet", "wel dat er iets bezig is, niet wat"
             assert live_c.value("kk.laadpaal__run", "nl")["kind"] == "text", "en geen knop"

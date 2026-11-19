@@ -71,11 +71,22 @@ CHARGE_COLOR = rgb565([0, 200, 80])
 STOP_COLOR = rgb565([255, 60, 40])  # de knop die een sessie stopt
 PAUSE_COLOR = rgb565([255, 165, 0])
 WORDS = {
-    "nl": {"time": "Laadtijd", "energy": "Geladen", "price": "Prijs", "start": "START", "stop": "STOP", "pause": "PAUZE", "resume": "HERVAT", "amps": "Stroom", "offline": "Laadpaal offline", "offline_short": "offline", "none": "Geen laadpaal gekozen", "busy": "Laadsessie bezig", "busy_val": "Bezet",
+    "nl": {"time": "Laadtijd", "energy": "Geladen", "price": "Prijs", "start": "START", "stop": "STOP", "pause": "PAUZE", "resume": "HERVAT", "amps": "Stroom", "offline": "Laadpaal offline", "offline_short": "offline", "none": "Geen laadpaal gekozen", "busy": "Sessie bezig", "busy_val": "Bezet", "kwh": "kWh", "eur": "Euro",
            "ssid": "Netwerk", "password": "Wachtwoord", "missing": "Niet gevonden"},
-    "en": {"time": "Charge time", "energy": "Charged", "price": "Price", "start": "START", "stop": "STOP", "pause": "PAUSE", "resume": "RESUME", "amps": "Current", "offline": "Charger offline", "offline_short": "offline", "none": "No charger chosen", "busy": "Charging session active", "busy_val": "In use",
+    "en": {"time": "Charge time", "energy": "Charged", "price": "Price", "start": "START", "stop": "STOP", "pause": "PAUSE", "resume": "RESUME", "amps": "Current", "offline": "Charger offline", "offline_short": "offline", "none": "No charger chosen", "busy": "Session active", "busy_val": "In use", "kwh": "kWh", "eur": "Euro",
            "ssid": "Network", "password": "Password", "missing": "Not found"},
 }
+
+
+def _glyph_time(t: Any) -> str:
+    """De laadtijd (`02:05:09`) als H:MM, voor een tegel; wat er anders staat zo kort mogelijk."""
+    m = re.fullmatch(r"(\d+):(\d\d)(?::\d\d)?", str(t or "").strip())
+    return f"{int(m[1])}:{m[2]}" if m else str(t or "-").strip()[:5]
+
+
+def _glyph_num(x: float) -> str:
+    """Een getal in vier tekens of minder, voor een tegel: 2.50, 12.5, 123."""
+    return f"{x:.2f}" if x < 10 else f"{x:.1f}" if x < 100 else f"{x:.0f}"
 
 
 def _clean(s: Any) -> str:
@@ -179,9 +190,13 @@ def _card(model, cid: str, lang: str) -> dict:
             {"entity": f"{DYN}.{cid}__time", "name": w["time"], "icon": "mdi:timer-outline"},
             {"entity": f"{DYN}.{cid}__energy", "name": w["energy"], "icon": "mdi:lightning-bolt"},
             {"entity": f"{DYN}.{cid}__price", "name": w["price"], "icon": "mdi:currency-eur"}]
-        if c.get("amps"):  # een Smappee-laadpaal: de stroom (ampère) instellen, met een regelaar op het paneel
+        if c.get("amps"):  # een Smappee-laadpaal: de stroom (ampère) instellen, met een regelaar op het paneel; dat past niet op een tegel, dus een lijst
             rows.insert(1, {"entity": f"{DYN}.{cid}__amps", "name": w["amps"], "icon": "mdi:current-ac"})
-        return {**base, "type": "cardEntities", "entities": rows}
+            return {**base, "type": "cardEntities", "entities": rows}
+        # anders rastertegels: groot pictogram of getal, kort onderschrift. Zonder `icon` in de rij komt het pictogram uit `Live` (de actie, of de waarde zelf)
+        tiles = [{"entity": f"{DYN}.{cid}__run"}, {"entity": f"{DYN}.{cid}__time", "name": w["time"]},
+                 {"entity": f"{DYN}.{cid}__energy", "name": w["kwh"]}, {"entity": f"{DYN}.{cid}__price", "name": w["eur"]}]
+        return {**base, "type": "cardGrid", "entities": tiles}
     if t == "power":
         return {**base, "type": "cardPower", "entities": [_power_item(it, cid, i) for i, it in enumerate(c["items"])] or [{"entity": "delete"}]}
     if t == "qr":
@@ -366,19 +381,21 @@ class Live:
         v = self.charger(c)
         if part == "run":
             if not c.get("charger"):
-                return {"kind": "text", "name": w["none"], "value": "", "color": DEFAULT_COLOR}
+                return {"kind": "text", "name": w["none"], "value": "", "color": DEFAULT_COLOR, "icon": "ev-station"}
             if v is None or not v.get("online"):
-                return {"kind": "text", "name": w["offline"], "value": "", "color": DEFAULT_COLOR}
+                return {"kind": "text", "name": w["offline"], "value": "", "color": DEFAULT_COLOR, "icon": "ev-station"}
             if v.get("phase") == "busy":  # een sessie van een andere installatie: we mogen er niets van zien, maar wel dat er een bezig is (anders lijkt de kaart stuk)
-                return {"kind": "text", "name": w["busy"], "value": "", "color": CHARGE_COLOR}
+                return {"kind": "text", "name": w["busy"], "value": "", "color": CHARGE_COLOR, "icon": "ev-station"}
             st = v.get("status")
             name = STATUS[lang].get(str(st), str(st)) if st is not None else _clean(v.get("name"))
             if v.get("act") is None:  # de status laat niets toe: geen knop, alleen de status
-                return {"kind": "text", "name": _clean(name), "value": "", "color": CHARGE_COLOR if v.get("charging") else DEFAULT_COLOR}
+                return {"kind": "text", "name": _clean(name), "value": "", "color": CHARGE_COLOR if v.get("charging") else DEFAULT_COLOR, "icon": "ev-station"}
             if v["act"] in ("pause", "resume"):  # een Smappee-laadpaal: pauzeren of hervatten, nooit start of stop (dat doet de badge)
-                return {"kind": "button", "name": _clean(name), "value": w[v["act"]], "color": PAUSE_COLOR if v["act"] == "pause" else CHARGE_COLOR}
+                return {"kind": "button", "name": _clean(name), "value": w[v["act"]], "color": PAUSE_COLOR if v["act"] == "pause" else CHARGE_COLOR,
+                        "icon": "pause" if v["act"] == "pause" else "play"}
             on = v["act"] == "stop"
-            return {"kind": "button", "name": _clean(name), "value": w["stop"] if on else w["start"], "color": STOP_COLOR if on else CHARGE_COLOR}
+            return {"kind": "button", "name": _clean(name), "value": w["stop"] if on else w["start"], "color": STOP_COLOR if on else CHARGE_COLOR,
+                    "icon": "stop" if on else "play"}
         if part == "amps":  # de stroom: een regelaar (`getal|min|max`) op het paneel; een scherm met openHASP toont `text`
             ok = v is not None and v.get("online") and v.get("amps") is not None and v.get("amp_min") is not None and v.get("amp_max") is not None and v.get("phase") != "busy"
             if not ok:
@@ -386,16 +403,16 @@ class Live:
             return {"kind": "number", "value": f"{int(v['amps'])}|{int(v['amp_min'])}|{int(v['amp_max'])}", "text": f"{int(v['amps'])} A"}
         mine = v is not None and v.get("online") and v.get("phase") in ("mine", "other")
         if v is not None and v.get("online") and v.get("phase") == "busy" and part in ("time", "energy", "price"):
-            return {"kind": "text", "value": w["busy_val"], "color": CHARGE_COLOR}  # geen gegevens van een ander, maar ook geen kaal streepje
+            return {"kind": "text", "value": w["busy_val"], "glyph": "-", "color": CHARGE_COLOR}  # geen gegevens van een ander, maar ook geen kaal streepje
         if part == "time":
             t = v.get("time") if mine else None
-            return {"kind": "text", "value": _clean(t) if t not in (None, "") else "—"}
+            return {"kind": "text", "value": _clean(t) if t not in (None, "") else "—", "glyph": _glyph_time(t) if t not in (None, "") else "-", **({"color": CHARGE_COLOR} if mine else {})}
         if part == "energy":
             e = v.get("energy") if mine else None
-            return {"kind": "text", "value": f"{e:.2f} kWh" if e is not None else "—"}
+            return {"kind": "text", "value": f"{e:.2f} kWh" if e is not None else "—", "glyph": _glyph_num(e) if e is not None else "-", **({"color": CHARGE_COLOR} if mine else {})}
         if part == "price":
             cost = v.get("cost") if mine else None
-            return {"kind": "text", "value": f"€ {cost:.2f}" if cost is not None else "—"}
+            return {"kind": "text", "value": f"€ {cost:.2f}" if cost is not None else "—", "glyph": _glyph_num(cost) if cost is not None else "-", **({"color": CHARGE_COLOR} if mine else {})}
         return {"kind": "text", "value": ""}
 
     # ------------------------------------------------------------ bedienen

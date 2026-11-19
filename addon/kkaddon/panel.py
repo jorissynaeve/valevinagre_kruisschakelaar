@@ -425,6 +425,8 @@ class Panel:
         elif isinstance(color, (list, tuple)):
             color = rgb565(color)
         icon = self.icon(it.icon if it.icon is not None else d.get("icon") or "alert-circle-outline")
+        if d.get("glyph") is not None and it.icon is None:  # een waarde als groot "pictogram" op een rastertegel, zoals een sensor (`_short`)
+            icon = str(d["glyph"]).replace("~", "-")
         shown = name if name is not None else d.get("name", "")
         return f"~{d.get('kind', 'text')}~{entity}~{icon}~{color}~{str(shown).replace('~', '-')}~{str(d.get('value', '')).replace('~', '-')}"
 

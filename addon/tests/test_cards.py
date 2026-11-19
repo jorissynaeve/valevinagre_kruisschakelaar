@@ -143,16 +143,19 @@ def test_the_charger_rows(tmp_path):
     t = FakeTuya({"101": "connect", "124": "CloseCharging", "25": 10, "120": "02:00:00"})
     m, hub = charger(tmp_path, t, price=0.3, price_entity="sensor.tarief")
     hub.state = lambda e: ("0.2", {}) if e == "sensor.tarief" else None
+    card = cards._card(m, "laadpaal", "nl")
+    assert card["type"] == "cardGrid" and [e["entity"].split("__")[1] for e in card["entities"]] == ["run", "time", "energy", "price"] and not any(e.get("icon") for e in card["entities"]), "rastertegels, het pictogram komt uit Live"
     live = cards.Live(m, tuya=t, charge=hub)
-    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Aangesloten", "value": "START", "color": cards.CHARGE_COLOR}
+    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Aangesloten", "value": "START", "color": cards.CHARGE_COLOR, "icon": "play"}
     assert live.value("kk.laadpaal__energy", "nl")["value"] == "—", "buiten een sessie toont de kaart niets van de vorige"
     assert live.press("kk.laadpaal__run", "button", None) is True and t.sent == [("124", "OpenCharging")]
     t.values.update({"101": "charing", "25": 12.5})
-    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Aan het laden", "value": "STOP", "color": cards.STOP_COLOR}
+    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Aan het laden", "value": "STOP", "color": cards.STOP_COLOR, "icon": "stop"}
     assert live.value("kk.laadpaal__run", "en")["name"] == "Charging"
     assert live.value("kk.laadpaal__energy", "nl")["value"] == "2.50 kWh", "de kWh van deze sessie, niet de meterstand"
-    assert live.value("kk.laadpaal__time", "nl")["value"] == "02:00:00"
-    assert live.value("kk.laadpaal__price", "nl") == {"kind": "text", "value": "€ 0.50"}, "de HA-entiteit wint van het vaste tarief"
+    assert live.value("kk.laadpaal__time", "nl")["value"] == "02:00:00" and live.value("kk.laadpaal__time", "nl")["glyph"] == "2:00", "op een tegel: H:MM"
+    assert live.value("kk.laadpaal__energy", "nl")["glyph"] == "2.50"
+    assert live.value("kk.laadpaal__price", "nl") == {"kind": "text", "value": "€ 0.50", "glyph": "0.50", "color": cards.CHARGE_COLOR}, "de HA-entiteit wint van het vaste tarief"
     t.values["101"] = "iets_nieuws"
     assert live.value("kk.laadpaal__run", "nl")["name"] == "iets_nieuws", "een onbekende stand tonen we zoals ze komt"
     assert live.press("kk.laadpaal__run", "button", None) is True and t.sent[-1] == ("124", "CloseCharging")
@@ -173,10 +176,10 @@ def test_the_status_decides_start_from_two_lists(tmp_path):
     cid = next(iter(hub.chargers))
     assert hub.chargers[cid]["start_when"] == ["connect", "Finish"] and hub.chargers[cid]["stop_when"] == ["charing", "wait"]
     live = cards.Live(m, tuya=t, charge=hub)
-    assert live.value("kk.laadpaal__run", "nl") == {"kind": "text", "name": "Wacht", "value": "", "color": cards.DEFAULT_COLOR}, "in de stoplijst en geen sessie: niets te starten"
+    assert live.value("kk.laadpaal__run", "nl") == {"kind": "text", "name": "Wacht", "value": "", "color": cards.DEFAULT_COLOR, "icon": "ev-station"}, "in de stoplijst en geen sessie: niets te starten"
     assert live.press("kk.laadpaal__run", "button", None) is False and t.sent == []
     t.values["101"] = "finish"  # hoofdletters tellen niet
-    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Klaar", "value": "START", "color": cards.CHARGE_COLOR}
+    assert live.value("kk.laadpaal__run", "nl") == {"kind": "button", "name": "Klaar", "value": "START", "color": cards.CHARGE_COLOR, "icon": "play"}
     assert live.press("kk.laadpaal__run", "button", None) is True and t.sent == [("124", "OpenCharging")]
     t.values["101"] = "wait"
     assert live.value("kk.laadpaal__run", "nl")["value"] == "STOP", "in een sessie kun je altijd stoppen"
@@ -223,7 +226,7 @@ def test_a_dynamic_row_on_the_screen_asks_the_env_and_a_press_goes_back_to_it(tm
     p.on_screen("event,startup,59,eu")
     p.on_screen("event,buttonPress2,screensaver,bExit,2")
     page = out[-1]
-    assert page.startswith("entityUpd~Laadpaal~") and f"~button~kk.laadpaal__run~~{cards.CHARGE_COLOR}~Aangesloten~START" in page
+    assert page.startswith("entityUpd~Laadpaal~") and f"~button~kk.laadpaal__run~~{cards.CHARGE_COLOR}~Aangesloten~START" in page
     p.on_screen("event,buttonPress2,kk.laadpaal__run,button")
     assert t.sent == [("124", "OpenCharging")]
 
