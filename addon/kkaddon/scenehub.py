@@ -650,7 +650,12 @@ class SceneHub:
     # ------------------------------------------------------------ de regels: de scène die nu hoort te spelen
 
     def _read(self, ref):
-        return self.hub.engine.ref_value(ref) if isinstance(ref, str) else None
+        if not isinstance(ref, str):
+            return None
+        v = self.hub.engine.ref_value(ref)
+        if v is None and ref.startswith("x:") and self.hub.engine.lox_absent and self.hub.engine.lox_absent(ref):
+            return sr.ABSENT  # Loxone meldde een wekker voor een andere dag of geen wekker: zeker niet nu, dus geen "onbekend"
+        return v
 
     def _ahead(self, tid: str, minutes: int):
         """Staat de timer over zoveel minuten aan? (voor een wekker die eerder begint dan zijn timer)"""

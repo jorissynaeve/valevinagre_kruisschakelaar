@@ -330,3 +330,53 @@ def test_removing_the_device_keeps_the_block_without_a_device(tmp_path, monkeypa
         finally:
             await shutdown(hub, esp)
     asyncio.run(go())
+
+
+def test_a_wake_rule_with_an_alarm_for_another_day_is_false_and_not_unknown():
+    ins = {"i1": {"id": "i1", "kind": "time", "ref": "x:w"}}
+    gone = lambda ref: sr.ABSENT  # noqa: E731
+    for c in ({"op": "wake", "in": "i1", "before": 10, "hold": 60}, {"op": "after", "in": "i1"}, {"op": "before", "in": "i1"}):
+        assert sr.eval_cond(c, ins, gone, None, 700) is False, c
+        assert sr.eval_cond(c, ins, lambda ref: None, None, 700) is None, "nog niets ontvangen blijft onbekend"
+    ins2 = {"i1": {"id": "i1", "kind": "time", "ref": "x:w"}, "i2": {"id": "i2", "kind": "time", "ref": "m:t"}}
+    assert sr.eval_cond({"op": "between", "from": "i1", "to": "i2"}, ins2, lambda ref: sr.ABSENT if ref == "x:w" else 600, None, 700) is False
+    block = {"inputs": [{"id": "i1", "kind": "time", "ref": "x:w"}, {"id": "i2", "kind": "bool", "ref": "m:b"}],
+             "rules": [{"scene": "s1", "when": [{"op": "wake", "in": "i1", "before": 10, "hold": 60}]}, {"scene": "s2", "when": [{"op": "on", "in": "i2"}]}]}
+    assert sr.evaluate(block, lambda ref: sr.ABSENT if ref == "x:w" else True, None, 700) == (1, False)
+    assert sr.evaluate(block, lambda ref: sr.ABSENT if ref == "x:w" else False, None, 700) == (None, False), "zeker niets: het blok is niet onzeker"
+    assert sr.evaluate(block, lambda ref: None if ref == "x:w" else False, None, 700) == (None, True), "onbekend blijft onzeker"
+
+
+def test_night_still_starts_when_loxone_switches_off_and_on_again_while_the_alarm_is_tomorrow(tmp_path, monkeypatch):
+    """De melding van de gebruiker: kinderen_slapen 0 en dan weer 1 startte de scène niet, omdat de wekker (`Morgen, 06:45`) onbekend telde en het blok onzeker werd."""
+    async def go():
+        from kkaddon.loxonehub import LoxoneHub
+        r, hub, esp, did, clock = await env(tmp_path, monkeypatch)
+        wake, night = hub.scn.add({"name": "Wekker", "def": NIGHT}), hub.scn.add({"name": "Nacht", "def": RAINBOW})
+        lox = LoxoneHub(tmp_path, r.engine, hub, port=0)
+        lox.miniserver = "127.0.0.1"
+        lox.add_signal("slapen", {"dir": "in", "ref": "x:slapen", "kind": "bool"})
+        lox.add_signal("wekker", {"dir": "in", "ref": "x:wekker", "kind": "time"})
+        bid = hub.scn.add_block({"name": "Kidswekker", "device": did, "inputs": [{"name": "Slapen", "kind": "bool", "ref": "x:slapen"}, {"name": "Wekker", "kind": "time", "ref": "x:wekker"}]})
+        hub.scn.update_block(bid, {"rules": [{"scene": wake, "when": [{"op": "wake", "in": "i2", "before": 10, "hold": 60}]}, {"scene": night, "when": [{"op": "on", "in": "i1"}]}]})
+        try:
+            await fill(hub, did, esp)
+            at(r, clock, local(2027, 1, 5, 20, 0))
+            await lox.apply([("wekker", "Morgen, 06:45"), ("slapen", 1.0)])
+            hub.tick()
+            await asyncio.sleep(0.05)
+            assert calls(esp, "play") == [] and hub.scn.rmem[bid] == {"scene": night}, "de eerste stand wordt alleen onthouden"
+            await lox.apply([("slapen", 0.0)])
+            hub.tick()
+            await settle(hub, did)
+            assert hub.scn.rmem[bid] == {"scene": None}, "niets klopt, en dat is zeker: de stand wordt niet vergeten"
+            assert hub.scn.rules_view()[0]["unsure"] is False
+            await lox.apply([("slapen", 1.0)])
+            hub.tick()
+            await settle(hub, did)
+            assert calls(esp, "play") == [("play", {"slot": 2})], "Nacht start"
+        finally:
+            await lox.close()
+            await shutdown(hub, esp)
+    asyncio.run(go())
+

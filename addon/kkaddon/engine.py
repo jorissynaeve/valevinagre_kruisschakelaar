@@ -186,6 +186,7 @@ class Engine:
         self.espdev_value: Callable[[str], Any] | None = None  # een uitgang van een HUISDEV-apparaat: e:<id>:<punt>
         self.lox_view: Callable[[], list[dict]] | None = None  # de waarden van Loxone die als bron dienen (loxonehub.py)
         self.lox_value: Callable[[str], Any] | None = None  # een waarde van Loxone: x:<signaal>
+        self.lox_absent: Callable[[str], bool] | None = None  # is een tijd van Loxone zeker niet van toepassing nu (geen wekker, een andere dag), in plaats van onbekend
         self.hue_view: Callable[[], list[dict]] | None = None  # de Hue-bridges met wat ze aanbieden, zonder sleutel (espdevhub.py)
         self.nuki_view: Callable[[], list[dict]] | None = None  # de Nuki-accounts met hun sloten, zonder token (espdevhub.py)
         self.brink_view: Callable[[], list[dict]] | None = None  # de Brink Home-accounts met hun units, zonder wachtwoord (espdevhub.py)

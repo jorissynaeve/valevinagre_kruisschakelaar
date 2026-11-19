@@ -128,6 +128,7 @@ class LoxoneHub:
         self._load_vals()
         engine.lox_value = self.value_of
         engine.lox_view = self.in_view
+        engine.lox_absent = self.absent
         _model.lox_type = self.type_of
 
     # ------------------------------------------------------------ opslag
@@ -680,6 +681,13 @@ class LoxoneHub:
             return e["min"]
         k = e.get("keep")  # de volgende wekker staat er al, maar die van vandaag is net afgegaan en blijft tot middernacht
         return k["min"] if k and k["date"] == today else None
+
+    def absent(self, ref: str) -> bool:
+        """Een tijd van Loxone die **bekend** niet nu geldt: er kwam een tekst, maar zonder tijd (`Geen wekker`) of voor een andere dag (en niets dat vandaag nog geldt). Anders dan
+        onbekend (nog niets ontvangen): dan weet een regel van een ledstrip zeker dat er geen wekker is en hoeft een andere regel (Nacht) niet te wachten."""
+        m = X_RE.match(ref or "")
+        s = self.signals.get(m.group(1)) if m else None
+        return bool(s and s["kind"] == "time" and s["dir"] == "in" and s["enabled"] and s["ref"] == ref and m.group(1) in self.vals and self.value_of(ref) is None)
 
     def type_of(self, ref: str) -> str | None:
         """Wat de bron `x:<signaal>` geeft (bool, getal of tijd), of None als het signaal niet bestaat."""

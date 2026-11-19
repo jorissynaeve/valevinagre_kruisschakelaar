@@ -206,6 +206,9 @@ def condition_text(c: dict, names: dict[str, str]) -> str:
 
 # ------------------------------------------------------------ rekenen (puur)
 
+ABSENT = object()  # wat `read` geeft voor een tijd die zeker niet geldt (een wekker voor een andere dag, geen wekker): iets anders dan onbekend (None)
+
+
 def eval_cond(c: dict, ins: dict[str, dict], read: Callable[[str | None], object], ahead: Callable[[str, int], bool | None], now: int) -> bool | None:
     """Een voorwaarde: True, False of None (een ingang zonder waarde). `read(ref)`: de waarde van een bron; `ahead(timer, minuten)`: staat die timer over zoveel
     minuten aan; `now`: minuten sinds middernacht."""
@@ -213,6 +216,8 @@ def eval_cond(c: dict, ins: dict[str, dict], read: Callable[[str | None], object
         v = read(ins[iid]["ref"]) if ins.get(iid) and ins[iid]["ref"] else None
         if ins.get(iid) and ins[iid]["kind"] == BOOL:
             return v if isinstance(v, bool) else None
+        if v is ABSENT:
+            return ABSENT
         return v if _int(v) or isinstance(v, float) and not isinstance(v, bool) else None
 
     op = c["op"]
@@ -221,15 +226,19 @@ def eval_cond(c: dict, ins: dict[str, dict], read: Callable[[str | None], object
         return None if v is None else v is (op == "on")
     if op in ("after", "before"):
         t = val(c["in"])
-        return None if t is None else (now >= t if op == "after" else now < t)
+        return False if t is ABSENT else None if t is None else (now >= t if op == "after" else now < t)
     if op == "between":
         a, b = val(c["from"]), val(c["to"])
+        if a is ABSENT or b is ABSENT:
+            return False
         return None if a is None or b is None else _between(now, int(a), int(b))
     inp = ins.get(c["in"])
     if inp is None:
         return None
     if inp["kind"] == TIME:
         t = val(c["in"])
+        if t is ABSENT:
+            return False  # geen wekker voor vandaag: de wekkerregel klopt zeker niet (en maakt het blok dus niet onzeker)
         if t is None:
             return None
         return _between(now, int(t - c["before"]) % DAY, int(t + c["hold"]) % DAY) if c["before"] + c["hold"] < DAY else True
