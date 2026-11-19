@@ -13,6 +13,7 @@ import sys
 from aiohttp import web
 
 from . import __version__, settings as cfg
+from .accesshub import AccessHub
 from .chargehub import ChargeHub
 from .engine import Engine
 from .greehub import GreeHub
@@ -97,6 +98,8 @@ async def run() -> None:
     mqtt.extras.append(espdev)
     espdev.changed = mqtt.resync
     espdev.start()
+    access = AccessHub(s.data_dir, engine)  # het toegangslogboek: detecties en deuren uit punten van die blokken
+    access.espdev = espdev
     loxone = LoxoneHub(s.data_dir, engine, espdev, port=s.loxone_port)  # de brug naar een Loxone Miniserver, in plaats van JavaLox
     await loxone.start()
     remote = RemoteSensors(s.data_dir, links)  # de kWh-tellers van gekoppelde Tuya-toestellen als sensoren in HA, voor het energiedashboard
@@ -104,7 +107,7 @@ async def run() -> None:
     links.changed = mqtt.resync
     energy = EnergyHub(s.data_dir, ha)  # het energiedashboard van HA invullen vanuit de meters
     await links.start()
-    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar, energy, charge, espdev, loxone)
+    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar, energy, charge, espdev, loxone, access)
     runner = web.AppRunner(make_app(ctx), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", s.web_port).start()
@@ -131,7 +134,15 @@ async def run() -> None:
                 log.exception("laadsessies")
             await asyncio.sleep(1.0)
 
-    tasks = [asyncio.create_task(ticker()), asyncio.create_task(mqtt.run()), asyncio.create_task(ha.run()), asyncio.create_task(panels.run()), asyncio.create_task(screens.run()), asyncio.create_task(links.run()), asyncio.create_task(charging())]
+    async def accessing() -> None:
+        while True:
+            try:
+                access.tick()
+            except Exception:  # noqa: BLE001 - een fout in één ronde mag het logboek niet voorgoed stilleggen
+                log.exception("toegangslogboek")
+            await asyncio.sleep(1.0)
+
+    tasks = [asyncio.create_task(ticker()), asyncio.create_task(accessing()), asyncio.create_task(mqtt.run()), asyncio.create_task(ha.run()), asyncio.create_task(panels.run()), asyncio.create_task(screens.run()), asyncio.create_task(links.run()), asyncio.create_task(charging())]
     await stop.wait()
     log.info("afsluiten")
     for t in tasks:

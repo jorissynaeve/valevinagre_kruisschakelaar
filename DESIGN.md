@@ -1061,3 +1061,14 @@ Alleen de indeling en de stijl; de API, het model en de logica zijn niet aangera
 - **Niet gedaan**: de blokken op het schema hebben nog geen pictogram in hun kop (de tekstposities verschillen per soort), en de rubrieken in Instellingen zijn nog dezelfde vier.
 - **Bekeken** in een echte browser met een lokale add-on en 13 blokken van elk soort: menu, zoeken, venster van alle soorten (geen horizontale overloop meer, behalve een lange badge die nu afbreekt), Esc en sluiten, smal scherm. `tests/test_web.py` kent `icons.js` nu ook in de versiestempel.
 - **Reolink in een eigen rubriek** (0.46.1): "Reolink-camera toevoegen" stond onder Zelfbouw en ESPHome. Nu heeft het menu + Module een rubriek **Reolink** (`scReolinkMenu`, pictogram `camera`), net als Nuki en Brink. Alleen de knop (`data-sc="reoadd"`) is verplaatst; er is geen account en geen lijst.
+
+## 45. Toegang: een logboek van detecties en deuren (0.47)
+
+Code: `accesshub.py`, `static/access.js`, routes `/api/access` in `web.py`, `tests/test_access.py`. Opslag `/data/access.json`.
+
+- **Bron = een punt van een HUISDEV-blok** (`e:<id>:<punt>`, soort bool of enum, geen diagnose): een Reolink (beweging, persoon, voertuig), een PIR of Hue-melder, een Nuki-stand, een deurcontact van ESPHome. Handmatig: er staat niets in het log tot je een punt aanzet (`set_sources`, het paneel Bronnen).
+- **Polling, niet per driver**: `tick()` (elke seconde, taak `accessing` in `__main__`) leest `espdev.point_value`. Zo werkt het voor elk merk zonder een haak in de drivers; een puls korter dan een seconde gaat verloren.
+- **Bool = periode** (`start`, `end`; `end` is `None` zolang ze loopt), **enum = moment** (`text` "Vergrendeld → Ontgrendeld", `start == end`). De eerste waarde na het opstarten is een uitgangspunt, geen verandering.
+- **Onbekend is geen gebeurtenis**: een offline punt (`None`) geeft geen regel en sluit geen periode. Een lopende periode staat in het bestand en loopt na een herstart door, of sluit als het punt dan uit is. Een bron die uitgaat sluit zijn periode meteen.
+- **Pagina**: filter op apparaat en periode, CSV, Log wissen (lopende perioden blijven), push-event `access` herlaadt de lijst. Max 5000 regels.
+- **Niet gedaan**: een momentopname van de camera bij een detectie, en de regels als ingang voor scènes of meldingen. Nuki geeft niet door wie het slot bediende. Niet in een browser bekeken.

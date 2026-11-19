@@ -237,6 +237,7 @@ function render() {
     if (!$('#scsvg')) { $('#main').innerHTML = viewSchema(); SC.lastPanel = ''; }
     schemaUpdate();
   } else if (tab === 'sessions') { if (!$('#chargebox')) $('#main').innerHTML = viewCharge(); // de filters blijven staan
+  } else if (tab === 'access') { if (!$('#accessbox')) $('#main').innerHTML = viewAccess(); // de filters blijven staan
   } else if (tab === 'energy') { if (!$('#energybox')) $('#main').innerHTML = viewEnergy(); // wat je typt blijft staan
   } else if (tab !== 'settings' || !$('#keybox')) $('#main').innerHTML = { nodes: viewNodes, log: viewLog, settings: viewSettings }[tab]();
   else linksUpdate(); // de rest van Instellingen blijft staan, de verbindingen niet
@@ -534,6 +535,7 @@ function connect() {
       S.log.push(e);
       if (S.log.length > 300) S.log.shift();
     }
+    if (e && e.t === 'access' && tab === 'access') loadAccess(); // een nieuwe detectie
     clearTimeout(tokenRefresh);
     tokenRefresh = setTimeout(refresh, 120); // gebundeld: een druk geeft meerdere events
   };
@@ -545,7 +547,7 @@ function connect() {
 const NAV = [
   [['schema', 'Schema', 'schema']],
   [['nodes', 'Apparaten', 'nodes']],
-  [['energy', 'Energie', 'energy'], ['sessions', 'Laden', 'charge']],
+  [['energy', 'Energie', 'energy'], ['sessions', 'Laden', 'charge'], ['access', 'Toegang', 'door']],
   [['log', 'Logboek', 'log'], ['settings', 'Instellingen', 'settings']],
 ];
 $('#brand').innerHTML = `${ico('home', 22)}<span>Huisconfig</span>`;

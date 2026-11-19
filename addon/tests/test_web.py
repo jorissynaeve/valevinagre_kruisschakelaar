@@ -380,7 +380,7 @@ def test_index_pins_scripts_to_their_content(tmp_path):
         try:
             html = await (await c.get("/")).text()
             v = web.asset_version()
-            for f in ("style.css", "icons.js", "groups.js", "schema.js", "app.js"):
+            for f in ("style.css", "icons.js", "groups.js", "schema.js", "access.js", "app.js"):
                 assert f'static/{f}?v={v}"' in html, f
             assert (await c.get(f"/static/app.js?v={v}")).status == 200
         finally:

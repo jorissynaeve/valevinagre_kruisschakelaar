@@ -23,19 +23,20 @@ STATIC = Path(__file__).parent / "static"
 CTX = web.AppKey("ctx", object)
 INGRESS_PROXY = {"172.30.32.2", "127.0.0.1", "::1"}
 # Events die de pagina moet kennen; de rest (bv. losse commando-statussen) is ruis.
-PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "airco", "solar", "espdev", "charge", "link", "action", "loxone"}
+PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "airco", "solar", "espdev", "charge", "link", "action", "loxone", "access"}
 
 
 class Ctx:
     """Alles wat de handlers nodig hebben."""
 
-    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None, energy=None, charge=None, espdev=None, loxone=None) -> None:
+    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None, energy=None, charge=None, espdev=None, loxone=None, access=None) -> None:
         self.settings, self.engine, self.model = settings, engine, engine.model
         self.transport, self.mqtt, self.ha, self.panels, self.tuya, self.links = transport, mqtt, ha, panels, tuya, links
         self.airco = airco
         self.charge = charge  # laadpalen met sessies (chargehub.py)
         self.solar = solar  # omvormers (solarhub.py)
         self.espdev = espdev  # zelfbouwapparaten met het HUISDEV-protocol (espdevhub.py)
+        self.access = access  # het toegangslogboek (accesshub.py)
         self.loxone = loxone  # de brug naar een Loxone Miniserver (loxonehub.py)
         self.energy = energy  # het energiedashboard van HA (energyhub.py)
         self.clients: set[web.WebSocketResponse] = set()
@@ -492,6 +493,35 @@ async def charge_csv(request: web.Request) -> web.Response:
     cid = request.match_info.get("cid")
     return web.Response(text="﻿" + _charge(request).csv(cid), content_type="text/csv", charset="utf-8",
                         headers={"Content-Disposition": f'attachment; filename="laadsessies{"-" + cid if cid else ""}.csv"'})
+
+
+def _access(request: web.Request):
+    hub = request.app[CTX].access
+    if hub is None:
+        raise ModelError("het toegangslogboek is niet beschikbaar")
+    return hub
+
+
+async def access_get(request: web.Request) -> web.Response:
+    return web.json_response(_access(request).view())
+
+
+async def access_sources(request: web.Request) -> web.Response:
+    try:
+        _access(request).set_sources((await _body(request)).get("keys"))
+    except ValueError as e:
+        raise ModelError(str(e)) from e
+    return web.json_response({"ok": True})
+
+
+async def access_clear(request: web.Request) -> web.Response:
+    _access(request).clear()
+    return web.json_response({"ok": True})
+
+
+async def access_csv(request: web.Request) -> web.Response:
+    return web.Response(text="﻿" + _access(request).csv(), content_type="text/csv", charset="utf-8",
+                        headers={"Content-Disposition": 'attachment; filename="toegang.csv"'})
 
 
 async def card_post(request: web.Request) -> web.Response:
@@ -1206,7 +1236,7 @@ def asset_version() -> str:
 async def index(request: web.Request) -> web.Response:
     v = asset_version()
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    for f in ("style.css", "icons.js", "groups.js", "schema.js", "app.js"):
+    for f in ("style.css", "icons.js", "groups.js", "schema.js", "access.js", "app.js"):
         html = html.replace(f'static/{f}"', f'static/{f}?v={v}"')
     return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
@@ -1323,6 +1353,10 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_post("/api/espdev/{did}/set", espdev_set)
     r.add_post("/api/espdev/{did}/do", espdev_do)
     r.add_delete("/api/espdev/{did}", espdev_delete)
+    r.add_get("/api/access", access_get)
+    r.add_put("/api/access/sources", access_sources)
+    r.add_delete("/api/access/events", access_clear)
+    r.add_get("/api/access/log.csv", access_csv)
     r.add_post("/api/charge", charge_post)
     r.add_get("/api/charge/sessions", charge_sessions)
     r.add_get("/api/charge/log.csv", charge_csv)
