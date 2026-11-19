@@ -1048,3 +1048,15 @@ Eerst zat elke scène als rij met een 0/1-ingang op het apparaatblok (§42). Bij
 - Geen feestdagen, weekdagen of voorwaarden op getallen in het blok zelf; daarvoor zijn de bestaande timers en modules (Groter dan, Kleiner dan).
 - Eén blok per apparaat; één blok bedient geen meerdere strips.
 - De pagina is bekeken met een proefserver met het nagebootste apparaat (blok tekenen, regels wijzigen, voorwaarde toevoegen); de sleep-van-uitgang-naar-poort en het maken via + Module zijn alleen op syntaxis gecontroleerd.
+
+## 44. De web-UI opnieuw ingedeeld (0.46)
+
+Alleen de indeling en de stijl; de API, het model en de logica zijn niet aangeraakt.
+
+- **Hoofdmenu**: een smalle zijbalk met pictogrammen, per soort gegroepeerd (Schema · Apparaten · Energie en Laden · Logboek en Instellingen), onder een kop met de statuschips. Op een smal scherm (< 760 px) wordt dat een balk onderaan. De tab *Nodes* heet nu *Apparaten* (`data-tab="nodes"` bleef). Het menu wordt in `app.js` (`NAV`) opgebouwd.
+- **Pictogrammen** (`static/icons.js`): eigen inline-SVG's op 24 × 24 met `currentColor`, geen lettertype of CDN (de add-on draait ook zonder internet). `ico(naam, grootte)`; `MENU_ICON` koppelt de sleutels van `SC_MENU` aan een pictogram.
+- **+ Module** is een flyout: links de rubrieken (de bestaande groepen uit `SC_MENU`, plus Zelfbouw/ESPHome, Hue, Nuki, Brink en Smappee), rechts wat erin zit; een rubriek opent bij erover te gaan, het zoekveld zoekt over alle rubrieken. De inhoud van de koppelingen (wat Hue of Nuki aanbieden) wordt bij elke verversing opnieuw gemaakt zolang het menu dicht is; eerder bleef die tot je het tabblad wisselde op de stand van het openen staan.
+- **Werkbalk van het schema**: zoom als `− 83 % +` (klik op het getal = passend), *Ruimte ▾* met hernoemen, verwijderen, omzetten en opnieuw indelen, en daarnaast *+ Module*. De blokkenlijst links is per soort inklapbaar (onthouden zolang de pagina open is, het aantal nog niet geplaatste blokken staat erbij) en als geheel te verbergen (`localStorage` `kk.tray`).
+- **Eigenschappen als venster**: `#scpanel` is een zwevend venster (`position: fixed`) naast het gekozen blok, in plaats van een vaste kolom van 300 px. Dezelfde `scPanel()`-functies vullen het: een kop met pictogram, naam en soort, *breder* (440 → 720 px), *sluiten* (ook Esc), en te verslepen aan de kop. De plek volgt de selectie (`SC.popFor`, `SC.popPos`) en wordt bij een verversing niet verschoven; tijdens het slepen van een blok is het venster vrijwel doorzichtig. Op een telefoon is het een blad onderaan. Wat er in de kolom stond zonder selectie (de uitleg over slepen) staat nu als regel onder het schema.
+- **Niet gedaan**: de blokken op het schema hebben nog geen pictogram in hun kop (de tekstposities verschillen per soort), en de rubrieken in Instellingen zijn nog dezelfde vier.
+- **Bekeken** in een echte browser met een lokale add-on en 13 blokken van elk soort: menu, zoeken, venster van alle soorten (geen horizontale overloop meer, behalve een lange badge die nu afbreekt), Esc en sluiten, smal scherm. `tests/test_web.py` kent `icons.js` nu ook in de versiestempel.

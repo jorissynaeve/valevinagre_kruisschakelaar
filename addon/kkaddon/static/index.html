@@ -7,23 +7,21 @@
 <link rel="stylesheet" href="static/style.css">
 </head>
 <body>
-<header>
-  <h1>Huisconfig</h1>
+<header id="top">
+  <h1 id="brand"></h1>
   <div id="chips"></div>
 </header>
-<nav id="tabs">
-  <button data-tab="schema" class="on">Schema</button>
-  <button data-tab="nodes">Nodes</button>
-  <button data-tab="energy">Energie</button>
-  <button data-tab="sessions">Laden</button>
-  <button data-tab="log">Logboek</button>
-  <button data-tab="settings">Instellingen</button>
-</nav>
-<div id="banner" hidden></div>
-<main id="main"></main>
+<div id="shell">
+  <nav id="tabs" aria-label="Hoofdmenu"></nav>
+  <div id="content">
+    <div id="banner" hidden></div>
+    <main id="main"></main>
+  </div>
+</div>
 
 <dialog id="dlg"><form method="dialog" id="dlgform"></form></dialog>
 <div id="toast" role="status" hidden></div>
+<script src="static/icons.js"></script>
 <script src="static/groups.js"></script>
 <script src="static/schema.js"></script>
 <script src="static/scenes.js"></script>

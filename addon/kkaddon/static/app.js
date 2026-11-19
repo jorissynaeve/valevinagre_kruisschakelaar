@@ -122,9 +122,12 @@ async function loadInventory() {
   if (tab === 'nodes') render();
 }
 
+// de knoppen boven de lijst: een extern apparaat toevoegen, importeren, vernieuwen
+const deviceTools = () => `<div class="row"><button class="btn small" data-act="vnew">${ico('plus', 14)} Extern apparaat <span class="sub">(bv. Tuya)</span></button><button class="btn small" data-act="vimport">${ico('home', 14)} Importeren uit Home Assistant</button><button class="btn small" data-act="invreload">Vernieuwen</button></div>`;
+
 function viewInventory() {
   if (!INV) return '<h2>Alle apparaten</h2><p class="sub">Laden…</p>';
-  if (INV.error) return `<h2>Alle apparaten</h2><p class="empty">${esc(INV.error)}</p>`;
+  if (INV.error) return `<div class="row sp"><h2>Alle apparaten</h2>${deviceTools()}</div><p class="empty">${esc(INV.error)}</p>`;
   const cmp = (a, b) => String(a[invSort] || '').localeCompare(String(b[invSort] || ''), 'nl', { numeric: true }) || a.name.localeCompare(b.name, 'nl', { numeric: true });
   const rows = [...INV.devices].sort(cmp).map((d) => `<tr>
     <td style="white-space:nowrap"><span class="dot ${d.online == null ? '' : d.online ? 'on' : 'off'}"></span><b>${esc(d.name)}</b>${d.room ? `<div class="sub">${esc(d.room)}</div>` : ''}</td>
@@ -132,15 +135,14 @@ function viewInventory() {
     <td>${d.ip ? `<a href="http://${esc(d.ip)}" target="_blank" rel="noopener">${esc(d.ip)}</a>` : '–'}</td>
     <td>${esc(d.version || '–')}</td><td class="sub">${esc(d.note)}</td></tr>`).join('');
   const th = (k, t) => `<th><a href="#" data-act="invsort" data-k="${k}" style="color:inherit">${t}${invSort === k ? ' ▲' : ''}</a></th>`;
-  return `<div class="row" style="justify-content:space-between"><h2>Alle apparaten (${INV.devices.length})</h2><button class="btn small" data-act="invreload">Vernieuwen</button></div>
+  return `<div class="row sp"><h2>Alle apparaten (${INV.devices.length})</h2>${deviceTools()}</div>
     <div class="scroll"><table><thead><tr>${th('name', 'Naam')}${th('kind', 'Type')}${th('protocol', 'Protocol')}${th('ip', 'IP-adres')}${th('version', 'Versie')}<th></th></tr></thead><tbody>${rows}</tbody></table></div>
     <p class="sub">${INV.ha ? 'ESPHome-apparaten komen uit het apparatenregister van Home Assistant: adres en versie zijn wat HA daarvan weet (het adres alleen als het toestel een <code>web_server</code> heeft).' : 'Zonder koppeling met Home Assistant ontbreken ESPHome-apparaten, en het adres en de versie van externe apparaten.'}</p>
     <h2>Nodes en externe apparaten</h2>`;
 }
 
 function viewNodes() {
-  const add = '<div class="row" style="margin-top:12px"><button class="btn" data-act="vnew">Extern apparaat toevoegen (bv. Tuya)</button><button class="btn" data-act="vimport">Importeren uit Home Assistant (bv. ESPHome)</button></div>';
-  if (!S.nodes.length) return `${viewInventory()}${add}<p class="empty">Nog geen nodes gehoord. Zodra een node een heartbeat stuurt (elke 40–80 s) verschijnt hij hier.</p>`;
+  if (!S.nodes.length) return `${viewInventory()}<p class="empty">Nog geen nodes gehoord. Zodra een node een heartbeat stuurt (elke 40–80 s) verschijnt hij hier.</p>`;
   const rows = S.nodes.map((n) => {
     const [cls, txt] = CFG[n.cfg_status] || ['', n.cfg_status];
     if (n.virtual) {
@@ -167,7 +169,7 @@ function viewNodes() {
         ${n.nind ? `<button class="btn small" data-act="follow" data-n="${n.id}">Indicatoren</button>` : ''}
       </div></td></tr>`;
   }).join('');
-  return `${viewInventory()}${add}<div class="scroll" style="margin-top:12px"><table><thead><tr><th>ID</th><th>Naam</th><th>Fw</th><th>Hardware</th><th>Config</th><th>Laatst gezien</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+  return `${viewInventory()}<div class="scroll"><table><thead><tr><th>ID</th><th>Naam</th><th>Fw</th><th>Hardware</th><th>Config</th><th>Laatst gezien</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
     <p class="sub">"Niet beheerd": de node heeft een andere configuratie dan het model, maar jij hebt hem nog niet aan een licht gekoppeld, dus wordt er niets overschreven.</p>`;
 }
 
@@ -182,9 +184,9 @@ function viewSettings() {
     || '<tr><td colspan="3" class="sub">Nog geen frames van een bridge ontvangen.</td></tr>';
   const ha = S.ha.connected ? '<span class="badge ok">verbonden</span>' : S.ha.enabled ? `<span class="badge bad">niet verbonden</span>${S.ha.error ? ` <span class="sub">${esc(S.ha.error)}</span>` : ''}` : '<span class="badge">niet ingesteld</span>';
   const sec = (id, body) => `<section class="setsec" data-sec="${id}">${body}</section>`;
-  const nav = [['conn', 'Verbindingen'], ['lox', 'Loxone'], ['grp', 'Kringen'], ['sys', 'Systeem']];
+  const nav = [['conn', 'Verbindingen', 'link'], ['lox', 'Loxone', 'cpu'], ['grp', 'Kringen', 'lamp'], ['sys', 'Systeem', 'settings']];
   return `<div class="set" id="setroot" data-on="${esc(SET_TAB)}">
-    <nav class="setnav" id="setnav">${nav.map(([id, t]) => `<button type="button" data-set="${id}" class="${SET_TAB === id ? 'on' : ''}">${t}</button>`).join('')}</nav>
+    <nav class="setnav" id="setnav">${nav.map(([id, t, ic]) => `<button type="button" data-set="${id}" class="${SET_TAB === id ? 'on' : ''}">${ico(ic, 18)}<span>${t}</span></button>`).join('')}</nav>
     <div>
     ${sec('conn', `<div class="panel"><h3>Bridges op het LAN</h3>
         <p class="lead">De ESP32-bridges die frames naar deze add-on sturen. "Vast" betekent dat je het adres zelf hebt ingesteld.</p>
@@ -537,6 +539,17 @@ function connect() {
   };
   ws.onclose = () => setTimeout(connect, 2000);
 }
+
+// ---------------------------------------------------------------- hoofdmenu: een zijbalk met pictogrammen, per soort gegroepeerd
+
+const NAV = [
+  [['schema', 'Schema', 'schema']],
+  [['nodes', 'Apparaten', 'nodes']],
+  [['energy', 'Energie', 'energy'], ['sessions', 'Laden', 'charge']],
+  [['log', 'Logboek', 'log'], ['settings', 'Instellingen', 'settings']],
+];
+$('#brand').innerHTML = `${ico('home', 22)}<span>Huisconfig</span>`;
+$('#tabs').innerHTML = NAV.map((grp) => `<div class="navgrp">${grp.map(([id, text, icon]) => `<button type="button" data-tab="${id}" title="${text}" class="${id === tab ? 'on' : ''}">${ico(icon, 22)}<span>${text}</span></button>`).join('')}</div>`).join('');
 
 refresh();
 connect();

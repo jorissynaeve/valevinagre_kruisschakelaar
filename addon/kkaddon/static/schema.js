@@ -14,6 +14,12 @@ const SC = {
   panelDraft: {}, // paneel-id -> wat je typt en nog niet hebt opgeslagen
   force: false, // de zijbalk vervangen, ook als er nog een veld de focus heeft
   reveal: null, // blok dat bij de volgende tekening in beeld moet komen
+  trayClosed: {}, // lijstgroepen die je dichtklapte
+  mcat: null, // open rubriek van het menu + Module
+  popFor: null, // voor welke selectie het eigenschappenvenster zijn plek kreeg
+  popPos: null, // {x, y} van het eigenschappenvenster in het scherm
+  popWide: false,
+  popDrag: null,
 };
 const SC_HEAD = 42, SC_ROW = 24, SC_FOOT = 10; // dezelfde maten als de automatische indeling in schema.py
 const SW_W = 250, LAMP_W = 340, TUYA_W = 420;
@@ -1410,8 +1416,40 @@ function scSmappeeMenu() { // Smappee-accounts: de laadpunten die ze aanbieden e
   return `<div class="scmenugroup scmenuwide"><h2>Smappee (laadpaal)</h2>${(S.smappee || []).map(account).join('')}<button class="scmenuitem" type="button" data-sc="smappeeadd"><b>Smappee-account koppelen</b><span class="sub">met de gebruikersnaam en het wachtwoord van dashboard.smappee.net; via de cloud van Smappee, zonder officiële API</span></button></div>`;
 }
 
+const SC_MENU_ICON = { Toestellen: 'lamp', Tijd: 'time', Waarden: 'number', Rekenen: 'add', Vergelijken: 'between', Logica: 'and', Routines: 'action', Kaarten: 'cards' };
+
+function scMenuCats() { // [id, titel, pictogram, paneel]: links de rubrieken, rechts wat erin zit
+  const fixed = SC_MENU.map(([title, items]) => [`c-${title}`, title, SC_MENU_ICON[title] || 'cpu',
+    `<div class="scmenugroup"><h2>${title}</h2><div class="scmenulist">${items.map(([type, name, sub]) => `<button class="scmenuitem mi" type="button" data-sc="add" data-type="${type}">${ico(MENU_ICON[type] || 'cpu', 20)}<span><b>${name}</b><span class="sub">${sub}</span></span></button>`).join('')}</div></div>`]);
+  return [...fixed, ['esp', 'Zelfbouw en ESPHome', 'cpu', scEspFound()], ['hue', 'Philips Hue', 'lamp', scHueMenu()], ['nuki', 'Nuki', 'lock', scNukiMenu()], ['brink', 'Brink Home', 'wind', scBrinkMenu()], ['smappee', 'Smappee', 'charge', scSmappeeMenu()]];
+}
+
+function scMenuBody() {
+  const cats = scMenuCats(), cur = cats.some((c) => c[0] === SC.mcat) ? SC.mcat : cats[0][0];
+  return `<div class="mnav"><label class="msearch">${ico('search', 15)}<input type="search" id="mq" placeholder="Zoek een module" autocomplete="off"></label>
+    <div class="mnavlist">${cats.map(([id, title, icon]) => `<button type="button" class="mnavitem ${id === cur ? 'on' : ''}" data-cat="${id}">${ico(icon, 18)}<span>${title}</span>${ico('right', 14)}</button>`).join('')}</div></div>
+    <div class="mpane">${cats.map(([id, , , html]) => `<section class="mcat ${id === cur ? 'on' : ''}" data-cat="${id}">${html}</section>`).join('')}</div>`;
+}
+
 function scMenu() {
-  return `<details class="scmenu" id="scmenu"><summary class="btn small primary">+ Module</summary><div class="scmenupop">${SC_MENU.map(([title, items]) => `<div class="scmenugroup"><h2>${title}</h2>${items.map(([type, name, sub]) => `<button class="scmenuitem" type="button" data-sc="add" data-type="${type}"><b>${name}</b><span class="sub">${sub}</span></button>`).join('')}</div>`).join('')}${scEspFound()}${scHueMenu()}${scNukiMenu()}${scBrinkMenu()}${scSmappeeMenu()}</div></details>`;
+  return `<details class="scmenu dd" id="scmenu"><summary class="btn small primary">${ico('plus', 15)}<span>Module</span></summary><div class="scmenupop mpop">${scMenuBody()}</div></details>`;
+}
+
+function scMenuCat(id) {
+  SC.mcat = id;
+  document.querySelectorAll('#scmenu .mnavitem').forEach((x) => x.classList.toggle('on', x.dataset.cat === id));
+  document.querySelectorAll('#scmenu .mcat').forEach((x) => x.classList.toggle('on', x.dataset.cat === id));
+}
+
+function scMenuFilter(text) { // zoeken over alle rubrieken heen
+  const q = text.trim().toLowerCase(), pop = $('#scmenu .mpop');
+  if (!pop) return;
+  pop.classList.toggle('searching', !!q);
+  pop.querySelectorAll('.mcat').forEach((c) => {
+    let any = !q;
+    c.querySelectorAll('.scmenuitem').forEach((i) => { const hit = !q || i.textContent.toLowerCase().includes(q); i.hidden = !hit; if (hit) any = true; });
+    c.hidden = !any;
+  });
 }
 
 const SC_DAYS = [['mon', 'Maandag'], ['tue', 'Dinsdag'], ['wed', 'Woensdag'], ['thu', 'Donderdag'], ['fri', 'Vrijdag'], ['sat', 'Zaterdag'], ['sun', 'Zondag']];
@@ -1498,18 +1536,33 @@ function scTabs() {
     <button class="sctab add" data-sc="addpage" title="Ruimte toevoegen">+</button>`;
 }
 
+// Welk pictogram en welke naam bij een blok hoort (de lijst links, de kop van het eigenschappenvenster)
+function scIcon(b) {
+  if (b.kind === 'module') return MENU_ICON[b.type] || 'cpu';
+  return { lamp: 'lamp', switch: 'switch', timer: 'timer', sprinkler: 'sprinkler', action: 'action', scenes: 'scenes', panel: 'panel', screen: 'screen', tuya: 'tuya', airco: 'airco', charge: 'charge', solar: 'solar', espdev: 'cpu', card: 'cards', remote: 'link' }[b.kind] || 'cpu';
+}
+function scKindName(b) {
+  if (b.kind === 'module') { const hit = SC_MENU.flatMap(([, items]) => items).find((it) => it[0] === b.type); return hit ? hit[1] : 'Module'; }
+  return { lamp: 'Lamp', switch: 'Schakelaar', timer: 'Timer', sprinkler: 'Sprinkler', action: 'Tuya instellen', scenes: 'Scènes', panel: 'NSPanel', screen: 'Scherm', tuya: 'Tuya', airco: 'Airco', charge: 'Laadpaal', solar: 'Omvormer', espdev: 'Zelfbouw, ESPHome of Hue', card: 'Kaart', remote: 'Andere installatie' }[b.kind] || '';
+}
+
+const SC_TRAY = [['Lampen', 'lamp', 'lamp'], ['Schakelaars', 'switch', 'switch'], ['Timers', 'timer', 'timer'], ['Tijd en logica', 'module', 'time'], ['Routines', 'sprinkler', 'sprinkler'], ['Tuya instellen', 'action', 'action'],
+  ['Scènes', 'scenes', 'scenes'], ['Panelen', 'panel', 'panel'], ['Kaarten', 'card', 'cards'], ['Schermen', 'screen', 'screen'], ['Tuya', 'tuya', 'tuya'], ['Airco', 'airco', 'airco'], ['Laadpaal', 'charge', 'charge'],
+  ['Omvormer', 'solar', 'solar'], ['Zelfbouw, ESPHome en Hue', 'espdev', 'cpu'], ['Andere installaties', 'remote', 'link']];
+
 function scTray() {
   const q = SC.q.trim().toLowerCase();
   const hit = (b) => !q || b.name.toLowerCase().includes(q) || b.tech.toLowerCase().includes(q);
-  const item = (b) => `<div class="tri ${SC.sel === b.key ? 'on' : ''}" data-sc="trayitem" data-k="${esc(b.key)}"><span class="trd t-${scType(b)} ${b.kind === 'lamp' && b.on ? 'on' : ''}"></span>
+  const item = (b) => `<div class="tri ${SC.sel === b.key ? 'on' : ''}" data-sc="trayitem" data-k="${esc(b.key)}"><span class="tic t-${scType(b)} ${b.kind === 'lamp' && b.on ? 'on' : ''}">${ico(scIcon(b), 15)}</span>
       <span class="trn">${esc(b.name)}</span><span class="sub">${b.page ? esc(scPageName(b.page)) : '<b>+ plaatsen</b>'}</span></div>`;
-  const part = (title, kind) => {
+  const out = SC_TRAY.map(([title, kind, icon]) => {
     const all = scBlocks().filter((b) => b.kind === kind && hit(b));
+    if (!all.length) return '';
     all.sort((a, b) => (!!a.page - !!b.page));
-    return `<h2>${title}</h2>${all.map(item).join('') || '<div class="sub">Geen.</div>'}`;
-  };
-  return part('Lampen', 'lamp') + part('Schakelaars', 'switch') + part('Timers', 'timer') + part('Tijd en logica', 'module') + part('Routines', 'sprinkler') + part('Tuya instellen', 'action') + part('Scènes', 'scenes') + part('Panelen', 'panel')
-    + part('Kaarten', 'card') + part('Schermen', 'screen') + part('Tuya', 'tuya') + part('Airco', 'airco') + part('Laadpaal', 'charge') + part('Omvormer', 'solar') + part('Zelfbouw, ESPHome en Hue', 'espdev') + part('Andere installaties', 'remote');
+    const loose = all.filter((b) => !b.page).length;
+    return `<details class="trg" data-g="${kind}" ${!q && SC.trayClosed[kind] ? '' : 'open'}><summary>${ico('right', 13)}${ico(icon, 16)}<span class="trt">${title}</span>${loose ? `<span class="cnt todo" title="${loose} nog niet op een ruimte">${loose}</span>` : ''}<span class="cnt">${all.length}</span></summary>${all.map(item).join('')}</details>`;
+  }).join('');
+  return out || '<div class="sub" style="padding:8px 4px">Niets gevonden.</div>';
 }
 
 function scPanel() {
@@ -1674,16 +1727,21 @@ function scEmpty() {
 }
 
 function viewSchema() {
-  return `<div class="scbar"><div id="sctabs" class="sctabs"></div><span class="row">
-      <button class="btn small" data-sc="zoom" data-d="-0.1" title="Kleiner">−</button><button class="btn small" data-sc="zoom" data-d="0.1" title="Groter">+</button>
-      <button class="btn small" data-sc="renamepage">Ruimte hernoemen</button><button class="btn small danger" data-sc="delpage">Ruimte verwijderen</button>
-      <button class="btn small" data-sc="convert" title="Nieuwe kringen en toestellen op hun plek zetten. Wat al staat blijft staan.">Omzetten</button>
-      <button class="btn small" data-sc="relayout" title="Alles opnieuw verdelen over de ruimtes">Opnieuw indelen</button>
-      ${scMenu()}</span></div>
+  let tray = true;
+  try { tray = localStorage.getItem('kk.tray') !== '0'; } catch (e) { /* zonder opslag: de lijst staat open */ }
+  const item = (act, icon, text, cls = '', extra = '') => `<button class="ddi ${cls}" type="button" data-sc="${act}" ${extra}>${ico(icon, 16)}<span>${text}</span></button>`;
+  return `<div class="scbar"><div class="sctabrow"><button class="iconbtn" type="button" data-sc="traytoggle" id="traybtn" title="Lijst met blokken tonen of verbergen">${ico('tray', 18)}</button><div id="sctabs" class="sctabs"></div></div>
+      <div class="sctools">
+        <div class="seg" role="group" aria-label="Zoom"><button type="button" data-sc="zoom" data-d="-0.1" title="Kleiner">${ico('minus', 15)}</button><button type="button" id="sczoom" data-sc="zoom" data-d="fit" title="Passend maken">100%</button><button type="button" data-sc="zoom" data-d="0.1" title="Groter">${ico('plus', 15)}</button></div>
+        <details class="dd" id="scroommenu"><summary class="btn small">${ico('room', 15)}<span>Ruimte</span>${ico('down', 13)}</summary>
+          <div class="ddlist">${item('renamepage', 'edit', 'Hernoemen')}${item('delpage', 'trash', 'Verwijderen', 'danger')}<div class="ddsep"></div>
+            ${item('convert', 'wand', 'Omzetten', '', 'title="Nieuwe kringen en toestellen op hun plek zetten. Wat al staat blijft staan."')}${item('relayout', 'layout', 'Opnieuw indelen', '', 'title="Alles opnieuw verdelen over de ruimtes"')}</div></details>
+        ${scMenu()}</div></div>
     <div id="sclink"></div>
-    <div class="scwrap"><aside class="card sctray"><input type="search" id="scq" placeholder="Zoek een blok" autocomplete="off" value="${esc(SC.q)}"><div id="sctraylist"></div></aside>
-      <div id="sccanvas"><div id="scempty"></div><svg id="scsvg" role="img" aria-label="Schema van de ruimte"></svg></div>
-      <aside class="card" id="scpanel"></aside></div>`;
+    <div class="scwrap ${tray ? '' : 'notray'}"><aside class="card sctray"><label class="msearch">${ico('search', 15)}<input type="search" id="scq" placeholder="Zoek een blok" autocomplete="off" value="${esc(SC.q)}"></label><div id="sctraylist"></div></aside>
+      <div id="sccanvas"><div id="scempty"></div><svg id="scsvg" role="img" aria-label="Schema van de ruimte"></svg></div></div>
+    <div class="schint">Sleep van een <b>poort</b> naar een andere om te verbinden · klik op een blok voor de eigenschappen · Esc sluit ze · verbindingen gelden meteen, verplaatsen verandert niets aan de schakelingen</div>
+    <div id="scpanel" class="pop" hidden role="dialog" aria-label="Eigenschappen"><div class="pophead" id="pophead"></div><div class="popbody" id="popbody"></div></div>`;
 }
 
 const scOnPage = () => scBlocks().filter((b) => b.page === SC.page);
@@ -1696,6 +1754,8 @@ function scDraw() {
   const z = scZoomNow(need);
   const w = Math.max(need, box.clientWidth / z), h = Math.max(...list.map((b) => b.y + scH(b) + 120), box.clientHeight / z);
   svg.setAttribute('viewBox', `${-SC_MARGIN} 0 ${w} ${h}`);
+  const zl = $('#sczoom');
+  if (zl) zl.textContent = `${Math.round(z * 100)}%`;
   svg.setAttribute('width', w * z);
   svg.setAttribute('height', h * z);
   svg.innerHTML = scInner(list);
@@ -1724,13 +1784,54 @@ function schemaUpdate() {
   document.querySelectorAll('.scbar [data-sc=renamepage], .scbar [data-sc=delpage]').forEach((x) => { x.disabled = noPages; });
   scDraw();
   scLinkBar();
-  const panel = $('#scpanel'), html = scPanel(), active = document.activeElement;
+  const menu = $('#scmenu');
+  if (menu && !menu.open) menu.querySelector('.mpop').innerHTML = scMenuBody(); // wat Hue, Nuki en de rest aanbieden is intussen veranderd
+  const html = SC.sel ? scPanel() : '', head = SC.sel ? scPopHead() : null; // scPanel kan de selectie wissen (een draad die weg is)
+  const pop = $('#scpanel'), body = $('#popbody'), active = document.activeElement;
+  pop.hidden = !head;
+  if (!head) { SC.popFor = null; SC.lastPanel = ''; return; }
+  const key = JSON.stringify(SC.sel), fresh = SC.popFor !== key;
+  $('#pophead').innerHTML = scPopHeadHtml(head);
   // een lijst die net open staat of een veld waarin je typt niet onder je handen vervangen
-  if (SC.force || (html !== SC.lastPanel && !(active && panel.contains(active) && /SELECT|INPUT|TEXTAREA/.test(active.tagName)))) {
+  if (SC.force || fresh || (html !== SC.lastPanel && !(active && body.contains(active) && /SELECT|INPUT|TEXTAREA/.test(active.tagName)))) {
+    const top = fresh ? 0 : body.scrollTop;
     SC.force = false;
-    panel.innerHTML = html;
+    body.innerHTML = html;
+    body.scrollTop = top;
     SC.lastPanel = html;
   }
+  pop.classList.toggle('wide', SC.popWide);
+  if (fresh) { SC.popFor = key; SC.popPos = null; }
+  scPopPlace();
+}
+
+// Het eigenschappenvenster: een zwevend venster naast het blok dat je koos
+function scPopHead() {
+  if (SC.sel && SC.sel.lamp) return { icon: 'link', type: 'node', title: 'Verbinding', sub: 'tussen een lamp en een touch of relais' };
+  const b = SC.sel && scBlock(SC.sel);
+  return b ? { icon: scIcon(b), type: scType(b), title: b.name, sub: scKindName(b) } : null;
+}
+
+function scPopHeadHtml(h) {
+  return `<span class="tic big t-${h.type}">${ico(h.icon, 22)}</span><div class="poptitle"><b>${esc(h.title)}</b><span class="sub">${esc(h.sub)}</span></div>
+    <button class="iconbtn" type="button" data-sc="popwide" title="${SC.popWide ? 'Smaller' : 'Breder'}">${ico(SC.popWide ? 'shrink' : 'expand', 16)}</button>
+    <button class="iconbtn" type="button" data-sc="popclose" title="Sluiten (Esc)">${ico('close', 16)}</button>`;
+}
+
+function scPopPlace() { // naast het blok, of waar je het venster zelf naartoe sleepte; nooit buiten het scherm
+  const pop = $('#scpanel');
+  if (!pop || pop.hidden) return;
+  if (window.matchMedia('(max-width: 760px)').matches) { pop.style.left = pop.style.top = ''; return; } // op een telefoon een blad onderaan
+  const M = 12, w = pop.offsetWidth, h = pop.offsetHeight, vw = window.innerWidth, vh = window.innerHeight;
+  if (!SC.popPos) {
+    const k = SC.sel && (SC.sel.lamp || SC.sel), svg = $('#scsvg');
+    const el = k && svg && svg.querySelector(`[data-block="${CSS.escape(k)}"]`), r = el && el.getBoundingClientRect();
+    const top = $('#sccanvas').getBoundingClientRect().top;
+    if (r && r.width) { let x = r.right + 16; if (x + w > vw - M) x = r.left - w - 16; SC.popPos = { x, y: Math.max(r.top, top) }; }
+    else SC.popPos = { x: vw - w - M, y: top };
+  }
+  pop.style.left = `${clampN(SC.popPos.x, M, Math.max(M, vw - w - M))}px`;
+  pop.style.top = `${clampN(SC.popPos.y, M, Math.max(M, vh - h - M))}px`;
 }
 
 // ---------------------------------------------------------------- bewerken
@@ -2388,7 +2489,15 @@ const SC_ACTIONS = {
     const p = scFreeSpot(b.kind);
     await scPlace(d.k, SC.page, p.x, p.y);
   },
+  traytoggle: () => {
+    const w = $('.scwrap'), off = w.classList.toggle('notray');
+    try { localStorage.setItem('kk.tray', off ? '0' : '1'); } catch (e) { /* niet onthouden */ }
+    scDraw();
+  },
+  popclose: () => { SC.sel = null; render(); },
+  popwide: () => { SC.popWide = !SC.popWide; SC.force = true; render(); },
   zoom: (d) => {
+    if (d.d === 'fit') { SC.zoom = null; scDraw(); return; }
     const now = scZoomNow(scNeed(scOnPage()));
     SC.zoom = clampN(+(now + +d.d).toFixed(1), 0.4, 1.6);
     scDraw();
@@ -2585,7 +2694,7 @@ document.addEventListener('pointermove', (ev) => {
     const p = scPt(ev), b = scBlock(SC.drag.k);
     if (!b) return;
     const x = Math.max(0, Math.round((p.x + SC.drag.dx) / SC_GRID) * SC_GRID), y = Math.max(0, Math.round((p.y + SC.drag.dy) / SC_GRID) * SC_GRID);
-    if (x !== b.x || y !== b.y) { b.x = x; b.y = y; SC.drag.moved = true; scDraw(); }
+    if (x !== b.x || y !== b.y) { b.x = x; b.y = y; if (!SC.drag.moved) $('#scpanel').classList.add('away'); SC.drag.moved = true; scDraw(); }
   }
 });
 
@@ -2606,15 +2715,41 @@ function scUp(ev) {
   if (d) {
     SC.drag = null;
     const b = scBlock(d.k);
+    $('#scpanel').classList.remove('away');
+    if (d.moved) SC.popFor = null; // na het verplaatsen opnieuw naast het blok
     if (b && d.moved) act(() => scPlace(b.key, b.page, b.x, b.y))();
   }
 }
 document.addEventListener('pointerup', scUp);
-document.addEventListener('pointercancel', () => { if (SC.link && !SC.link.armed) SC.link = null; SC.drag = null; if (tab === 'schema') render(); });
+document.addEventListener('pointercancel', () => { if (SC.link && !SC.link.armed) SC.link = null; SC.drag = null; const pop = $('#scpanel'); if (pop) pop.classList.remove('away'); if (tab === 'schema') render(); });
+
+// het eigenschappenvenster verslepen aan zijn kop
+document.addEventListener('pointerdown', (ev) => {
+  const head = ev.target.closest && ev.target.closest('#pophead');
+  if (!head || ev.target.closest('button') || ev.button > 0) return;
+  const r = $('#scpanel').getBoundingClientRect();
+  SC.popDrag = { dx: ev.clientX - r.left, dy: ev.clientY - r.top };
+  head.setPointerCapture(ev.pointerId);
+  ev.preventDefault();
+});
+document.addEventListener('pointermove', (ev) => {
+  if (!SC.popDrag) return;
+  SC.popPos = { x: ev.clientX - SC.popDrag.dx, y: ev.clientY - SC.popDrag.dy };
+  scPopPlace();
+});
+document.addEventListener('pointerup', () => { SC.popDrag = null; });
+window.addEventListener('resize', () => { if (tab === 'schema') { scPopPlace(); } });
+
+document.addEventListener('keydown', (ev) => { // Esc sluit eerst een open menu, ook als je in het zoekveld typt
+  if (ev.key !== 'Escape') return;
+  const open = document.querySelector('details.dd[open]');
+  if (open) { open.open = false; ev.stopPropagation(); }
+}, true);
 
 document.addEventListener('keydown', (ev) => {
   if (tab !== 'schema' || dlg().open || /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
   if (ev.key === 'Escape' && SC.link) scLinkStop();
+  else if (ev.key === 'Escape' && SC.sel) { SC.sel = null; render(); }
   if ((ev.key === 'Delete' || ev.key === 'Backspace') && SC.sel && SC.sel.lamp) {
     ev.preventDefault();
     act(scUnwire)(`${SC.sel.lamp}|${SC.sel.dir}|${SC.sel.i}`);
@@ -2622,15 +2757,28 @@ document.addEventListener('keydown', (ev) => {
 });
 
 document.addEventListener('click', (ev) => {
-  const menu = $('#scmenu');
-  if (menu && menu.open && !ev.target.closest('#scmenu')) menu.open = false; // ergens anders geklikt: menu dicht
+  document.querySelectorAll('details.dd[open]').forEach((m) => { if (!m.contains(ev.target)) m.open = false; }); // ergens anders geklikt: menu dicht
+  const dd = ev.target.closest('.ddlist .ddi');
+  if (dd) dd.closest('details').open = false;
+  const cat = ev.target.closest('.mnavitem');
+  if (cat) scMenuCat(cat.dataset.cat);
   const el = ev.target.closest('[data-sc]');
   if (!el || !SC_ACTIONS[el.dataset.sc]) return;
   ev.preventDefault();
   act(SC_ACTIONS[el.dataset.sc])(el.dataset);
 });
 
+document.addEventListener('mouseover', (ev) => { // een rubriek opent zodra je erover gaat, zoals een flyout
+  const cat = ev.target.closest && ev.target.closest('.mnavitem');
+  if (cat && !cat.classList.contains('on')) scMenuCat(cat.dataset.cat);
+});
+document.addEventListener('toggle', (ev) => { // toggle borrelt niet op: vandaar de opvang in de capture-fase
+  const d = ev.target;
+  if (d.id === 'scmenu' && d.open) { const q = $('#mq'); if (q) { q.value = ''; scMenuFilter(''); q.focus(); } }
+  if (d.classList && d.classList.contains('trg') && !SC.q.trim()) { if (d.open) delete SC.trayClosed[d.dataset.g]; else SC.trayClosed[d.dataset.g] = true; }
+}, true);
 document.addEventListener('input', (ev) => {
+  if (ev.target.id === 'mq') scMenuFilter(ev.target.value);
   if (ev.target.id === 'scq') { SC.q = ev.target.value; $('#sctraylist').innerHTML = scTray(); }
 });
 
