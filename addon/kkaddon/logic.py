@@ -101,7 +101,7 @@ def evaluate(modules: dict[str, dict], timer: Callable[[str], bool | None], now:
         if ref.startswith("v:"):  # rechtstreeks een datapunt: v:<datapunt>@<toestel>
             dp, _, dev = ref[2:].partition("@")
             return point(dev, dp) if point else None
-        if ref.startswith(("w:", "o:", "e:")):  # een uitgang van een airco (w:<id>:on|room|set), een omvormer (o:<id>:pv|...) of een HUISDEV-apparaat (e:<id>:<punt>)
+        if ref.startswith(("w:", "o:", "e:", "x:")):  # een uitgang van een airco (w:<id>:on|room|set), een omvormer (o:<id>:pv|...), een HUISDEV-apparaat (e:<id>:<punt>) of een waarde van Loxone (x:<id>)
             return airco(ref) if airco else None
         return timer(ref[2:]) if ref.startswith("t:") else module(ref[2:])
 

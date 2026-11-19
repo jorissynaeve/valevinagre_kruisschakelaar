@@ -358,3 +358,4 @@ details.lxgroup > summary select { width: auto; max-width: 160px; padding: 2px 6
   .scbar { align-items: center; }
   .sctabrow { flex-basis: 100%; }
 }
+.t-loxone { --tc: var(--t-remote); } .t-loxone .bkhead { fill: var(--t-remote); }

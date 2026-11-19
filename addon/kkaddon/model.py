@@ -121,7 +121,7 @@ FLOOR_ID_RE = re.compile(r"^[a-z0-9]{1,12}$")
 GROUP_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
 DISABLE_RE = re.compile(r"^(m:)?[a-z0-9_]{1,80}$")
 # een bron: een timer, een module, of rechtstreeks een datapunt van een Tuya-toestel (v:<datapunt>@<toestel>, hier of r:..:y:<id>)
-SOURCE_RE = re.compile(r"^([tm]:[a-z0-9_]{1,80}|v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})|w:[a-z0-9_]{1,40}:(on|room|set)|o:[a-z0-9_]{1,40}:[a-z0-9_]{1,12}|e:[a-z0-9_]{1,40}:[a-z][a-z0-9_]{0,23})$")  # w: een uitgang van een airco (greehub.py), o: van een omvormer (solarhub.py), e: van een HUISDEV-apparaat (espdevhub.py)
+SOURCE_RE = re.compile(r"^([tm]:[a-z0-9_]{1,80}|v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})|w:[a-z0-9_]{1,40}:(on|room|set)|o:[a-z0-9_]{1,40}:[a-z0-9_]{1,12}|e:[a-z0-9_]{1,40}:[a-z][a-z0-9_]{0,23}|x:[a-z0-9_]{1,40})$")  # w: een uitgang van een airco (greehub.py), o: van een omvormer (solarhub.py), e: van een HUISDEV-apparaat (espdevhub.py), x: een waarde van Loxone (loxonehub.py)
 VALUE_RE = re.compile(r"^v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})$")  # alleen een datapunt
 
 
@@ -705,6 +705,8 @@ def _check_sprinklers(sprinklers: dict[str, dict], modules: dict[str, dict], tim
 ANY = "any"  # een bron waarvan het type nu niet bekend is (apparaat weg of nog niet gemeld): past overal, en geeft onbekend, nooit een fout
 # Het type van een HUISDEV-punt `e:<id>:<punt>` hangt van de descriptor van het apparaat af en staat dus niet in het model: espdevhub.py hangt hier zijn opzoeking aan.
 esp_type: Callable[[str], str | None] | None = None
+# Zo ook voor `x:<signaal>`, een waarde van Loxone (bool, getal of tijd): loxonehub.py hangt zijn opzoeking hier aan.
+lox_type: Callable[[str], str | None] | None = None
 
 
 def fits(got: str | None, want: str) -> bool:
@@ -722,6 +724,8 @@ def _source_type(ref: str, modules: dict[str, dict], timers: dict[str, dict]) ->
         return NUMBER  # een omvormer staat niet in het model: is ze weg of offline, dan is de waarde onbekend, geen fout
     if ref.startswith("e:"):
         return (esp_type(ref) if esp_type else None) or ANY  # een HUISDEV-apparaat staat niet in het model: is het weg, dan is de waarde onbekend, geen fout
+    if ref.startswith("x:"):
+        return (lox_type(ref) if lox_type else None) or ANY  # een waarde van Loxone staat niet in het model: is het signaal weg, dan is de waarde onbekend, geen fout
     if ref.startswith("w:"):
         return BOOL if ref.endswith(":on") else NUMBER  # een airco staat niet in het model: is ze weg, dan is de waarde onbekend, geen fout
     if ref.startswith("v:"):

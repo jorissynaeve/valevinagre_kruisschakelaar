@@ -184,6 +184,8 @@ class Engine:
         self.scenerules_view: Callable[[], list[dict]] | None = None  # de blokken Scènes: ingangen en regels voor ledstrips (scenehub.py)
         self.espdev_found: Callable[[], list[dict]] | None = None  # gevonden maar nog niet geclaimde HUISDEV-apparaten
         self.espdev_value: Callable[[str], Any] | None = None  # een uitgang van een HUISDEV-apparaat: e:<id>:<punt>
+        self.lox_view: Callable[[], list[dict]] | None = None  # de waarden van Loxone die als bron dienen (loxonehub.py)
+        self.lox_value: Callable[[str], Any] | None = None  # een waarde van Loxone: x:<signaal>
         self.hue_view: Callable[[], list[dict]] | None = None  # de Hue-bridges met wat ze aanbieden, zonder sleutel (espdevhub.py)
         self.nuki_view: Callable[[], list[dict]] | None = None  # de Nuki-accounts met hun sloten, zonder token (espdevhub.py)
         self.brink_view: Callable[[], list[dict]] | None = None  # de Brink Home-accounts met hun units, zonder wachtwoord (espdevhub.py)
@@ -283,6 +285,8 @@ class Engine:
             return self.solar_value(ref) if self.solar_value else None
         if ref.startswith("e:"):
             return self.espdev_value(ref) if self.espdev_value else None
+        if ref.startswith("x:"):
+            return self.lox_value(ref) if self.lox_value else None
         return self.airco_value(ref) if self.airco_value else None
 
     def source_value(self, source: str) -> bool | None:
@@ -294,7 +298,7 @@ class Engine:
         if ref.startswith("v:"):
             dp, _, dev = ref[2:].partition("@")
             return self.points.number(dev, dp) if self.points else None
-        if ref.startswith(("w:", "o:", "e:")):
+        if ref.startswith(("w:", "o:", "e:", "x:")):
             return self._airco(ref)
         if ref.startswith("t:"):
             return self.timer_on(ref[2:]) if ref[2:] in self.model.timers else None
@@ -862,6 +866,7 @@ class Engine:
             "solar": self.solar_view() if self.solar_view else [],
             "espdev": self.espdev_view() if self.espdev_view else [],
             "scenerules": self.scenerules_view() if self.scenerules_view else [],
+            "loxone_in": self.lox_view() if self.lox_view else [],
             "espdev_found": self.espdev_found() if self.espdev_found else [],
             "hue": self.hue_view() if self.hue_view else [],
             "nuki": self.nuki_view() if self.nuki_view else [],

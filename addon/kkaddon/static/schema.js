@@ -32,7 +32,7 @@ const SC_GANGED = ['switch', 'panel', 'tuya', 'remote']; // blokken met gangen: 
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
 const scW = (b) => (b.kind === 'lamp' ? LAMP_W : b.kind === 'tuya' || (b.kind === 'remote' && b.sub === 'tuya') ? TUYA_W : SW_W);
-const scRows = (b) => (b.kind === 'card' || b.kind === 'remote' || b.kind === 'action' || b.kind === 'scenes' || b.kind === 'airco' || b.kind === 'solar' || b.kind === 'charge' || b.kind === 'espdev' ? b.rows : b.kind === 'panel' || b.kind === 'screen' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
+const scRows = (b) => (b.kind === 'card' || b.kind === 'remote' || b.kind === 'action' || b.kind === 'scenes' || b.kind === 'airco' || b.kind === 'solar' || b.kind === 'loxone' || b.kind === 'charge' || b.kind === 'espdev' ? b.rows : b.kind === 'panel' || b.kind === 'screen' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
 const scH = (b) => SC_HEAD + scRows(b) * SC_ROW + SC_FOOT;
 const rowY = (b, i) => b.y + SC_HEAD + i * SC_ROW + SC_ROW / 2;
 const scPageName = (id) => (S.schema.pages.find((p) => p.id === id) || {}).name || '';
@@ -57,6 +57,7 @@ function scType(b) { // bepaalt de kleur van het blok
   if (b.kind === 'module') return b.out === 'bool' ? 'logic' : 'time';
   if (b.kind === 'sprinkler' || b.kind === 'action' || b.kind === 'scenes') return 'spr';
   if (b.kind === 'charge') return 'tuya';
+  if (b.kind === 'loxone') return 'remote'; // zelfde kleur als een andere installatie: een bron van buiten
   if (b.kind === 'panel' || b.kind === 'screen' || b.kind === 'tuya' || b.kind === 'airco' || b.kind === 'solar' || b.kind === 'espdev' || b.kind === 'card' || b.kind === 'remote') return b.kind;
   if (b.source === 'node') return 'node';
   if (b.source === 'virtual') return 'ext';
@@ -272,9 +273,9 @@ const scDevOf = (b) => (b.kind === 'tuya' ? { id: b.id, card: `y:${b.id}`, point
 
 function scSrc(ref) { // de bron van een ingang: een blok, of een datapunt (v:<dp>@<toestel>) -> {key, name, out}
   if (!ref) return null;
-  if (ref.startsWith('w:') || ref.startsWith('o:') || ref.startsWith('e:')) {
-    const o = [...scAcOuts('bool'), ...scAcOuts('number')].find((x) => x.key === ref);
-    return o ? { key: o.block, name: o.name, out: o.out } : { key: '', name: ref.startsWith('o:') ? 'omvormer (weg)' : ref.startsWith('e:') ? 'apparaat (weg)' : 'airco (weg)', out: '?' };
+  if (ref.startsWith('w:') || ref.startsWith('o:') || ref.startsWith('e:') || ref.startsWith('x:')) {
+    const o = [...scAcOuts('bool'), ...scAcOuts('number'), ...scAcOuts('time')].find((x) => x.key === ref);
+    return o ? { key: o.block, name: o.name, out: o.out } : { key: '', name: ref.startsWith('o:') ? 'omvormer (weg)' : ref.startsWith('e:') ? 'apparaat (weg)' : ref.startsWith('x:') ? 'waarde van Loxone (weg)' : 'airco (weg)', out: '?' };
   }
   if (ref.startsWith('v:')) {
     const [dp, dev] = ref.slice(2).split('@'), blk = scBlock(dev.startsWith('r:') ? dev : `y:${dev}`);
@@ -355,7 +356,7 @@ const SC_AC_SW = { turbo: 'Turbo', quiet: 'Stil', light: 'Licht', xfan: 'X-fan (
 
 const scAcOutText = (o) => (o.value === null || o.value === undefined ? '?' : o.type === 'bool' ? (o.value ? '1' : '0') : o.text ? o.text : `${o.value} ${o.unit === undefined ? '°C' : o.unit}`.trim());
 function scAcOuts(type) { // de uitgangen van alle airco's van deze soort, als bron voor een ingang
-  return scBlocks().filter((b) => b.kind === 'airco' || b.kind === 'solar' || b.kind === 'espdev').flatMap((b) => (b.all || b.outs).filter((o) => o.type === type).map((o) => ({ key: o.ref, block: b.key, name: `${b.name} · ${o.label}`, out: scAcOutText(o) })));
+  return scBlocks().filter((b) => b.kind === 'airco' || b.kind === 'solar' || b.kind === 'espdev' || b.kind === 'loxone').flatMap((b) => (b.all || b.outs).filter((o) => o.type === type).map((o) => ({ key: o.ref, block: b.key, name: `${b.name} · ${o.label}`, out: scAcOutText(o) })));
 }
 function scAcUsers(ref) { // wie deze uitgang van een airco gebruikt
   return scBlocks().filter((u) => ['module', 'sprinkler', 'action', 'scenes', 'airco', 'espdev'].includes(u.kind) && u.ports.some((p) => p.ref === ref)).map((u) => ({ key: u.key, text: u.name }));
@@ -476,12 +477,23 @@ function scSolar(b) {
       ${users.map((u, n) => `<text class="stub" x="${b.x + w + 11}" y="${y + 4 + n * 13}" data-sc="go" data-k="${esc(u.key)}">→ ${esc(scCut(u.text, 24))}<title>${esc(u.text)}</title></text>`).join('')}`;
   }).join('');
   const pv = b.outs.find((o) => o.name === 'pv');
-  return `<g class="bk ac t-solar ${SC.sel === b.key ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
+  return `<g class="bk ac t-${b.kind} ${SC.sel === b.key ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${w}" height="${scH(b)}" rx="8"/>
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${w}" height="${SC_HEAD}" rx="8"/>
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 34))}</text>
-    <text class="bkbadge ${b.online ? 'ok' : ''}" x="${b.x + w - 12}" y="${b.y + 18}" text-anchor="end">${b.online ? (pv && pv.value != null ? `${pv.value} W` : 'verbonden') : 'offline'}</text>
+    <text class="bkbadge ${b.online ? 'ok' : ''}" x="${b.x + w - 12}" y="${b.y + 18}" text-anchor="end">${b.kind === 'loxone' ? `${b.outs.length} ${b.outs.length === 1 ? 'waarde' : 'waarden'}` : b.online ? (pv && pv.value != null ? `${pv.value} W` : 'verbonden') : 'offline'}</text>
     <text class="bks" x="${b.x + 12}" y="${b.y + 34}">${esc(b.tech)}</text>${outs}</g>`;
+}
+
+function scLoxonePanel(b, props) { // wat de Miniserver stuurt en waar het wordt gebruikt
+  const rows = b.outs.map((o) => {
+    const users = scAcUsers(o.ref);
+    return `<div class="sub"><b>${esc(o.label)}</b> <code>${esc(o.name)}</code>: ${esc(scAcOutText(o))}${o.type === 'time' && o.value == null && o.text ? ` <span class="sub">(${esc(o.text)})</span>` : ''}
+      ${users.length ? '→ ' + users.map((u) => `<a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.text)}</a>`).join(', ') : '· nog nergens gebruikt'}</div>`;
+  }).join('');
+  return `<h3>${esc(b.name)}</h3>
+    <div class="sub">Waarden die de Miniserver stuurt: een aan/uit (0 of 1), een getal, of de wekker als tijd (bv. <code>Morgen, 6:45</code>). Elke uitgang rechts is een bron: sleep hem naar een ingang van een module, een routine of een blok Scènes. Een tijd is alleen bekend op de dag waarvoor de wekker staat; zonder wekker is ze onbekend. Waarden maak of haal je weg bij Instellingen, Loxone.</div>${props}
+    <h2>Waarden</h2>${rows || '<div class="sub">Nog geen.</div>'}`;
 }
 
 function scSolarPanel(b, props) {
@@ -1486,7 +1498,7 @@ function scInner(list) {
   const shown = new Set(list.map((b) => b.key));
   const wires = !SC_WIRES ? '' : conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
   const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b)
-    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'airco' ? scAirco(b) : b.kind === 'charge' ? scCharge(b) : b.kind === 'solar' ? scSolar(b) : b.kind === 'espdev' ? scEspdev(b) : b.kind === 'card' ? scCard(b) : b.kind === 'action' ? scAction(b) : b.kind === 'scenes' ? scScenes(b) : b.kind === 'remote' ? scRemote(b, tags) : b.kind === 'panel' || b.kind === 'screen' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
+    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'airco' ? scAirco(b) : b.kind === 'charge' ? scCharge(b) : b.kind === 'solar' || b.kind === 'loxone' ? scSolar(b) : b.kind === 'espdev' ? scEspdev(b) : b.kind === 'card' ? scCard(b) : b.kind === 'action' ? scAction(b) : b.kind === 'scenes' ? scScenes(b) : b.kind === 'remote' ? scRemote(b, tags) : b.kind === 'panel' || b.kind === 'screen' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
   return `<g class="wires">${wires}</g>${blocks}<path id="sctemp" class="wire temp"/>`; // draden onder de blokken: anders liggen ze over de poorten
 }
 
@@ -1521,7 +1533,7 @@ function scPortPos(p) {
   if (b.kind === 'module') return p.role === 'min' ? [b.x, rowY(b, +p.i)] : [b.x + SW_W, rowY(b, 0)];
   if (b.kind === 'action') return [b.x, rowY(b, 0)];
   if (b.kind === 'scenes') return [b.x, rowY(b, +p.i)];
-  if (b.kind === 'airco' || b.kind === 'solar') return [p.role === 'acout' ? b.x + SC_AC_W : b.x, rowY(b, +p.i)];
+  if (b.kind === 'airco' || b.kind === 'solar' || b.kind === 'loxone') return [p.role === 'acout' ? b.x + SC_AC_W : b.x, rowY(b, +p.i)];
   if (b.kind === 'espdev') return [p.role === 'acout' ? b.x + SC_AC_W : b.x, rowY(b, (p.role === 'acout' ? b.outs : b.ports)[+p.i].row)];
   if (p.role === 'pval' || p.role === 'pset') return [p.role === 'pval' ? b.x + TUYA_W : b.x, rowY(b, +p.i)];
   if (b.kind === 'card') return p.role === 'cout' ? [b.x + SW_W, rowY(b, 0)] :  [b.x, rowY(b, p.i === 'new' ? b.items.length : +p.i)];
@@ -1543,16 +1555,16 @@ function scTabs() {
 // Welk pictogram en welke naam bij een blok hoort (de lijst links, de kop van het eigenschappenvenster)
 function scIcon(b) {
   if (b.kind === 'module') return MENU_ICON[b.type] || 'cpu';
-  return { lamp: 'lamp', switch: 'switch', timer: 'timer', sprinkler: 'sprinkler', action: 'action', scenes: 'scenes', panel: 'panel', screen: 'screen', tuya: 'tuya', airco: 'airco', charge: 'charge', solar: 'solar', espdev: 'cpu', card: 'cards', remote: 'link' }[b.kind] || 'cpu';
+  return { lamp: 'lamp', switch: 'switch', timer: 'timer', sprinkler: 'sprinkler', action: 'action', scenes: 'scenes', panel: 'panel', screen: 'screen', tuya: 'tuya', airco: 'airco', charge: 'charge', solar: 'solar', loxone: 'cpu', espdev: 'cpu', card: 'cards', remote: 'link' }[b.kind] || 'cpu';
 }
 function scKindName(b) {
   if (b.kind === 'module') { const hit = SC_MENU.flatMap(([, items]) => items).find((it) => it[0] === b.type); return hit ? hit[1] : 'Module'; }
-  return { lamp: 'Lamp', switch: 'Schakelaar', timer: 'Timer', sprinkler: 'Sprinkler', action: 'Tuya instellen', scenes: 'Scènes', panel: 'NSPanel', screen: 'Scherm', tuya: 'Tuya', airco: 'Airco', charge: 'Laadpaal', solar: 'Omvormer', espdev: 'Zelfbouw, ESPHome of Hue', card: 'Kaart', remote: 'Andere installatie' }[b.kind] || '';
+  return { lamp: 'Lamp', switch: 'Schakelaar', timer: 'Timer', sprinkler: 'Sprinkler', action: 'Tuya instellen', scenes: 'Scènes', panel: 'NSPanel', screen: 'Scherm', tuya: 'Tuya', airco: 'Airco', charge: 'Laadpaal', solar: 'Omvormer', loxone: 'Loxone', espdev: 'Zelfbouw, ESPHome of Hue', card: 'Kaart', remote: 'Andere installatie' }[b.kind] || '';
 }
 
 const SC_TRAY = [['Lampen', 'lamp', 'lamp'], ['Schakelaars', 'switch', 'switch'], ['Timers', 'timer', 'timer'], ['Tijd en logica', 'module', 'time'], ['Routines', 'sprinkler', 'sprinkler'], ['Tuya instellen', 'action', 'action'],
   ['Scènes', 'scenes', 'scenes'], ['Panelen', 'panel', 'panel'], ['Kaarten', 'card', 'cards'], ['Schermen', 'screen', 'screen'], ['Tuya', 'tuya', 'tuya'], ['Airco', 'airco', 'airco'], ['Laadpaal', 'charge', 'charge'],
-  ['Omvormer', 'solar', 'solar'], ['Zelfbouw, ESPHome en Hue', 'espdev', 'cpu'], ['Andere installaties', 'remote', 'link']];
+  ['Omvormer', 'solar', 'solar'], ['Loxone', 'loxone', 'cpu'], ['Zelfbouw, ESPHome en Hue', 'espdev', 'cpu'], ['Andere installaties', 'remote', 'link']];
 
 function scTray() {
   const q = SC.q.trim().toLowerCase();
@@ -1579,7 +1591,7 @@ function scPanel() {
   const pages = `<label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
   const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'switch' ? b.alias : b.name)}" placeholder="${esc(b.tech)}">
     <div class="sub">Technische naam: <code>${esc(b.tech)}</code></div>${pages}`;
-  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : b.kind === 'tuya' ? scTuyaPanel(b, props) : b.kind === 'airco' ? scAircoPanel(b, props) : b.kind === 'charge' ? scChargePanel(b, props) : b.kind === 'solar' ? scSolarPanel(b, props) : b.kind === 'espdev' ? scEspdevPanel(b, props) : b.kind === 'card' ? scCardPanel(b, props) : b.kind === 'action' ? scActionPanel(b, props) : b.kind === 'scenes' ? scScenesPanel(b, props) : b.kind === 'remote' ? scRemotePanel(b) : scSwitchPanel(b, props);
+  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : b.kind === 'tuya' ? scTuyaPanel(b, props) : b.kind === 'airco' ? scAircoPanel(b, props) : b.kind === 'charge' ? scChargePanel(b, props) : b.kind === 'solar' ? scSolarPanel(b, props) : b.kind === 'loxone' ? scLoxonePanel(b, props) : b.kind === 'espdev' ? scEspdevPanel(b, props) : b.kind === 'card' ? scCardPanel(b, props) : b.kind === 'action' ? scActionPanel(b, props) : b.kind === 'scenes' ? scScenesPanel(b, props) : b.kind === 'remote' ? scRemotePanel(b) : scSwitchPanel(b, props);
 }
 
 function scConnRow(b, c, i, dir) {
@@ -2810,6 +2822,7 @@ document.addEventListener('change', (ev) => {
         else if (b.kind === 'airco') await api('PUT', `airco/${b.id}`, { name });
         else if (b.kind === 'charge') await api('PUT', `charge/${b.id}`, { name });
         else if (b.kind === 'solar') await api('PUT', `solar/${b.id}`, { name });
+        else if (b.kind === 'loxone') throw new Error('Dit blok heet altijd Loxone. De waarden hebben hun eigen naam bij Instellingen, Loxone.');
         else if (b.kind === 'espdev') await api('PUT', `espdev/${b.id}`, { name });
         else if (b.kind === 'card') await api('PUT', `cards/${b.id}`, { name });
         else if (b.kind === 'action') await api('PUT', `actions/${b.id}`, { name });

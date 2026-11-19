@@ -29,7 +29,9 @@ from pathlib import Path
 from aiohttp import web
 
 from . import loxone as lx
+from . import model as _model
 from .espdevhub import ACTION_GAP, REF_RE, _snap
+from .logic import BOOL, NUMBER, TIME
 from .model import SOURCE_RE, ModelError
 
 log = logging.getLogger("kk.loxone")
@@ -45,7 +47,8 @@ DEFAULT_OUT_PORT = 9100  # waar de Miniserver luistert (zijn virtuele UDP-ingang
 HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,253}$")
 ONLINE_RE = re.compile(r"^online:([a-z0-9_]{1,40})$")
 ACT_RE = re.compile(r"^a:([a-z0-9_]{1,40}):([a-z][a-z0-9_]{0,23})$")  # een actie van een Nuki-slot: `a:<apparaat>:<actie>`
-KINDS = ("bool", "int", "float")
+X_RE = re.compile(r"^x:([a-z0-9_]{1,40})$")  # een waarde van Loxone als bron voor de logica: `x:<signaal>`
+KINDS = ("bool", "int", "float", "time")  # `time`: een tekst met een tijd (de wekker), alleen voor een `x:`-signaal
 NO_DEVICE = "-"  # de groep van signalen zonder apparaat (een timer of module als bron)
 MAIN = "main"  # het standaardkanaal: zijn poort is `out_port`
 TRAFFIC = 150  # zoveel berichten blijven in het verkeerslogboek
@@ -105,6 +108,7 @@ class LoxoneHub:
         self.sent: dict[str, dict] = {}  # id -> {"txt", "v", "t", "wall"} van het laatst verstuurde
         self.got: dict[str, dict] = {}  # id -> {"v", "wall", "result"} van het laatst ontvangene
         self.queue: OrderedDict[str, bytes] = OrderedDict()
+        self.vals: dict[str, dict] = {}  # id -> {"v", "raw", "min", "date", "wall"}: de laatste waarde van een `x:`-signaal (bewaard in loxone_values.json)
         self.act_mem: dict[str, bool] = {}  # de laatst ontvangen waarde van een actie-signaal sinds het starten (voor de overgang 0 naar 1)
         self.act_last: dict[str, float] = {}  # wanneer een actie-signaal voor het laatst iets startte
         self.traffic: deque = deque(maxlen=TRAFFIC)  # de laatste berichten, in en uit, om te zien wat er echt over de lijn ging
@@ -120,6 +124,10 @@ class LoxoneHub:
         self.error = ""
         self._warned = False
         self._load()
+        self._load_vals()
+        engine.lox_value = self.value_of
+        engine.lox_view = self.in_view
+        _model.lox_type = self.type_of
 
     # ------------------------------------------------------------ opslag
 
@@ -161,6 +169,27 @@ class LoxoneHub:
                        "channels": self.channels, "assign": self.assign},
                       f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.path)
+
+    def _load_vals(self) -> None:
+        try:
+            raw = json.loads((self.path.parent / "loxone_values.json").read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError, OSError):
+            return
+        for sid, e in (raw if isinstance(raw, dict) else {}).items():
+            if isinstance(e, dict) and isinstance(e.get("raw"), str):
+                self.vals[sid] = {"v": e.get("v"), "raw": e["raw"][:lx.MAX_TEXT], "min": e.get("min") if isinstance(e.get("min"), int) else None,
+                                  "date": e.get("date") if isinstance(e.get("date"), str) else None, "wall": e.get("wall") if isinstance(e.get("wall"), (int, float)) else None}
+
+    def _save_vals(self) -> None:
+        path = self.path.parent / "loxone_values.json"
+        tmp = path.with_suffix(".tmp")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self.vals, f, ensure_ascii=False)
+            os.replace(tmp, path)
+        except OSError as e:  # de waarde zit in het geheugen; alleen na een herstart is ze weg tot Loxone ze opnieuw stuurt
+            log.warning("waarden van Loxone niet bewaard: %s", e)
 
     def _poke(self) -> None:
         if self.changed:
@@ -307,11 +336,15 @@ class LoxoneHub:
         if not isinstance(ref, str):
             raise ModelError("kies een bron")
         if d == "in":
-            if not (REF_RE.match(ref) or ACT_RE.match(ref)):
-                raise ModelError("van Loxone kan alleen een punt van een apparaat (e:<apparaat>:<punt>) of een actie van een slot worden gezet")
+            if X_RE.match(ref) and ref != f"x:{sid}":
+                raise ModelError(f"een waarde van Loxone heet x:{sid}")
+            if not (REF_RE.match(ref) or ACT_RE.match(ref) or X_RE.match(ref)):
+                raise ModelError("van Loxone kan alleen een punt van een apparaat (e:<apparaat>:<punt>), een actie van een slot of een waarde voor de logica (x:<naam>) komen")
         elif not (SOURCE_RE.match(ref) or ONLINE_RE.match(ref)):
             raise ModelError("onbekende bron")
         kind = raw.get("kind") if raw.get("kind") in KINDS else "float"
+        if kind == "time" and not (d == "in" and X_RE.match(ref)):
+            kind = "float"  # een tijd (tekst) kan alleen een waarde voor de logica zijn, nooit een punt of een signaal naar Loxone
         dec, lo, hi = raw.get("decimals"), raw.get("min"), raw.get("max")
         dev, p = self._point(ref)
         if p:  # het punt bepaalt wat het is
@@ -359,13 +392,15 @@ class LoxoneHub:
         self.sent.pop(sid, None)
         self.got.pop(sid, None)
         self.queue.pop(sid, None)
+        if self.vals.pop(sid, None) is not None:
+            self._save_vals()
         self._save()
         self._poke()
         return True
 
     def _check_in(self, s: dict) -> None:
         """Wat Loxone mag zetten: een bestaand, instelbaar punt dat niet gevaarlijk is."""
-        if s["dir"] != "in" or not self.espdev:
+        if s["dir"] != "in" or not self.espdev or X_RE.match(s["ref"]):
             return
         if ACT_RE.match(s["ref"]):
             dev, a = self._action(s["ref"])
@@ -517,7 +552,7 @@ class LoxoneHub:
         res = []
         for sid, value in pairs:
             r = await self._apply_one(sid, value, via)
-            self._note("in", f"kk.{sid}={value:g}", via.upper(), r)
+            self._note("in", f"kk.{sid}={value if isinstance(value, str) else format(value, 'g')}", via.upper(), r)
             res.append((sid, r))
         return res
 
@@ -564,7 +599,88 @@ class LoxoneHub:
         out["result"] = "gestart"
         return "ok"
 
-    async def _apply_one(self, sid: str, value: float, via: str = "udp") -> str:
+    # ------------------------------------------------------------ waarden voor de logica
+
+    def _today(self):
+        return self.engine.local_now().date()
+
+    def _apply_value(self, sid: str, s: dict, value, out: dict) -> str:
+        """Een waarde van Loxone voor de logica (`x:<sid>`): een 0/1, een getal of een tijd uit een tekst. Er wordt niets mee bediend: ze wordt alleen onthouden en is dan een bron."""
+        kind = s["kind"]
+        e = {"v": None, "raw": value if isinstance(value, str) else lx.fmt(value, s["decimals"]), "min": None, "date": None, "wall": time.time()}
+        try:
+            if kind == "time":
+                if not isinstance(value, str):
+                    raise ModelError("verwacht een tekst met een tijd, bv. Morgen, 6:45")
+                a = lx.parse_alarm(value, self._today())
+                if a:
+                    e["min"], e["date"] = a["minutes"], a["date"].isoformat() if a["date"] else None
+                    out["result"] = f"tijd {a['minutes'] // 60:02d}:{a['minutes'] % 60:02d}" + (f" op {e['date']}" if e["date"] else "")
+                else:
+                    out["result"] = "geen tijd in de tekst: onbekend"
+            else:
+                if isinstance(value, str):
+                    raise ModelError("verwacht een getal")
+                if (s["min"] is not None and value < s["min"]) or (s["max"] is not None and value > s["max"]):
+                    raise ModelError(f"buiten het bereik ({s['min']} tot {s['max']})")
+                e["v"] = value >= 0.5 if kind == "bool" else int(round(value)) if kind == "int" else float(value)
+                out["result"] = "ok"
+        except ModelError as ex:
+            self.stats["refused"] += 1
+            out["result"] = str(ex)
+            log.info("%s=%s geweigerd: %s", sid, value, ex)
+            return str(ex)
+        old = self.vals.get(sid)
+        self.vals[sid] = e
+        if old and all(old.get(k) == e[k] for k in ("v", "raw", "min", "date")):
+            return "zelfde"
+        self._save_vals()
+        self._poke()
+        return "ok"
+
+    def value_of(self, ref: str):
+        """De waarde van een bron `x:<signaal>` voor de engine: een bool, een getal, of de tijd in minuten sinds middernacht; None als ze onbekend is (nog niets ontvangen, geen tijd, uitgezet).
+        Een tijd met een dag (`Morgen, 6:45`) geldt alleen op die dag: vandaag is ze onbekend, morgen is het de tijd van vandaag, ook als Loxone na middernacht niets meer stuurt."""
+        m = X_RE.match(ref or "")
+        s = self.signals.get(m.group(1)) if m else None
+        if not s or s["dir"] != "in" or not s["enabled"] or s["ref"] != ref:
+            return None
+        e = self.vals.get(m.group(1))
+        if not e:
+            return None
+        if s["kind"] != "time":
+            return e["v"]
+        if e["min"] is None or (e["date"] is not None and e["date"] != self._today().isoformat()):
+            return None
+        return e["min"]
+
+    def type_of(self, ref: str) -> str | None:
+        """Wat de bron `x:<signaal>` geeft (bool, getal of tijd), of None als het signaal niet bestaat."""
+        m = X_RE.match(ref or "")
+        s = self.signals.get(m.group(1)) if m else None
+        if not s or s["dir"] != "in" or s["ref"] != ref:
+            return None
+        return {"bool": BOOL, "time": TIME}.get(s["kind"], NUMBER)
+
+    def _text_of(self, s: dict, v, e: dict | None) -> str:
+        if v is None:
+            return (e["raw"] if e else "") or "onbekend"
+        if s["kind"] == "time":
+            return f"{v // 60:02d}:{v % 60:02d}"
+        return "aan" if v is True else "uit" if v is False else lx.fmt(v, s["decimals"])
+
+    def in_view(self) -> list[dict]:
+        """De waarden van Loxone die als bron dienen, voor het blok op het schema."""
+        out = []
+        for sid, s in self.signals.items():
+            if s["dir"] != "in" or not s["enabled"] or not X_RE.match(s["ref"]):
+                continue
+            v, e = self.value_of(s["ref"]), self.vals.get(sid)
+            out.append({"id": sid, "label": s["label"] or sid, "kind": s["kind"], "type": self.type_of(s["ref"]), "ref": s["ref"], "value": v, "raw": e["raw"] if e else "",
+                        "text": self._text_of(s, v, e), "wall": e["wall"] if e else None})
+        return sorted(out, key=lambda o: o["label"].lower())
+
+    async def _apply_one(self, sid: str, value, via: str = "udp") -> str:
         self.stats["received"] += 1
         if sid == "sync":
             self.request_snapshot()
@@ -579,6 +695,12 @@ class LoxoneHub:
         if first and s["skip_first"]:
             out["result"] = "onthouden"
             return "onthouden"
+        if X_RE.match(s["ref"]):
+            return self._apply_value(sid, s, value, out)
+        if isinstance(value, str):
+            self.stats["refused"] += 1
+            out["result"] = "verwacht een getal"
+            return "verwacht een getal"
         if ACT_RE.match(s["ref"]):
             return await self._apply_action(sid, s, value, via, out)
         dev, p = self._point(s["ref"])
@@ -605,7 +727,7 @@ class LoxoneHub:
     def on_datagram(self, data: bytes, addr) -> None:
         if not self._allowed(addr[0]):
             return
-        pairs = lx.parse(data)
+        pairs = lx.parse_values(data)
         if pairs:
             asyncio.get_running_loop().create_task(self._safe(pairs))
 
@@ -621,7 +743,7 @@ class LoxoneHub:
         text = "\n".join(f"{k}={v}" for k, v in request.query.items())
         if request.method == "POST":
             text += "\n" + (await request.text())[: lx.MAX_BYTES]
-        pairs = lx.parse(text)
+        pairs = lx.parse_values(text)
         if not pairs:
             return web.Response(status=400, text="geen geldig bericht (kk.<naam>=<getal>)\n")
         res = await self.apply(pairs, "http")
@@ -653,6 +775,8 @@ class LoxoneHub:
         log.info("Loxone: luistert op %s (UDP %s, HTTP %s), Miniserver %s", self.port, self.udp_port, self.http_port, self.miniserver or "niet ingesteld")
 
     async def close(self) -> None:
+        if _model.lox_type == self.type_of:
+            _model.lox_type = None
         for t in self._tasks:
             t.cancel()
         if self._udp:
@@ -683,10 +807,11 @@ class LoxoneHub:
             else:
                 g = self.got.get(sid)
                 try:
-                    v = self.espdev.output(s["ref"]) if self.espdev else None
+                    v = self.value_of(s["ref"]) if X_RE.match(s["ref"]) else self.espdev.output(s["ref"]) if self.espdev else None
                 except Exception:  # noqa: BLE001
                     v = None
-                row.update(value=v, last=g["wall"] if g else None, got=g["v"] if g else None, result=g["result"] if g else "")
+                row.update(value=v, last=g["wall"] if g else None, got=g["v"] if g else None, result=g["result"] if g else "", logic=bool(X_RE.match(s["ref"])),
+                           text=self._text_of(s, v, self.vals.get(sid)) if X_RE.match(s["ref"]) else None)
             sigs.append(row)
         return {"miniserver": self.miniserver, "out_port": self.out_port, "addon_host": self.addon_host, "me": self.me(), "transport": self.transport,
                 "port": self.port, "udp": self.udp_port, "http": self.http_port, "listen_error": self.error, "stats": dict(self.stats), "queue": len(self.queue),

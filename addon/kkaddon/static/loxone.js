@@ -15,6 +15,7 @@ function loxSlug(name) {
 }
 
 function loxValue(s) {
+  if (s.logic) return s.value === null || s.value === undefined ? `<span class="sub">onbekend</span>${s.text && s.text !== 'onbekend' ? ` <span class="sub">(${esc(s.text)})</span>` : ''}` : esc(s.text);
   if (s.action) return s.danger ? '<span style="color:var(--warn)">opent de deur</span>' : '<span class="sub">actie</span>';
   if (s.value === null || s.value === undefined) return '<span class="sub">onbekend</span>';
   if (s.kind === 'bool') return s.value ? 'aan (1)' : 'uit (0)';
@@ -106,6 +107,8 @@ function viewLox() {
         Een gevaarlijk punt (zoals een deur) kan Loxone lezen, nooit zetten. Wil je andere punten, zet ze eerst op het blok van het apparaat.</p>
     </div>
 
+    ${viewLoxLogic()}
+
     ${viewLoxLock()}
 
     ${viewLoxTraffic()}`;
@@ -178,6 +181,27 @@ function viewLoxChannels(groups) {
     </div>`;
 }
 
+// Een waarde van Loxone als bron in de huisconfig: een aan/uit (digitale variabele), een getal, of een tijd uit een tekst (de wekker). Ze krijgt een blok Loxone op het schema.
+function viewLoxLogic() {
+  const mine = LX.signals.filter((s) => s.logic);
+  const rows = mine.map((s) => `<tr><td><code>${esc(s.key)}</code></td><td>${esc(s.label || s.id)}</td>
+      <td>${s.kind === 'bool' ? 'aan/uit' : s.kind === 'time' ? 'tijd (wekker)' : 'getal'}</td><td>${loxValue(s)}<div class="sub">${s.last ? `ontvangen ${ago(s.last)}: ${esc(String(s.got))}` : 'nog niets ontvangen'}</div></td>
+      <td><button class="btn small danger" type="button" data-lx="rm" data-id="${esc(s.id)}" title="Weghalen">✕</button></td></tr>`).join('');
+  return `<div class="panel">
+      <div class="phead"><h3>Een waarde van Loxone gebruiken in de huisconfig</h3><span class="sub">${mine.length} waarden</span></div>
+      <p class="lead">Een aan/uit uit Loxone (<code>kk.thuis=1</code>), een getal, of de wekker als tekst (<code>kk.wekker=Morgen, 6:45</code>). Ze verschijnen als blok <b>Loxone</b> op het schema, als bron voor modules en de regels van een ledstrip.
+        Een tijd uit een wekkertekst geldt alleen op de dag waarvoor ze staat: <i>Vandaag, 6:45</i> is vandaag 06:45, <i>Morgen, 6:45</i> is vandaag nog onbekend en morgen 06:45; <i>Geen wekker</i> is onbekend.</p>
+      ${rows ? `<div class="scroll"><table><thead><tr><th>Bericht</th><th>Naam</th><th>Soort</th><th>Nu</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+      <h4>Een waarde toevoegen</h4>
+      <div class="row"><input type="text" id="lxvalname" maxlength="40" placeholder="naam, bv. wekker_philippe">
+        <input type="text" id="lxvallabel" maxlength="60" placeholder="omschrijving, bv. Wekker van Philippe">
+        <select id="lxvalkind" aria-label="Soort"><option value="time">Tijd (de tekst van een wekker)</option><option value="bool">Aan/uit (0 of 1)</option><option value="float">Getal</option></select>
+        <button class="btn" type="button" data-lx="addval">Toevoegen</button></div>
+      <p class="sub" style="margin:8px 0 0">Daarna haal je het bestand <b>VO</b> van het kanaal op en importeer je het in Loxone Config (of typ je het commando over uit de tabel). Verbind in Config de uitgang van de wekker of de variabele met het commando <code>kk.&lt;naam&gt;</code>.
+        Wat Loxone precies als tekst meestuurt is niet getest: kijk bij Verkeer wat er binnenkomt, en meld een tekst die niet als tijd wordt herkend.</p>
+    </div>`;
+}
+
 // Een slot bedienen vanuit Loxone: een signaal per actie. Alleen een Nuki-slot, alleen een actie zonder argument.
 function loxLockActions() {
   const out = [];
@@ -215,6 +239,13 @@ const LX_ACTIONS = {
     const dev = (S.espdev || []).find((x) => x.id === did);
     const r = await api('POST', 'loxone/device', { did, prefix: $('#lxpre').value.trim() || loxSlug(dev && dev.name), channel: ($('#lxdevch') || {}).value || '' });
     toast(r.made.length ? `${r.made.length} signalen gemaakt` : 'Er waren al signalen met deze namen');
+  },
+  addval: async () => {
+    const name = loxSlug($('#lxvalname').value.trim());
+    if (!$('#lxvalname').value.trim()) throw new Error('Geef de waarde een naam.');
+    const kind = $('#lxvalkind').value;
+    await api('POST', 'loxone/signals', { id: name, dir: 'in', ref: `x:${name}`, kind, decimals: kind === 'float' ? 1 : 0, label: $('#lxvallabel').value.trim() || name });
+    toast('Waarde toegevoegd: ze staat nu als blok Loxone op het schema');
   },
   sync: async () => { await api('POST', 'loxone/sync'); toast('Alles wordt opnieuw gestuurd'); },
   addact: async () => {
