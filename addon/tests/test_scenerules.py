@@ -375,6 +375,9 @@ def test_night_still_starts_when_loxone_switches_off_and_on_again_while_the_alar
             hub.tick()
             await settle(hub, did)
             assert calls(esp, "play") == [("play", {"slot": 2})], "Nacht start"
+            import json
+            snap = json.loads(json.dumps(r.engine.snapshot()))  # de pagina haalt dit op: ook met een wekker voor een andere dag moet de state JSON zijn
+            assert [i["value"] for i in snap["scenerules"][0]["inputs"]] == [True, None]
         finally:
             await lox.close()
             await shutdown(hub, esp)

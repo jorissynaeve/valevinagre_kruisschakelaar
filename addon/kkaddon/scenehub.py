@@ -650,10 +650,13 @@ class SceneHub:
     # ------------------------------------------------------------ de regels: de scène die nu hoort te spelen
 
     def _read(self, ref):
-        if not isinstance(ref, str):
-            return None
-        v = self.hub.engine.ref_value(ref)
-        if v is None and ref.startswith("x:") and self.hub.engine.lox_absent and self.hub.engine.lox_absent(ref):
+        """De waarde van een bron, voor de pagina: een getal, een 0/1 of None. Nooit `ABSENT` (dat is geen JSON)."""
+        return self.hub.engine.ref_value(ref) if isinstance(ref, str) else None
+
+    def _read_rule(self, ref):
+        """De waarde van een bron voor de regels: als `_read`, maar een tijd die bekend niet nu geldt is `ABSENT` in plaats van None."""
+        v = self._read(ref)
+        if v is None and isinstance(ref, str) and ref.startswith("x:") and self.hub.engine.lox_absent and self.hub.engine.lox_absent(ref):
             return sr.ABSENT  # Loxone meldde een wekker voor een andere dag of geen wekker: zeker niet nu, dus geen "onbekend"
         return v
 
@@ -669,7 +672,7 @@ class SceneHub:
     def pick(self, bid: str) -> tuple[int | None, bool]:
         """(index van de regel die nu klopt of None, onzeker). Zie scenerules.evaluate."""
         now = self.hub.engine.local_now()
-        return sr.evaluate(self.rules.items[bid], self._read, self._ahead, now.hour * 60 + now.minute)
+        return sr.evaluate(self.rules.items[bid], self._read_rule, self._ahead, now.hour * 60 + now.minute)
 
     def _note(self, did: str, key: str, msg: str | None, err: bool = False) -> None:
         if key == "scenes":
