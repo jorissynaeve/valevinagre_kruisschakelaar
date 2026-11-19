@@ -143,10 +143,10 @@ def test_a_panel_that_reports_in_gets_its_screensaver_and_a_touch_opens_a_page(t
             await e.until(lambda: e.bridge.connected, what="HA verbonden")
             assert e.fake.got == [] or all(g.startswith("Q|") for g in e.fake.got), "eerst stil: de panel is nog niet gezien"
             e.beat(boot=True)
-            await e.until(lambda: any(s.startswith("weatherUpdate") for s in e.fake.screen()), what="screensaver")
+            await e.until(lambda: any(s.startswith("weatherUpdate") and "°C" in s for s in e.fake.screen()), what="screensaver")
             scr = e.fake.screen()
             assert scr[0].startswith("time~") and "pageType~screensaver" in scr
-            weather = next(s for s in scr if s.startswith("weatherUpdate"))
+            weather = next(s for s in reversed(scr) if s.startswith("weatherUpdate"))  # de laatste: de eerste kan van vóór de standen uit HA zijn
             assert "~Thuis~18°C" in weather or "~weather.thuis~18°C" in weather or "~18°C" in weather
             assert "~Sun~12°C" in weather, "de voorspelling komt uit weather.get_forecasts"
             e.fake.got.clear()

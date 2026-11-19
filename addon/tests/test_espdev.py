@@ -18,7 +18,7 @@ from tests.fakehuisdev import FakeEsp, pool
 from tests.rig import KEY, Rig
 
 
-async def eventually(cond, timeout=5.0):
+async def eventually(cond, timeout=15.0):  # op Windows duurt een geweigerde verbinding ~2 s, en drie missers maken een apparaat offline
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if cond():

@@ -2,6 +2,8 @@
 je het niet met de hand hoeft te uploaden: script uploaden, de regel `load("huisconfig.be")` achteraan `autoexec.be`, herstart."""
 from __future__ import annotations
 
+import asyncio
+
 import aiohttp
 
 SCRIPT = "huisconfig.be"
@@ -60,9 +62,9 @@ async def install(host: str, script: str, password: str = "", restart: bool = Tr
                 try:
                     async with s.get(f"{base}/cm", params={"cmnd": "Restart 1"}):
                         pass
-                except (aiohttp.ClientError, TimeoutError):
+                except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError):
                     pass  # de panel start al opnieuw op en verbreekt de verbinding
                 done.append("panel herstart")
-    except (aiohttp.ClientError, TimeoutError, OSError) as e:
+    except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError, OSError) as e:
         raise TasmotaError(f"de panel op {host} is niet bereikbaar ({e.__class__.__name__}): klopt het IP-adres?") from e
     return done
