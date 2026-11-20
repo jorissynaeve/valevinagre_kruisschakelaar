@@ -120,7 +120,7 @@ const SC_CARD_NL = { grid: 'Knoppen', charger: 'Laadpaal', saver: 'Screensaver',
 
 function scCardLines(b) { // wat een kaart zonder knoppen op haar blok laat zien
   if (b.type === 'power' && b.labels) return b.labels.length ? b.labels : ['Nog geen rijen'];
-  if (b.type === 'charger') return [b.device ? `Laadpaal: ${b.device.name}${b.device.online ? '' : ' (offline)'}` : b.charger ? 'Deze laadpaal is weg' : 'Nog geen laadpaal gekozen', 'Start, stop en de sessie'];
+  if (b.type === 'charger') return (b.screen || []).map((r) => (r.value ? `${r.name}: ${r.value}` : r.name)); // wat het scherm toont
   if (b.type === 'saver') return [b.weather ? `Weer: ${b.weather}` : 'Geen weer', b.temperature ? `Binnen: ${b.temperature}` : 'Geen temperatuur', [b.status1, b.status2].filter(Boolean).length ? `${[b.status1, b.status2].filter(Boolean).length} statuspictogram(men)` : 'Klok en datum'];
   if (b.type === 'airco') return [b.device ? `Airco: ${b.device.name}${b.device.online ? '' : ' (offline)'}` : 'Nog geen airco gekozen', 'Temperatuur en stand'];
   if (b.type === 'power') return b.items.length ? b.items.map((it) => it.entity ? (it.name || it.entity) : 'leeg') : ['Nog geen rijen'];
@@ -143,7 +143,12 @@ function scPowerRows(b) { // de energiekaart: links een ingang per rij (een Tuya
 
 function scCard(b) {
   const y0 = rowY(b, 0);
-  const rows = b.type === 'power' ? scPowerRows(b) : b.type !== 'grid' ? scCardLines(b).map((t, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}">${esc(scCut(t, 26))}</text>`).join('')
+  const chargerRows = () => (b.screen || []).map((r, i) => { // links de naam (de status, of de rij), rechts de waarde zoals het scherm hem toont
+    const y = rowY(b, i) + 4, t = r.value ? `${r.name}: ${r.value}` : r.name;
+    return r.kind === 'button' ? `<text class="bkt" x="${b.x + 11}" y="${y}">${esc(scCut(r.name, 16))}<title>${esc(t)}</title></text><text class="bkbadge ${esc(r.tone || '')}" x="${b.x + SW_W - 12}" y="${y}" text-anchor="end">${esc(r.value)}</text>`
+      : `<text class="bkt" x="${b.x + 11}" y="${y}">${esc(scCut(r.name, 16))}<title>${esc(t)}</title></text>${r.value ? `<text class="bkt" x="${b.x + SW_W - 12}" y="${y}" text-anchor="end">${esc(scCut(r.value, 12))}</text>` : ''}`;
+  }).join('');
+  const rows = b.type === 'power' ? scPowerRows(b) : b.type === 'charger' ? chargerRows() : b.type !== 'grid' ? scCardLines(b).map((t, i) => `<text class="bkt" x="${b.x + 11}" y="${rowY(b, i) + 4}">${esc(scCut(t, 26))}</text>`).join('')
     : b.items.map((it, i) => {
       const y = rowY(b, i), go = it.target && scBlock(it.target);
       return `<circle class="pt crd ${it.ref || it.entity ? '' : 'free'}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="citem" data-i="${i}"><title>Knop ${i + 1}: sleep hierheen vanaf een lamp, een gang van een schakelaar of de uitgang van een kaart</title></circle>
@@ -154,7 +159,7 @@ function scCard(b) {
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${SW_W}" height="${scH(b)}" rx="8"/>
     <rect class="bkhead" x="${b.x}" y="${b.y}" width="${SW_W}" height="${SC_HEAD}" rx="8"/>
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 28))}</text>
-    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Kaart · ${SC_CARD_NL[b.type]}${b.type === 'grid' && b.layout === 'list' ? ' (lijst)' : ''}</text>${rows}
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Kaart · ${SC_CARD_NL[b.type]}${b.type === 'grid' && b.layout === 'list' ? ' (lijst)' : ''}${b.type === 'charger' ? (b.device ? ` · ${esc(scCut(b.device.name, 18))}` : '') : ''}</text>${rows}
     <circle class="pt crd ${b.users.length ? '' : 'free'}" cx="${b.x + SW_W}" cy="${y0}" r="6" data-b="${esc(b.key)}" data-role="cout" data-g="0"><title>Uitgang: sleep naar een paneel of scherm (pagina) of naar een knop van een rasterkaart (subpagina)</title></circle>
     ${b.users.map((u, n) => `<text class="stub" x="${b.x + SW_W + 11}" y="${y0 + 4 + n * 13}" data-sc="go" data-k="${esc(u.key)}">→ ${esc(scCut(u.name, 22))} ${u.as === 'page' ? `(${b.type === 'saver' ? 'start' : `pagina ${u.i + 1}`})` : '(sub)'}<title>${esc(u.name)}</title></text>`).join('')}</g>`;
 }

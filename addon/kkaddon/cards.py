@@ -78,6 +78,57 @@ WORDS = {
 }
 
 
+def charger_part(c: dict, v: dict | None, part: str, w: dict, lang: str) -> dict:
+    """Wat de laadpaalkaart bij `part` (run, amps, time, energy, price) toont, voor de laadpaal `v` (zie `Live.charger`). Ook de huisconfig leest dit, zodat het blok laat zien wat het scherm toont."""
+    if part == "run":
+        if not c.get("charger"):
+            return {"kind": "text", "name": w["none"], "value": "", "color": DEFAULT_COLOR, "icon": "ev-station"}
+        if v is None or not v.get("online"):
+            return {"kind": "text", "name": w["offline"], "value": "", "color": DEFAULT_COLOR, "icon": "ev-station"}
+        if v.get("phase") == "busy":  # een sessie van een andere installatie: we mogen er niets van zien, maar wel dat er een bezig is (anders lijkt de kaart stuk)
+            return {"kind": "text", "name": w["busy"], "value": "", "color": CHARGE_COLOR, "icon": "ev-station"}
+        st = v.get("status")
+        name = STATUS[lang].get(str(st), str(st)) if st is not None else _clean(v.get("name"))
+        if v.get("act") is None:  # de status laat niets toe: geen knop, alleen de status
+            return {"kind": "text", "name": _clean(name), "value": "", "color": CHARGE_COLOR if v.get("charging") else DEFAULT_COLOR, "icon": "ev-station"}
+        if v["act"] in ("pause", "resume"):  # een Smappee-laadpaal: pauzeren of hervatten, nooit start of stop (dat doet de badge)
+            return {"kind": "button", "name": _clean(name), "value": w[v["act"]], "color": PAUSE_COLOR if v["act"] == "pause" else CHARGE_COLOR,
+                    "icon": "pause" if v["act"] == "pause" else "play"}
+        on = v["act"] == "stop"
+        return {"kind": "button", "name": _clean(name), "value": w["stop"] if on else w["start"], "color": STOP_COLOR if on else CHARGE_COLOR,
+                "icon": "stop" if on else "play"}
+    if part == "amps":  # de stroom: een regelaar (`getal|min|max`) op het paneel; een scherm met openHASP toont `text`
+        ok = v is not None and v.get("online") and v.get("amps") is not None and v.get("amp_min") is not None and v.get("amp_max") is not None and v.get("phase") != "busy"
+        if not ok:
+            return {"kind": "text", "value": "—"}
+        return {"kind": "number", "value": f"{int(v['amps'])}|{int(v['amp_min'])}|{int(v['amp_max'])}", "text": f"{int(v['amps'])} A"}
+    mine = v is not None and v.get("online") and v.get("phase") in ("mine", "other")
+    if v is not None and v.get("online") and v.get("phase") == "busy" and part in ("time", "energy", "price"):
+        return {"kind": "text", "value": w["busy_val"], "glyph": "-", "color": CHARGE_COLOR}  # geen gegevens van een ander, maar ook geen kaal streepje
+    if part == "time":
+        t = v.get("time") if mine else None
+        return {"kind": "text", "value": _clean(t) if t not in (None, "") else "—", "glyph": _glyph_time(t) if t not in (None, "") else "-", **({"color": CHARGE_COLOR} if mine else {})}
+    if part == "energy":
+        e = v.get("energy") if mine else None
+        return {"kind": "text", "value": f"{e:.2f} kWh" if e is not None else "—", "glyph": _glyph_num(e) if e is not None else "-", **({"color": CHARGE_COLOR} if mine else {})}
+    if part == "price":
+        cost = v.get("cost") if mine else None
+        return {"kind": "text", "value": f"€ {cost:.2f}" if cost is not None else "—", "glyph": _glyph_num(cost) if cost is not None else "-", **({"color": CHARGE_COLOR} if mine else {})}
+    return {"kind": "text", "value": ""}
+
+
+def charger_preview(c: dict, v: dict | None, lang: str = "nl") -> list[dict]:
+    """De rijen van de laadpaalkaart zoals het scherm ze toont, voor de huisconfig: [{name, value}]. De bovenste is de knop (status en START, STOP, PAUZE of HERVAT)."""
+    w = WORDS[lang]
+    run = charger_part(c, v, "run", w, lang)
+    rows = [{"name": run.get("name") or "", "value": run.get("value") or "", "kind": run["kind"], "tone": "bad" if run.get("color") == STOP_COLOR else "ok" if run.get("color") == CHARGE_COLOR else ""}]
+    parts = [("amps", w["amps"])] if c.get("amps") else []
+    for part, name in parts + [("time", w["time"]), ("energy", w["energy"]), ("price", w["price"])]:
+        r = charger_part(c, v, part, w, lang)
+        rows.append({"name": name, "value": r.get("text") or r.get("value") or "", "kind": "text"})
+    return rows
+
+
 def _glyph_time(t: Any) -> str:
     """De laadtijd (`02:05:09`) als H:MM, voor een tegel; wat er anders staat zo kort mogelijk."""
     m = re.fullmatch(r"(\d+):(\d\d)(?::\d\d)?", str(t or "").strip())
@@ -378,42 +429,7 @@ class Live:
         return self.charge.view(ref[2:], None) if ref.startswith("k:") and self.charge else None
 
     def _charger(self, c: dict, part: str, w: dict, lang: str) -> dict:
-        v = self.charger(c)
-        if part == "run":
-            if not c.get("charger"):
-                return {"kind": "text", "name": w["none"], "value": "", "color": DEFAULT_COLOR, "icon": "ev-station"}
-            if v is None or not v.get("online"):
-                return {"kind": "text", "name": w["offline"], "value": "", "color": DEFAULT_COLOR, "icon": "ev-station"}
-            if v.get("phase") == "busy":  # een sessie van een andere installatie: we mogen er niets van zien, maar wel dat er een bezig is (anders lijkt de kaart stuk)
-                return {"kind": "text", "name": w["busy"], "value": "", "color": CHARGE_COLOR, "icon": "ev-station"}
-            st = v.get("status")
-            name = STATUS[lang].get(str(st), str(st)) if st is not None else _clean(v.get("name"))
-            if v.get("act") is None:  # de status laat niets toe: geen knop, alleen de status
-                return {"kind": "text", "name": _clean(name), "value": "", "color": CHARGE_COLOR if v.get("charging") else DEFAULT_COLOR, "icon": "ev-station"}
-            if v["act"] in ("pause", "resume"):  # een Smappee-laadpaal: pauzeren of hervatten, nooit start of stop (dat doet de badge)
-                return {"kind": "button", "name": _clean(name), "value": w[v["act"]], "color": PAUSE_COLOR if v["act"] == "pause" else CHARGE_COLOR,
-                        "icon": "pause" if v["act"] == "pause" else "play"}
-            on = v["act"] == "stop"
-            return {"kind": "button", "name": _clean(name), "value": w["stop"] if on else w["start"], "color": STOP_COLOR if on else CHARGE_COLOR,
-                    "icon": "stop" if on else "play"}
-        if part == "amps":  # de stroom: een regelaar (`getal|min|max`) op het paneel; een scherm met openHASP toont `text`
-            ok = v is not None and v.get("online") and v.get("amps") is not None and v.get("amp_min") is not None and v.get("amp_max") is not None and v.get("phase") != "busy"
-            if not ok:
-                return {"kind": "text", "value": "—"}
-            return {"kind": "number", "value": f"{int(v['amps'])}|{int(v['amp_min'])}|{int(v['amp_max'])}", "text": f"{int(v['amps'])} A"}
-        mine = v is not None and v.get("online") and v.get("phase") in ("mine", "other")
-        if v is not None and v.get("online") and v.get("phase") == "busy" and part in ("time", "energy", "price"):
-            return {"kind": "text", "value": w["busy_val"], "glyph": "-", "color": CHARGE_COLOR}  # geen gegevens van een ander, maar ook geen kaal streepje
-        if part == "time":
-            t = v.get("time") if mine else None
-            return {"kind": "text", "value": _clean(t) if t not in (None, "") else "—", "glyph": _glyph_time(t) if t not in (None, "") else "-", **({"color": CHARGE_COLOR} if mine else {})}
-        if part == "energy":
-            e = v.get("energy") if mine else None
-            return {"kind": "text", "value": f"{e:.2f} kWh" if e is not None else "—", "glyph": _glyph_num(e) if e is not None else "-", **({"color": CHARGE_COLOR} if mine else {})}
-        if part == "price":
-            cost = v.get("cost") if mine else None
-            return {"kind": "text", "value": f"€ {cost:.2f}" if cost is not None else "—", "glyph": _glyph_num(cost) if cost is not None else "-", **({"color": CHARGE_COLOR} if mine else {})}
-        return {"kind": "text", "value": ""}
+        return charger_part(c, self.charger(c), part, w, lang)
 
     # ------------------------------------------------------------ bedienen
 

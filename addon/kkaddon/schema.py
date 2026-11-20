@@ -267,10 +267,14 @@ def _card_blocks(model: Model, snap: dict, lamps: set[str]) -> list[dict]:
             if ref.startswith("r:"):
                 hit = _remote_obj(snap, ref)
                 b["device"] = {"name": f"{hit[1].get('name')} ({hit[0]['name']})", "online": bool(hit[0]["online"] and hit[1].get("online")), "key": ref} if hit else None
+                # zoals Live.charger: is de lijn weg, dan toont het scherm offline
+                v = None if not hit or hit[1].get("kind") != "charger" else hit[1] if hit[0]["online"] else {**hit[1], "online": False, "act": None, "phase": hit[1].get("phase", "free")}
             else:
                 k = next((x for x in snap.get("charge", []) if f"k:{x['id']}" == ref), None)
                 b["device"] = {"name": k["name"], "online": k["online"], "key": ref} if k else None
-            b["rows"] = 2
+                v = k.get("view") if k else None
+            b["screen"] = _cards.charger_preview(c, v)  # wat het scherm toont (de rijen van de kaart), live
+            b["rows"] = len(b["screen"])
         elif c["type"] == "power":
             b["rows"] = len(c["items"]) + (1 if len(c["items"]) < _cards.MAX_POWER else 0)  # een ingang per rij en een vrije om een nieuwe rij te beginnen
             b["labels"] = [(_point_label(snap, it["tuya"], it["dp"])[1] if it.get("tuya") else it.get("name") or it.get("entity") or "leeg") for it in c["items"]]

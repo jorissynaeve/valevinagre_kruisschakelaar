@@ -257,8 +257,15 @@ def test_the_charger_is_a_block_and_the_card_points_to_it(tmp_path):
     blocks = {b["key"]: b for b in schema.view(eng.model, eng.snapshot())["blocks"]}
     assert blocks["k:lader"]["kind"] == "charge" and blocks["k:lader"]["log"] == [] and blocks["k:lader"]["view"]["phase"] == "free"
     assert blocks["c:laadpaal"]["device"] == {"name": "Laadpaal", "online": True, "key": "k:lader"}
+    screen = blocks["c:laadpaal"]["screen"]
+    assert [r["name"] for r in screen[1:]] == ["Laadtijd", "Geladen", "Prijs"] and [r["value"] for r in screen[1:]] == ["—", "—", "—"], "de rijen van het scherm, buiten een sessie zonder waarden"
+    assert screen[0]["kind"] in ("button", "text") and blocks["c:laadpaal"]["rows"] == 4, "de bovenste rij is de knop of de status"
     eng.model.set_card("laadpaal", charger="k:weg")
-    assert next(b for b in schema.view(eng.model, eng.snapshot())["blocks"] if b["key"] == "c:laadpaal")["device"] is None, "een laadpaal die weg is: de kaart zegt het"
+    gone = next(b for b in schema.view(eng.model, eng.snapshot())["blocks"] if b["key"] == "c:laadpaal")
+    assert gone["device"] is None, "een laadpaal die weg is: de kaart zegt het"
+    assert gone["screen"][0]["name"] == "Laadpaal offline", "en het scherm toont dan offline"
+    eng.model.set_card("laadpaal", charger="")
+    assert next(b for b in schema.view(eng.model, eng.snapshot())["blocks"] if b["key"] == "c:laadpaal")["screen"][0]["name"] == "Geen laadpaal gekozen"
 
 
 def test_the_web_api_adds_runs_and_removes_a_charger_and_serves_the_log(tmp_path):
