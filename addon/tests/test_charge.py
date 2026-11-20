@@ -22,7 +22,7 @@ class Tuya:
 
     def status(self):
         return [{"id": "lader", "name": "Lader", "online": self.online, "product": "Feyree EV-lader",
-                 "points": [{"dp": dp, "name": f"Punt {dp}", "code": "charge_energy_once" if self.once and dp == "25" else "", "value": v, "unit": "", "rw": dp == "124"} for dp, v in self.values.items()]}]
+                 "points": [{"dp": dp, "name": f"Punt {dp}", "code": "charge_energy_once" if self.once and dp == "25" else "DeviceKwh" if dp == "112" else "", "value": v, "unit": "", "rw": dp == "124"} for dp, v in self.values.items()]}]
 
     def set(self, did, dp, value):
         self.sent.append((dp, value))
@@ -388,3 +388,76 @@ def test_a_session_that_never_charged_does_not_wait_for_a_total(tmp_path):
     clock.t += 200
     hub.tick()
     assert hub.log[-1]["reason"] == "niet gestart" and "wait" not in hub.log[-1]
+
+
+def feyree_live(tmp_path, **tv):
+    """Een Feyree zoals hij echt is: dp 112 telt de kWh van de beurt (en gaat op 0 bij het loskoppelen), dp 25 krijgt het totaal pas daarna. De ingang staat op 25."""
+    hub, t, clock = make(tmp_path, **{"25": 27.24, "112": 27.2, **tv})
+    t.once = True
+    return hub, t, clock
+
+
+def test_a_feyree_counts_the_running_kwh_from_dp_112_and_keeps_it_when_the_cable_is_pulled(tmp_path):
+    hub, t, clock = feyree_live(tmp_path)
+    hub.start("lader", hub.who_peer("hoofdhuis"))
+    t.values.update({"101": "charing", "112": 0.0})  # de nieuwe beurt begint op 0
+    hub.tick()
+    clock.t += 3600
+    t.values["112"] = 7.5
+    hub.tick()
+    mine = hub.view("lader", "hoofdhuis")
+    assert mine["energy"] == 7.5 and mine["cost"] == 1.88, "tijdens het laden, niet pas na afloop"
+    t.values.update({"101": "free", "112": 0.0})  # de kabel eruit: de teller gaat terug op 0 voor de sessie is afgesloten
+    clock.t += 5
+    hub.tick()
+    assert hub.view("lader", "hoofdhuis")["energy"] == 7.5
+    clock.t += 30
+    hub.tick()
+    e = hub.log[-1]
+    assert "lader" not in hub.active and e["kwh"] == 7.5 and e["cost"] == 1.88 and "wait" not in e, "geen 0,00 en geen wachten op dp 25"
+    t.values["25"] = 7.5
+    clock.t += 60
+    hub.tick()
+    assert hub.log[-1]["kwh"] == 7.5
+
+
+def test_a_feyree_whose_counter_stays_at_the_old_value_at_the_start_does_not_count_it(tmp_path):
+    hub, t, clock = feyree_live(tmp_path)
+    hub.start("lader", hub.who_peer("hoofdhuis"))
+    t.values["101"] = "charing"
+    hub.tick()
+    assert hub.view("lader", "hoofdhuis")["energy"] == 0.0, "de teller van de vorige beurt telt niet mee"
+    t.values["112"] = 3.0  # de teller begint opnieuw en komt nog niet boven de oude
+    hub.tick()
+    assert hub.view("lader", "hoofdhuis")["energy"] == 3.0
+
+
+def test_a_feyree_that_reports_nothing_on_dp_112_falls_back_to_the_total_on_dp_25(tmp_path):
+    hub, t, clock = feyree_live(tmp_path, **{"112": 0.0})
+    hub.start("lader", hub.who_peer("hoofdhuis"))
+    t.values["101"] = "charing"
+    hub.tick()
+    clock.t += 600
+    hub.tick()
+    t.values["101"] = "finish"
+    hub.tick()
+    clock.t += 30
+    hub.tick()
+    e = hub.log[-1]
+    assert e["kwh"] is None and e["wait"] > e["end"], "0 kWh van de teller is niet gemeten, geen 0,00"
+    t.values["25"] = 4.2
+    hub.tick()
+    assert hub.log[-1]["kwh"] == 4.2 and "wait" not in hub.log[-1]
+
+
+def test_the_charge_time_runs_on_from_the_session_while_the_charger_reports_zero(tmp_path):
+    hub, t, clock = make(tmp_path)
+    hub.start("lader", hub.who_peer("hoofdhuis"))
+    assert hub.view("lader", "hoofdhuis")["time"] == "00:00:00", "voor het laden begon: wat de laadpaal meldt"
+    t.values.update({"101": "charing", "120": "0.00"})
+    hub.tick()
+    clock.t += 3725
+    hub.tick()
+    assert hub.view("lader", "hoofdhuis")["time"] == "01:02:05", "de laadpaal blijft op 0 staan: de add-on telt zelf"
+    t.values["120"] = "01:02:00"
+    assert hub.view("lader", "hoofdhuis")["time"] == "01:02:00", "meldt de laadpaal wel een tijd, dan geldt die"

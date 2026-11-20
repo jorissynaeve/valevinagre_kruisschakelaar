@@ -57,6 +57,8 @@ START_GRACE = 180.0  # s: na een start wachten tot de laadpaal echt laadt; ander
 END_AFTER = 20.0  # s: zolang de laadpaal niet meer laadt voor de sessie eindigt (een korte hapering is geen einde)
 SETTLE = 900.0  # s: een laadpaal die het totaal van de beurt pas na afloop meldt (Feyree): zo lang wachten we er na het einde nog op
 ONCE = "charge_energy_once"  # code van het datapunt "energie laatste beurt": constant tijdens de sessie, het nieuwe totaal komt erna
+LIVE = "DeviceKwh"  # code van het datapunt van de Feyree dat "Energie totaal" heet maar de kWh van de huidige beurt telt (op 0 na het loskoppelen)
+BLANK_TIME = re.compile(r"^[0:.,\s]*$")  # een laadtijd die niets zegt: "", "0.00", "00:00:00"
 ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 LOCAL = "-" # starter van een sessie die aan de laadpaal zelf begon
 INPUTS = ("status", "time", "energy")
@@ -67,7 +69,7 @@ UNKNOWN = "?"  # begin van het huis-id van een badge die nog bij geen huis hoort
 NO_TAG = "Zonder badge"
 SM_STATUS = {smappee.S_FREE: "free", smappee.S_CONNECTED: "connect", smappee.S_CHARGING: "charging", smappee.S_PAUSED: "paused"}  # de woorden die de kaart kent (cards.STATUS)
 SM_OPS = {"pause": ("paused", True), "resume": ("paused", False), "current": ("current", None)}
-FEYREE = {"inputs": {"status": "101", "time": "120", "energy": "25"}, "target": {"dp": "124", "on": "OpenCharging", "off": "CloseCharging"}}
+FEYREE = {"inputs": {"status": "101", "time": "120", "energy": "112"}, "target": {"dp": "124", "on": "OpenCharging", "off": "CloseCharging"}}
 
 
 def charger_id(device: str) -> str:
@@ -380,10 +382,35 @@ class ChargeHub:
             return st is not None and st.strip().lower() in {s.lower() for s in start}
         return not self.charging(c)
 
-    def energy(self, c: dict) -> float | None:
+    def _live(self, c: dict) -> dict | None:
+        """Het punt dat de kWh van de beurt telt. Is de kWh-ingang "energie laatste beurt" (dat een Feyree pas na afloop bijwerkt) en heeft het toestel ook de
+        lopende teller (`DeviceKwh`), dan is dat die teller: die loopt tijdens het laden. Zo werkt een laadpaal die nog op 25 staat ook."""
         p = self._point(c, c["inputs"].get("energy", ""))
+        if p and p.get("code") == ONCE:
+            dev = self._device(c)
+            live = next((x for x in dev["points"].values() if x.get("code") == LIVE), None) if dev else None
+            return live or p
+        return p
+
+    def _last_turn(self, c: dict) -> dict | None:
+        """Het punt "energie laatste beurt" naast een lopende teller: daar komt het totaal van de beurt na afloop (of na het loskoppelen) in."""
+        live = self._live(c)
+        if not live or live.get("code") == ONCE:
+            return None
+        dev = self._device(c)
+        return next((x for x in dev["points"].values() if x.get("code") == ONCE), None) if dev else None
+
+    @staticmethod
+    def _number(p: dict | None) -> float | None:
         v = p.get("value") if p else None
         return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    def energy(self, c: dict) -> float | None:
+        return self._number(self._live(c))
+
+    def final_energy(self, c: dict) -> float | None:
+        """Het totaal van de laatste beurt zoals de laadpaal het na afloop meldt."""
+        return self._number(self._last_turn(c) or self._live(c))
 
     def tariff(self, c: dict) -> float:
         if c["price_entity"]:
@@ -396,8 +423,17 @@ class ChargeHub:
 
     def _once(self, c: dict) -> bool:
         """Is de kWh-ingang het totaal van de laatste beurt (geen lopende teller)? Dan blijft hij tijdens de sessie gelijk aan de vorige beurt."""
-        p = self._point(c, c["inputs"].get("energy", ""))
+        p = self._live(c)
         return bool(p and p.get("code") == ONCE)
+
+    def _time(self, c: dict, s: dict) -> str | None:
+        """De laadtijd voor de kaart: die van de laadpaal, en zolang die niets meldt (leeg of 0) terwijl ze laadt, de tijd sinds het laden begon."""
+        p = self._point(c, c["inputs"].get("time", ""))
+        text = self.points.text(c["device"], c["inputs"]["time"]) if p else None
+        if (text is None or BLANK_TIME.match(text)) and s.get("seen"):
+            sec = int(max(0, self._clock() - s.get("began", s["start"])))
+            return f"{sec // 3600:02d}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
+        return text
 
     @staticmethod
     def _session_kwh(s: dict) -> float | None:
@@ -438,10 +474,9 @@ class ChargeHub:
         if s is None:
             out["act"] = "start" if self.can_start(c) and c["target"]["dp"] and c["target"]["on"] else None
         else:
-            self._sample(c, s)  # de meterstand van nu, niet die van de laatste tik
+            self._sample(c, s, out["charging"])  # de meterstand van nu, niet die van de laatste tik
             kwh = self._session_kwh(s)
-            p = self._point(c, c["inputs"].get("time", ""))
-            out.update(act="stop" if c["target"]["dp"] and c["target"]["off"] else None, energy=kwh, time=self.points.text(c["device"], c["inputs"]["time"]) if p else None,
+            out.update(act="stop" if c["target"]["dp"] and c["target"]["off"] else None, energy=kwh, time=self._time(c, s),
                        cost=None if kwh is None else round(kwh * self.tariff(c), 2), since=int(s["start"]))
             if phase == "other":
                 out["by"] = s["name"]
@@ -497,7 +532,7 @@ class ChargeHub:
         if not (c["target"]["dp"] and c["target"]["off"]):
             raise ModelError("start/stop is niet ingesteld op de laadpaal")
         self.points.set(c["device"], c["target"]["dp"], c["target"]["off"])
-        self._sample(c, s)
+        self._sample(c, s, self.charging(c))
         reason = "gestopt" if who["id"] == "" and s["by"] == "" else "gestopt door de eigenaar" if who["id"] == "" else "gestopt door de starter"
         self._end(cid, reason, who["name"])
 
@@ -666,13 +701,19 @@ class ChargeHub:
 
     # ------------------------------------------------------------ de sessies
 
-    def _sample(self, c: dict, s: dict) -> None:
-        """De meterstand van de laadpaal in de sessie. Daalt hij, dan is de teller opnieuw begonnen (een nieuwe sessie op de laadpaal)."""
+    def _sample(self, c: dict, s: dict, charging: bool) -> None:
+        """De meterstand van de laadpaal in de sessie. Daalt hij terwijl ze laadt (of voor ze ooit laadde), dan is de teller opnieuw begonnen. Daalt hij nadat ze
+        geladen heeft en niet meer laadt, dan zet de laadpaal de teller terug op 0 bij het loskoppelen: de kWh van de beurt blijft dan staan."""
+        s["once"] = self._once(c)
+        fin = self.final_energy(c) if self._last_turn(c) else None
+        if fin is not None:
+            s["fin"] = fin
         e = self.energy(c)
         if e is None:
             return
-        s["once"] = self._once(c)
         if s.get("last_e") is not None and e < s["last_e"] - 1e-9:
+            if s.get("seen") and not charging and not s["once"]:  # bij "energie laatste beurt" is een lagere waarde juist het nieuwe totaal
+                return
             s["base"] = 0.0
         if s.get("base") is None:
             s["base"] = e
@@ -680,13 +721,15 @@ class ChargeHub:
 
     def _end(self, cid: str, reason: str, stopped_by: str = "") -> None:
         c, s, now = self.chargers[cid], self.active.pop(cid), self._clock()
-        kwh = self._session_kwh(s)
+        kwh, fin = self._session_kwh(s), s.get("fin")
+        if fin is not None and (kwh is None or kwh <= 0):
+            kwh = None  # de lopende teller zei niets: het totaal van de beurt komt nog in "energie laatste beurt"
         self.seq += 1
         entry = {"n": self.seq, "charger": cid, "by": s["by"], "name": s["name"], "start": int(s["start"]), "end": int(now), "seconds": int(now - s["start"]),
                  "kwh": None if kwh is None else round(kwh, 3), "tariff": self.tariff(c), "reason": reason, "stopped_by": stopped_by}
         entry["cost"] = None if kwh is None else round(kwh * entry["tariff"], 2)
-        if kwh is None and s.get("once") and s["seen"]:
-            entry["wait"], entry["from"] = int(now + SETTLE), s["base"]  # het totaal van deze beurt komt nog: `_settle` vult het aan
+        if kwh is None and s["seen"] and (s.get("once") or fin is not None):
+            entry["wait"], entry["from"] = int(now + SETTLE), s["base"] if s.get("once") else fin  # het totaal van deze beurt komt nog: `_settle` vult het aan
         self.log.append(entry)
         del self.log[:-MAX_LOG]
         log.info("laadpaal %s: sessie van %s voorbij (%s, %s kWh)", c["name"], s["name"], reason, entry["kwh"])
@@ -706,7 +749,7 @@ class ChargeHub:
         for e in self.log[-20:]:
             if e.get("charger") != cid or "wait" not in e:
                 continue
-            v = self.energy(c)
+            v = self.final_energy(c)
             if v is not None and v != e["from"] and v > 0:
                 e["kwh"], e["cost"] = round(v, 3), round(v * e["tariff"], 2)
                 log.info("laadpaal %s: sessie van %s kreeg achteraf %s kWh", c["name"], e["name"], e["kwh"])
@@ -734,14 +777,16 @@ class ChargeHub:
                 if chg:
                     e = self.energy(c)
                     self._drop_wait(cid)
-                    self.active[cid] = {"by": LOCAL, "name": "Lokaal (aan de laadpaal)", "start": now, "seen": True, "last_chg": now, "base": e, "last_e": e}
+                    self.active[cid] = {"by": LOCAL, "name": "Lokaal (aan de laadpaal)", "start": now, "began": now, "seen": True, "last_chg": now, "base": e, "last_e": e}
                     log.info("laadpaal %s: laadt zonder dat de add-on startte, genoteerd als lokaal", c["name"])
                     self._save()
                     self._poke()
                 continue
             before = (s.get("last_e"), s["seen"])
-            self._sample(c, s)
+            self._sample(c, s, chg)
             if chg:
+                if not s["seen"]:
+                    s["began"] = now
                 s["seen"], s["last_chg"] = True, now
             if s["seen"] and not chg and now - s["last_chg"] >= END_AFTER:
                 self._end(cid, "klaar of losgekoppeld")
