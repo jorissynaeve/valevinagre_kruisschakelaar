@@ -965,6 +965,7 @@ const SC_HELP = {
   before: 'Geeft 1 van middernacht tot deze tijd.',
   and: 'Geeft 1 als beide ingangen 1 zijn.',
   or: 'Geeft 1 als minstens één ingang 1 is.',
+  select: 'Geeft het ene getal als de ingang 1 is en het andere als ze 0 is, bv. laadstroom 16 bij zon en 6 zonder. Onbekend als de ingang onbekend is.',
   dp: 'De waarde van een datapunt van een Tuya-toestel (hier of bij een andere installatie) als getal; aan/uit is 1/0. Onbekend als het toestel offline is.',
   above: 'Geeft 1 als de waarde groter is dan de grens, bv. vermogen > 3.5 kW. Onbekend als de waarde onbekend is.',
   below: 'Geeft 1 als de waarde kleiner is dan de grens.',
@@ -1352,6 +1353,7 @@ function scModulePanel(b, props) {
     ${b.type === 'number' ? `<label for="scmnum">Waarde</label><input type="number" id="scmnum" min="0" max="100000" step="1" data-k="${esc(b.key)}" value="${esc(b.param)}">` : ''}
     ${b.type === 'time' ? `<label for="scmtime">Tijd</label><input type="time" id="scmtime" data-k="${esc(b.key)}" value="${esc(b.param)}">` : ''}
     ${b.type === 'above' || b.type === 'below' ? `<label>Grens</label><input type="number" step="any" data-mfield="value" data-k="${esc(b.key)}" value="${esc(b.param)}">` : ''}
+    ${b.type === 'select' ? `<label>Getal als de ingang 1 is</label><input type="number" step="any" data-mfield="value" data-k="${esc(b.key)}" value="${esc(b.param)}"><label>Getal als de ingang 0 is</label><input type="number" step="any" data-mfield="value0" data-k="${esc(b.key)}" value="${esc(b.param0)}">` : ''}
     ${b.type === 'dp' ? `<label>Toestel</label>${scDeviceSelect(`data-mfield="device" data-k="${esc(b.key)}"`, b.device, SC_HERE)}<label>Datapunt</label>${scPointSelect(`data-mfield="dp" data-k="${esc(b.key)}"`, b.device, b.dp, SC_HERE)}` : ''}
     ${ports ? `<h2>Ingangen</h2>${ports}` : ''}
     <h2>Uitgang gaat naar</h2>${users.map((u) => `<div class="sub"><a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.name)}</a></div>`).join('') || '<div class="sub">Nog nergens.</div>'}
@@ -1362,7 +1364,7 @@ function scModulePanel(b, props) {
 const SC_MENU = [
   ['Toestellen', [['lamp', 'Lamp', 'met touches en relais'], ['switch', 'Schakelaar', 'een toestel uit Home Assistant'], ['panel', 'NSPanel', 'scherm met twee relais'], ['screen', 'Scherm', 'aanraakscherm met openHASP'], ['tuya', 'Tuya', 'toestel rechtstreeks over het LAN'], ['airco', 'Airco', 'Gree, Toyotomi, ... over het LAN'], ['charge', 'Laadpaal', 'sessies en log op een Tuya-toestel'], ['solar', 'Omvormer', 'Deye, Sunsynk, ... met een Solarman-stick']]],
   ['Tijd', [['timer', 'Timer', 'intervallen per dag, geeft 0 of 1'], ['sunrise', 'Zonsopgang', 'tijd van vandaag'], ['sunset', 'Zonsondergang', 'tijd van vandaag'], ['time', 'Vaste tijd', 'bv. 02:30']]],
-  ['Waarden', [['number', 'Getal', 'bv. aantal cycli'], ['dp', 'Tuya-waarde', 'een datapunt als getal']]],
+  ['Waarden', [['number', 'Getal', 'bv. aantal cycli'], ['select', 'Keuze', '1 geeft het ene getal, 0 het andere'], ['dp', 'Tuya-waarde', 'een datapunt als getal']]],
   ['Rekenen', [['add', 'Optellen', 'tijd + tijd'], ['sub', 'Aftrekken', 'tijd − tijd']]],
   ['Vergelijken', [['between', 'Tussen', '1 tussen twee tijden'], ['after', 'Na', '1 na een tijd'], ['before', 'Voor', '1 voor een tijd'], ['above', 'Groter dan', '1 boven een grens'], ['below', 'Kleiner dan', '1 onder een grens']]],
   ['Logica', [['and', 'En', '1 als beide 1 zijn'], ['or', 'Of', '1 als een van beide 1 is']]],
@@ -2897,7 +2899,7 @@ document.addEventListener('change', (ev) => {
   }
   if (t.dataset && t.dataset.mfield) {
     const b = scBlock(t.dataset.k), f = t.dataset.mfield;
-    const patch = f === 'value' ? { value: +t.value } : f === 'device' ? { device: t.value, dp: '' } : { dp: t.value };
+    const patch = f === 'value' || f === 'value0' ? { [f]: +t.value } : f === 'device' ? { device: t.value, dp: '' } : { dp: t.value };
     t.blur();
     act(async () => { try { await api('PUT', `modules/${b.id}`, patch); } finally { SC.force = true; await refresh(); } })();
   }

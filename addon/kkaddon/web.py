@@ -318,7 +318,7 @@ async def module_post(request: web.Request) -> web.Response:
 
 async def module_put(request: web.Request) -> web.Response:
     b = await _body(request)
-    request.app[CTX].model.set_module(request.match_info["mid"], b.get("name"), b.get("value"), b.get("inputs"), **{k: b[k] for k in ("device", "dp") if k in b})
+    request.app[CTX].model.set_module(request.match_info["mid"], b.get("name"), b.get("value"), b.get("inputs"), **{k: b[k] for k in ("device", "dp", "value0") if k in b})
     return web.json_response({"ok": True})
 
 

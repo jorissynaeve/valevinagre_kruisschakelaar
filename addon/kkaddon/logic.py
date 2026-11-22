@@ -29,6 +29,7 @@ MODULE_TYPES: dict[str, dict] = {
     "before": {"label": "Voor", "out": BOOL, "inputs": (("time", TIME, "tijd"),)},
     "and": {"label": "En", "out": BOOL, "inputs": (("a", BOOL, "A"), ("b", BOOL, "B"))},
     "or": {"label": "Of", "out": BOOL, "inputs": (("a", BOOL, "A"), ("b", BOOL, "B"))},
+    "select": {"label": "Keuze", "out": NUMBER, "inputs": (("s", BOOL, "ingang"),)},  # 1 geeft `value`, 0 geeft `value0`, onbekend blijft onbekend
     "dp": {"label": "Tuya-waarde", "out": NUMBER, "inputs": ()},  # een datapunt van een Tuya-toestel, hier of bij een andere installatie
     "above": {"label": "Groter dan", "out": BOOL, "inputs": (("a", NUMBER, "waarde"),)},  # 1 als de waarde groter is dan de grens
     "below": {"label": "Kleiner dan", "out": BOOL, "inputs": (("a", NUMBER, "waarde"),)},
@@ -138,6 +139,8 @@ def evaluate(modules: dict[str, dict], timer: Callable[[str], bool | None], now:
             return (args[0] - args[1]) % DAY
         if kind == "between":
             return _between(now, args[0], args[1])
+        if kind == "select":
+            return m["value"] if args[0] else m["value0"]
         if kind in ("above", "below"):
             return args[0] > m["value"] if kind == "above" else args[0] < m["value"]
         return now >= args[0] if kind == "after" else now < args[0]

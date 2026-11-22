@@ -26,6 +26,7 @@ const ICONS = {
   time: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/>',
   // waarden, rekenen, vergelijken, logica
   number: '<path d="M4.5 9h15M4.5 15h15M10.5 3.5 8.5 20.5M15.5 3.5l-2 17"/>',
+  select: '<path d="M4 6h5l6 12h5M4 18h5l2-4M13 10l2-4h5M17 3l3 3-3 3M17 15l3 3-3 3"/>',
   dp: '<ellipse cx="12" cy="5.5" rx="7.5" ry="2.8"/><path d="M4.5 5.5v6.5c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V5.5M4.5 12v6.5c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V12"/>',
   add: '<path d="M12 5v14M5 12h14"/>',
   sub: '<path d="M5 12h14"/>',
@@ -78,7 +79,7 @@ const ICONS = {
 // Welk pictogram bij welke module in het menu "+ Module" hoort (zelfde sleutels als SC_MENU in schema.js)
 const MENU_ICON = {
   lamp: 'lamp', switch: 'switch', panel: 'panel', screen: 'screen', tuya: 'tuya', airco: 'airco', charge: 'charge', solar: 'solar',
-  timer: 'timer', sunrise: 'sunrise', sunset: 'sunset', time: 'time', number: 'number', dp: 'dp', add: 'add', sub: 'sub',
+  timer: 'timer', sunrise: 'sunrise', sunset: 'sunset', time: 'time', number: 'number', select: 'select', dp: 'dp', add: 'add', sub: 'sub',
   between: 'between', after: 'after', before: 'before', above: 'above', below: 'below', and: 'and', or: 'or',
   sprinkler: 'sprinkler', action: 'action', scenes: 'scenes',
   'card-grid': 'cards', 'card-charger': 'charge', 'card-saver': 'moon', 'card-airco': 'airco', 'card-power': 'energy', 'card-qr': 'qr',

@@ -237,6 +237,9 @@ def _module(mid, v) -> dict:
         out["value"] = _int(v.get("value", 1), 0, MAX_NUMBER, "getal")
     if kind in ("above", "below"):
         out["value"] = _num(v.get("value", 0), -MAX_NUMBER, MAX_NUMBER, "grens")
+    if kind == "select":
+        out["value"] = _num(v.get("value", 1), -MAX_NUMBER, MAX_NUMBER, "getal bij 1")
+        out["value0"] = _num(v.get("value0", 0), -MAX_NUMBER, MAX_NUMBER, "getal bij 0")
     if kind == "dp":
         out["device"], out["dp"] = _device_ref(v.get("device")), _dp(v.get("dp"))
     return out
@@ -1475,7 +1478,7 @@ class Model:
         return mid
 
     def set_module(self, mid: str, name=None, value=None, inputs=None, **extra) -> None:
-        """Alleen wat je meegeeft verandert. In `inputs` maakt None een ingang los. `extra`: `device` en `dp` van een Tuya-waarde."""
+        """Alleen wat je meegeeft verandert. In `inputs` maakt None een ingang los. `extra`: `device` en `dp` van een Tuya-waarde, `value0` van een Keuze."""
         old = self.modules.get(mid)
         if old is None:
             raise ModelError("onbekende module")
@@ -1486,8 +1489,8 @@ class Model:
             v["name"] = name
         if value is not None:
             v["value"] = value
-        if set(extra) - {"device", "dp"}:
-            raise ModelError(f"module: onbekend veld {sorted(set(extra) - {'device', 'dp'})[0]}")
+        if set(extra) - {"device", "dp", "value0"}:
+            raise ModelError(f"module: onbekend veld {sorted(set(extra) - {'device', 'dp', 'value0'})[0]}")
         v.update(extra)
         modules = {**self.modules, mid: _module(mid, v)}
         _check_modules(modules, self.timers)

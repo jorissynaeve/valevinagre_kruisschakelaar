@@ -155,9 +155,10 @@ def _module_blocks(snap: dict) -> list[dict]:
     for m in snap.get("modules", []):
         t = MODULE_TYPES[m["type"]]
         detail = (_device_label(snap, m.get("device", ""), m.get("dp", "")) if m["type"] == "dp"
-                  else f"{'>' if m['type'] == 'above' else '<'} {m['value']:g}" if m["type"] in ("above", "below") else "")
+                  else f"{'>' if m['type'] == 'above' else '<'} {m['value']:g}" if m["type"] in ("above", "below")
+                  else f"1 → {m['value']:g}, 0 → {m['value0']:g}" if m["type"] == "select" else "")
         out.append({"key": f"m:{m['id']}", "kind": "module", "source": "module", "type": m["type"], "id": m["id"], "name": m["name"], "tech": t["label"],
-                    "alias": "", "room": "", "online": True, "value": m["out"], "out": t["out"], "param": m.get("value"), "device": m.get("device", ""),
+                    "alias": "", "room": "", "online": True, "value": m["out"], "out": t["out"], "param": m.get("value"), "param0": m.get("value0"), "device": m.get("device", ""),
                     "dp": m.get("dp", ""), "detail": detail,
                     "ports": [{"name": n, "type": kind, "label": label, "ref": m["inputs"].get(n)} for n, kind, label in t["inputs"]]})
     return out

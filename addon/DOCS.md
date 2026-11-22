@@ -163,6 +163,7 @@ Een Tuya-blok (van hier, of gekozen bij een andere installatie) heeft poorten zo
 * Sleep de uitgang van een **timer of een 0/1-module** naar een **instelling** (links): er komt een routine *Tuya instellen* voor dat datapunt, nog uit. Kies de waarden bij 1 en 0 en zet ze aan.
 
 * **Tuya-waarde** (*+ Module → Waarden*): de waarde van een datapunt als getal, van een toestel hier of bij een andere installatie. Aan/uit is 1/0. Is het toestel offline, dan is de waarde onbekend.
+* **Keuze** (*+ Module → Waarden*): een 0/1-ingang kiest tussen twee getallen. Is de ingang 1, dan geeft de module het eerste getal, is ze 0 het tweede (met decimalen en negatief mag); is de ingang onbekend of niet aangesloten, dan is de uitgang onbekend. Bv. *Groter dan* (zonne-overschot) → Keuze 16 / 6 → een getal-ingang van een sprinkler of een instelling. Een getal in de ingang zelf kan niet: zet er eerst een *Groter dan* of *Kleiner dan* tussen.
 * **Groter dan** en **Kleiner dan** (*+ Module → Vergelijken*): 1 als de waarde boven of onder een grens ligt (met decimalen, bv. 3.5 kW). Die 0/1 sluit je aan op alles wat een 0/1 neemt: de disable- of aan/uit-ingang van een lamp, *En* en *Of*, het blokkeren van een sprinkler, of de routine hieronder.
 
 ## Tuya instellen

@@ -431,6 +431,7 @@ Code: `logic.py` (types, berekening, zon), `model.py` (`modules`, controles), bl
 - **Zon**: zelf berekend (de zonsopgangsvergelijking) met breedte en lengte uit `get_config` van HA, in plaats van `sun.sun`: die geeft de *volgende* zonsondergang, dus na zonsondergang die van morgen. Nauwkeurig op een paar minuten, en geen extra afhankelijkheid.
 - **Controles**: bij elke wijziging en import bestaan de bronnen, klopt de soort en is er geen lus. Bij het opstarten wordt niets geweigerd; een lus uit een oud bestand geeft onbekend.
 - **Disable**: `groups.<id>.disable` is een kaal timer-id (zoals in bestaande bestanden) of `m:<id>`.
+- **Keuze** (`select`, 0.51): de Loxone-gedachte van een analoge schakelaar, als kleinste vorm: één 0/1-ingang `s` en twee vaste getallen op het blok (`value` bij 1, `value0` bij 0), een getal als uitgang. De getallen zijn dus geen ingangen: wie ze uit een ander blok wil halen, voegt later twee ingangen toe waarvan een aangesloten bron voorgaat op het vaste getal (zoals de sprinkler bij cycli en wachttijd). Onbekende ingang geeft onbekend, niet 0 of `value0`: een ontbrekende bron mag geen stroom of grens kiezen. Geen hysterese (§23, geen toestand).
 
 ### Niet getest / open
 - Unit-tests tegen de engine en een nagebootste HA, en de pagina in een browser. Niet tegen de echte HA en niet met een echte touch.

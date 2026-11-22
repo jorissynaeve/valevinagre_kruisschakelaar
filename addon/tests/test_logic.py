@@ -420,3 +420,59 @@ def test_the_location_comes_from_home_assistant():
             assert isinstance(e.engine.module_values()["zonsondergang"], int)
 
     run(go())
+
+
+def test_a_choice_gives_one_number_for_1_and_another_for_0():
+    from kkaddon.schema import _module_blocks
+
+    m = Model()
+    keuze = m.add_module("select", "Laadstroom", 16)
+    assert (m.modules[keuze]["value"], m.modules[keuze]["value0"]) == (16, 0), "bij 0 standaard 0"
+    m.set_module(keuze, value0=-6.5)
+    timer = m.add_module("after")  # een 0/1-bron; zijn waarde regelen we hieronder met de tijd
+    m.set_module(timer, inputs={"time": "m:" + m.add_module("time", value="12:00")})
+    m.set_module(keuze, inputs={"s": f"m:{timer}"})
+    mods = m.modules
+    assert evaluate(mods, lambda t: None, 13 * 60, None)[keuze] == 16
+    assert evaluate(mods, lambda t: None, 11 * 60, None)[keuze] == -6.5, "ook negatief en met decimalen"
+    m.set_module(keuze, inputs={"s": None})
+    assert evaluate(m.modules, lambda t: None, 13 * 60, None)[keuze] is None, "een losse ingang is onbekend, niet 0"
+
+    for bad in (True, "16", 1e9):
+        with pytest.raises(ModelError, match="getal"):
+            m.set_module(keuze, value=bad)
+    with pytest.raises(ModelError, match="getal"):
+        m.set_module(keuze, value0="x")
+    with pytest.raises(ModelError, match="onbekend veld"):
+        m.set_module(keuze, nope=1)
+    other = m.add_module("number", "Tien", 10)
+    with pytest.raises(ModelError, match="0 of 1"):
+        m.set_module(keuze, inputs={"s": f"m:{other}"})  # een getal moet eerst door een Groter dan
+
+    gelijk = Model()
+    gelijk.load_dict(m.to_dict())
+    assert gelijk.modules == m.modules, "blijft bewaard"
+    snap = {"modules": [{"id": k, **v, "out": 16} for k, v in m.modules.items()], "tuya": []}
+    blok = next(b for b in _module_blocks(snap) if b["id"] == keuze)
+    assert (blok["out"], blok["param"], blok["param0"], blok["detail"]) == ("number", 16, -6.5, "1 → 16, 0 → -6.5")
+    assert [(p["name"], p["type"]) for p in blok["ports"]] == [("s", "bool")]
+
+
+def test_a_choice_through_the_web_api(tmp_path):
+    async def go():
+        rig = Rig(tmp_path)
+        s = Settings(data_dir=tmp_path, key=KEY, key_generated=False, dev_mode=True)
+        c = TestClient(TestServer(web.make_app(web.Ctx(s, rig.engine))))
+        await c.start_server()
+        try:
+            await c.put("/api/schema/pages", json={"pages": [{"id": "a", "name": "A"}]})
+            k = (await (await c.post("/api/modules", json={"type": "select", "page": "a", "x": 1, "y": 2})).json())["key"]
+            assert (await c.put("/api/modules/keuze", json={"value": 16.5})).status == 200
+            assert (await c.put("/api/modules/keuze", json={"value0": 6})).status == 200
+            assert (await c.put("/api/modules/keuze", json={"value0": "zes"})).status == 400
+            by = {b["key"]: b for b in (await (await c.get("/api/state")).json())["schema"]["blocks"]}
+            assert (by[k]["param"], by[k]["param0"], by[k]["value"], by[k]["out"]) == (16.5, 6, None, "number"), "losse ingang: onbekend"
+        finally:
+            await c.close()
+
+    asyncio.run(go())
