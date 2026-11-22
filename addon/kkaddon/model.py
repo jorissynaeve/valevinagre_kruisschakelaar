@@ -265,7 +265,7 @@ MAX_ACTIONS = 40
 
 
 def _action(aid, v) -> dict:
-    """Tuya instellen (zie actions.py): een 0/1 zet een datapunt. Staat standaard uit."""
+    """Tuya instellen (zie actions.py): een 0/1 zet een datapunt op een van twee waarden, een getal zet het datapunt op dat getal. Staat standaard uit."""
     if not isinstance(aid, str) or not GROUP_ID_RE.match(aid) or not isinstance(v, dict):
         raise ModelError(f"routine: ongeldig id {aid!r}")
     raw = v.get("inputs") or {}
@@ -300,8 +300,8 @@ def _check_actions(actions: dict[str, dict], modules: dict[str, dict], timers: d
         got = _source_type(ref, modules, timers)
         if got is None:
             raise ModelError(f"routine {a['name']}: de ingang wijst naar iets dat niet bestaat")
-        if not fits(got, BOOL):
-            raise ModelError(f"routine {a['name']}: de ingang verwacht een 0 of 1")
+        if not (fits(got, BOOL) or fits(got, NUMBER)):
+            raise ModelError(f"routine {a['name']}: de ingang verwacht een 0 of 1, of een getal")
 
 
 def _modules(raw) -> dict[str, dict]:

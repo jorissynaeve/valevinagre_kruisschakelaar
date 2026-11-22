@@ -899,6 +899,11 @@ function scRemoteCharger(b) { // de laadpaal van een andere installatie: wat de 
   return [l1, l2];
 }
 
+function scActNum(b) { // is de ingang van de routine een getal (dan zet ze dat getal zelf)?
+  const s = b.ports[0].ref && scBlock(b.ports[0].ref);
+  return !!s && s.kind === 'module' && s.out === 'number';
+}
+
 function scAction(b) {
   const y0 = rowY(b, 0), p = b.ports[0], src = scSrc(p.ref), st = b.status;
   return `<g class="bk act t-spr ${SC.sel === b.key ? 'sel' : ''}" data-block="${esc(b.key)}">
@@ -907,24 +912,24 @@ function scAction(b) {
     <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 22))}</text>
     <text class="bkbadge ${b.enabled ? 'ok' : ''}" x="${b.x + SW_W - 12}" y="${b.y + 18}" text-anchor="end">${b.enabled ? 'actief' : 'uit'}</text>
     <text class="bks" x="${b.x + 12}" y="${b.y + 34}">Tuya instellen${st.ok ? '' : ' · mislukt'}</text>
-    <circle class="pt v-bool ${src ? '' : 'free'} ${st.input === true ? 'on' : ''}" cx="${b.x}" cy="${y0}" r="6" data-b="${esc(b.key)}" data-role="min" data-i="0"><title>Ingang: een 0 of 1 van een timer of module</title></circle>
+    <circle class="pt v-bool ${src ? '' : 'free'} ${st.input === true ? 'on' : ''}" cx="${b.x}" cy="${y0}" r="6" data-b="${esc(b.key)}" data-role="min" data-i="0"><title>Ingang: een 0 of 1 van een timer of module, of een getal (bv. een Keuze)</title></circle>
     ${src ? `<text class="bkt away" x="${b.x + 11}" y="${y0 + 4}" data-sc="go" data-k="${esc(src.key)}">${esc(scCut(src.name, 16))} (${src.out})<title>${esc(src.name)} geeft nu ${src.out}</title></text>` : `<text class="ptl" x="${b.x + 11}" y="${y0 + 4}">+ ingang</text>`}
-    <text class="bkt" x="${b.x + 11}" y="${rowY(b, 1) + 4}">→ ${esc(scCut(b.target, 30))}<title>1: ${esc(b.on_value || 'niets')} · 0: ${esc(b.off_value || 'niets')}</title></text></g>`;
+    <text class="bkt" x="${b.x + 11}" y="${rowY(b, 1) + 4}">→ ${esc(scCut(b.target, 30))}<title>${scActNum(b) ? 'het getal van de ingang' : `1: ${esc(b.on_value || 'niets')} · 0: ${esc(b.off_value || 'niets')}`}</title></text></g>`;
 }
 
 function scActionPanel(b, props) {
   scLoadEnts();
   const p = b.ports[0], st = b.status;
-  const sources = scBlocks().filter((s) => s.kind === 'timer' || (s.kind === 'module' && s.out === 'bool'));
-  const pt = scPointOf(b.device, b.dp, SC_HERE);
+  const sources = scBlocks().filter((s) => s.kind === 'timer' || (s.kind === 'module' && (s.out === 'bool' || s.out === 'number')));
+  const pt = scPointOf(b.device, b.dp, SC_HERE), num = scActNum(b);
   return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${st.ok ? '' : 'bad'}">${esc(st.text)}</span></div>
-    <div class="sub">Een 0/1 zet een datapunt van een Tuya-toestel, hier of bij een andere installatie. Bv. de laadpaal starten om 23:00, of de laadstroom omlaag als het verbruik hoog is.</div>${props}
+    <div class="sub">Een 0/1 zet een datapunt van een Tuya-toestel op een van twee waarden, een getal (bv. van een Keuze) zet het datapunt op dat getal. Hier of bij een andere installatie. Bv. de laadpaal starten om 23:00, of de laadstroom omlaag als het verbruik hoog is.</div>${props}
     <label style="margin:6px 0;color:var(--ink);cursor:pointer"><input type="checkbox" data-acfield="enabled" ${b.enabled ? 'checked' : ''}> ${b.enabled ? 'Actief: zet het datapunt als de ingang verandert' : 'Uit: zet niets'}</label>
     <label>Ingang</label><select data-acfield="trigger"><option value="">niet aangesloten</option>${sources.map((s) => `<option value="${esc(s.key)}" ${s.key === p.ref ? 'selected' : ''}>${esc(s.name)} (nu ${scOut(s)})</option>`).join('')}</select>
     <label>Toestel</label>${scDeviceSelect('data-acfield="device"', b.device, SC_HERE)}
     <label>Datapunt</label>${scPointSelect('data-acfield="dp"', b.device, b.dp, SC_HERE, (x) => x.rw)}
-    <label>Bij 1 zetten op</label>${scValueInput('data-acfield="on_value"', pt, b.on_value)}
-    <label>Bij 0 zetten op</label>${scValueInput('data-acfield="off_value"', pt, b.off_value)}
+    ${num ? '<div class="sub">De ingang is een getal: het datapunt wordt op dat getal gezet, bij elke wijziging. Staat het buiten het bereik van het datapunt, dan weigert het toestel het en staat dat hierboven.</div>' : `<label>Bij 1 zetten op</label>${scValueInput('data-acfield="on_value"', pt, b.on_value)}
+    <label>Bij 0 zetten op</label>${scValueInput('data-acfield="off_value"', pt, b.off_value)}`}
     <label>Hoogstens elke (seconden)</label><input type="number" min="10" max="86400" step="1" data-acfield="interval" value="${b.interval}">
     <div class="sub">Voorzichtig met een lader: de routine doet nooit iets bij het opstarten of als de ingang weer bekend wordt; ze onthoudt die eerste stand en zet pas iets als de ingang daarna verandert. Een onbekende ingang doet niets. Een mislukt bevel wordt na de wachttijd opnieuw geprobeerd.</div>
     <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="delaction" data-id="${esc(b.id)}">Routine verwijderen</button></div>`;
@@ -1966,12 +1971,12 @@ async function scWireDp(a, b) { // een datapunt van een Tuya-blok: een waarde na
     SC.sel = to.key;
   } else {
     const src = set === a ? b : a, from = scBlock(src.b), tb = scBlock(set.b), dev = scDevOf(tb);
-    if (!(src.role === 'tout' || (src.role === 'mout' && from.out === 'bool'))) throw new Error('Een instelling stuur je vanaf de uitgang van een timer of een 0/1-module (bv. Groter dan).');
+    if (!(src.role === 'tout' || (src.role === 'mout' && (from.out === 'bool' || from.out === 'number')))) throw new Error('Een instelling stuur je vanaf de uitgang van een timer, een 0/1-module (bv. Groter dan) of een getal (bv. Keuze).');
     const pt = dev.points.find((x) => String(x.dp) === String(set.dp));
     const r = await api('POST', 'actions', { name: `${tb.name} · ${pt ? pt.name : set.dp}`.slice(0, 60), page: tb.page || SC.page, ...scFreeSpot('module', tb.page || SC.page) });
     await api('PUT', `actions/${r.key.slice(2)}`, { device: dev.id, dp: String(set.dp), inputs: { trigger: from.key } });
     SC.sel = SC.reveal = r.key;
-    toast('Routine Tuya instellen gemaakt, nog uit. Kies de waarden bij 1 en 0 en zet ze aan.', 7000);
+    toast(from.out === 'number' ? 'Routine Tuya instellen gemaakt, nog uit. Zet ze aan: het getal van de ingang wordt dan gezet.' : 'Routine Tuya instellen gemaakt, nog uit. Kies de waarden bij 1 en 0 en zet ze aan.', 7000);
   }
   SC.force = true;
   await refresh();

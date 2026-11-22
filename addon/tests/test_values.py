@@ -68,7 +68,9 @@ def test_the_model_checks_the_new_modules_and_routines():
     assert m.actions[aid]["enabled"] is False, "een nieuwe routine staat uit"
     m.set_action(aid, device="lader", dp="124", on_value="OpenCharging", off_value="CloseCharging", inputs={"trigger": f"m:{hoog}"})
     with pytest.raises(ModelError, match="0 of 1"):
-        m.set_action(aid, inputs={"trigger": f"m:{mid}"})
+        m.set_action(aid, inputs={"trigger": "m:" + m.add_module("time")})  # een tijd is geen 0/1 en geen getal
+    m.set_action(aid, inputs={"trigger": f"m:{mid}"})  # een getal wel: de routine zet dan dat getal
+    m.set_action(aid, inputs={"trigger": f"m:{hoog}"})
     with pytest.raises(ModelError, match="interval"):
         m.set_action(aid, interval=1)
     m.remove_module(hoog)
@@ -142,6 +144,32 @@ def test_a_restart_never_sets_anything_by_itself():
     r.m.set_action(r.aid, off_value="")
     r.power(1.0, 100)
     assert r.tuya.sent == [], "een lege waarde bij 0: dan niets"
+
+
+def test_a_number_as_input_is_set_as_that_number_with_the_same_care():
+    r = Rig()
+    keuze = r.m.add_module("select", "Stroom", 16)
+    r.m.set_module(keuze, value0=6.5, inputs={"s": f"m:{r.hoog}"})
+    r.m.set_action(r.aid, inputs={"trigger": f"m:{keuze}"}, enabled=True)
+    r.power(1.0)
+    assert r.tuya.sent == [] and "eerste stand" in r.e.actions.view(r.aid)["text"], "de eerste stand wordt alleen onthouden"
+    r.power(4.0, 10)
+    assert r.tuya.sent == [("lader", "115", "16")], "het getal zelf, zonder .0; de waarden bij 1 en 0 doen niet mee"
+    r.power(1.0, 10)
+    assert len(r.tuya.sent) == 1 and "wacht" in r.e.actions.view(r.aid)["text"], "ook een getal niet vaker dan het interval"
+    r.power(1.0, 60)
+    assert r.tuya.sent[-1] == ("lader", "115", "6.5"), "decimalen blijven"
+    r.power(1.0, 120)
+    assert len(r.tuya.sent) == 2, "dezelfde waarde nog eens zetten doet niets"
+    r.tuya.online["meter"] = False
+    r.power(4.0, 120)
+    assert len(r.tuya.sent) == 2 and "onbekend" in r.e.actions.view(r.aid)["text"], "een onbekend getal doet niets"
+    r.tuya.online["meter"] = True
+    r.power(4.0, 120)
+    assert len(r.tuya.sent) == 2, "terug bekend: een eerste stand"
+    r.tuya.refuse = "waarde buiten bereik"
+    r.power(1.0, 120)
+    assert len(r.tuya.sent) == 2 and not r.e.actions.view(r.aid)["ok"], "het toestel weigert een getal buiten zijn bereik"
 
 
 class FakeLink:

@@ -160,10 +160,10 @@ Een andere YAML (bv. van een tweede panel onder AppDaemon) zet je om via *YAML v
 Een Tuya-blok (van hier, of gekozen bij een andere installatie) heeft poorten zoals de andere blokken: **rechts** wat het toestel meldt, **links** wat je kunt instellen. Naast elke poort staat waar ze aan hangt.
 
 * Sleep een **waarde** (rechts) naar de ingang van *Groter dan*, *Kleiner dan* of een getal-ingang van een sprinkler: de waarde gaat er rechtstreeks in. Of naar een knop van een kaart: die toont de waarde.
-* Sleep de uitgang van een **timer of een 0/1-module** naar een **instelling** (links): er komt een routine *Tuya instellen* voor dat datapunt, nog uit. Kies de waarden bij 1 en 0 en zet ze aan.
+* Sleep de uitgang van een **timer, een 0/1-module of een getal** (bv. *Keuze*) naar een **instelling** (links): er komt een routine *Tuya instellen* voor dat datapunt, nog uit. Bij een 0/1 kies je de waarden bij 1 en 0; bij een getal wordt dat getal gezet. Zet de routine daarna aan.
 
 * **Tuya-waarde** (*+ Module → Waarden*): de waarde van een datapunt als getal, van een toestel hier of bij een andere installatie. Aan/uit is 1/0. Is het toestel offline, dan is de waarde onbekend.
-* **Keuze** (*+ Module → Waarden*): een 0/1-ingang kiest tussen twee getallen. Is de ingang 1, dan geeft de module het eerste getal, is ze 0 het tweede (met decimalen en negatief mag); is de ingang onbekend of niet aangesloten, dan is de uitgang onbekend. Bv. *Groter dan* (zonne-overschot) → Keuze 16 / 6 → een getal-ingang van een sprinkler of een instelling. Een getal in de ingang zelf kan niet: zet er eerst een *Groter dan* of *Kleiner dan* tussen.
+* **Keuze** (*+ Module → Waarden*): een 0/1-ingang kiest tussen twee getallen. Is de ingang 1, dan geeft de module het eerste getal, is ze 0 het tweede (met decimalen en negatief mag); is de ingang onbekend of niet aangesloten, dan is de uitgang onbekend. Bv. *Groter dan* (zonne-overschot) → Keuze 16 / 6 → een getal-ingang van een sprinkler, of een instelling van een Tuya-toestel (zie *Tuya instellen*). Een getal in de ingang zelf kan niet: zet er eerst een *Groter dan* of *Kleiner dan* tussen.
 * **Groter dan** en **Kleiner dan** (*+ Module → Vergelijken*): 1 als de waarde boven of onder een grens ligt (met decimalen, bv. 3.5 kW). Die 0/1 sluit je aan op alles wat een 0/1 neemt: de disable- of aan/uit-ingang van een lamp, *En* en *Of*, het blokkeren van een sprinkler, of de routine hieronder.
 
 ## Tuya instellen
@@ -177,6 +177,7 @@ Omdat zo'n routine een lader kan starten, is ze voorzichtig:
 * Een **onbekende** ingang doet niets.
 * Ze stuurt **hoogstens om de zoveel seconden** (standaard 60): een waarde die rond de grens schommelt laat de lader niet klapperen. Is de ingang na die tijd nog altijd anders, dan gaat het bevel alsnog.
 * Laat je de waarde bij 0 leeg, dan gebeurt er bij 0 niets.
+* De ingang mag ook een **getal** zijn, bv. een *Keuze*: sleep de uitgang naar een instelling (links op het Tuya-blok, bv. *Laadstroom*). De routine zet dan dat getal zelf, bij elke wijziging, en de waarden bij 1 en 0 doen niet mee. Voor al het andere gelden dezelfde regels (nieuw staat uit, de eerste stand wordt alleen onthouden, onbekend doet niets, hoogstens om de wachttijd). Een getal buiten het bereik van het datapunt weigert het toestel; dat staat op het blok.
 * Een mislukt bevel staat in het logboek en op het blok, en wordt na de wachttijd opnieuw geprobeerd. Een toestel van een andere installatie wordt bediend via die installatie, die beslist (alleen wat je daar gekozen hebt).
 
 ## Andere installaties (een ander subnet)

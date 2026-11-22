@@ -11,11 +11,14 @@ verbruik hoog is. Omdat zo'n routine een lader kan starten, is ze voorzichtig:
     niet klapperen. Is de ingang na die tijd nog altijd anders, dan gaat het bevel alsnog.
   * Een mislukt bevel (toestel offline, geweigerd) wordt na `interval` opnieuw geprobeerd, zolang de ingang anders blijft.
   * Bij 0 een lege waarde: dan gebeurt er bij 0 niets (alleen bij 1 iets zetten).
+  * Is de ingang een **getal** (bv. een Keuze) in plaats van een 0/1, dan zet de routine dat getal zelf, bij elke wijziging; de
+    waarden bij 1 en 0 doen dan niet mee. Een getal dat het toestel niet toelaat (buiten zijn bereik) wordt geweigerd.
 
 Alles in het geheugen: wat al gezet is, weet de routine na een herstart niet meer, en dat is de bedoeling (zie het tweede punt).
 """
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -25,7 +28,7 @@ if TYPE_CHECKING:  # pragma: no cover
 class Actions:
     def __init__(self, eng: "Engine") -> None:
         self.e = eng
-        self.applied: dict[str, bool] = {}  # routine -> de ingang waarvoor het laatst iets gezet is (of die stil gevolgd is)
+        self.applied: dict[str, bool | float] = {}  # routine -> de ingang (0/1 of getal) waarvoor het laatst iets gezet is (of die stil gevolgd is)
         self.last_at: dict[str, float] = {}
         self.state: dict[str, dict] = {}  # routine -> {input, text, ok} voor de pagina
 
@@ -38,7 +41,8 @@ class Actions:
         for aid, a in model.actions.items():
             ref = a["inputs"].get("trigger")
             v = self.e.ref_value(ref) if ref else None
-            v = v if isinstance(v, bool) else None
+            if not isinstance(v, bool):  # een getal blijft een getal (ook 1 en 0), een 0/1 een 0/1
+                v = float(v) if isinstance(v, (int, float)) and math.isfinite(v) else None
             if v is None:
                 self.applied.pop(aid, None)  # na een onbekende ingang telt de volgende stand weer als eerste stand
                 self.state[aid] = {"input": None, "text": "ingang onbekend of niet aangesloten: doet niets", "ok": True}
@@ -48,9 +52,10 @@ class Actions:
                 if aid not in self.state or self.state[aid].get("input") != v:
                     self.state[aid] = {"input": v, "text": "uit: volgt de ingang stil" if not a["enabled"] else "eerste stand onthouden, wacht op een wijziging", "ok": True}
                 continue
-            if v == self.applied[aid]:
+            was = self.applied[aid]
+            if type(was) is type(v) and was == v:
                 continue
-            value = a["on_value"] if v else a["off_value"]
+            value = (a["on_value"] if v else a["off_value"]) if isinstance(v, bool) else str(int(v)) if v == int(v) else repr(v)
             if value == "" or not a["device"] or not a["dp"]:
                 self.applied[aid] = v
                 self.state[aid] = {"input": v, "text": "niets in te stellen bij deze stand", "ok": True}
