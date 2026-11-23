@@ -49,6 +49,8 @@ WAIT = 1.0  # s: zolang het apparaat offline is, kijken we zo vaak of het terug 
 RETRY_GAP = 2.0  # s tussen twee pogingen
 MAX_TRIES = 5  # pogingen per opdracht bij een netwerkfout (tellen alleen terwijl het apparaat online is)
 MAX_QUEUE = 20
+KEEP_MIN = 600.0  # s: een scène zonder einde die korter speelde en dan verdween, is met de hand gestopt (niet door het plafond van het apparaat): niet herstarten
+KEEP_GAP = 30.0  # s tussen twee herstarts van dezelfde scène
 STORE_GAP = 600.0  # s: dezelfde (slot, hash) hoogstens zo vaak schrijven (een apparaat dat de hash niet aanneemt veroorzaakt zo geen lus)
 STORE_HOUR = 6  # schrijfacties (store, wissen) per uur per apparaat
 SCHED_HOUR = 6  # idem voor `schedule`
@@ -315,6 +317,7 @@ class SceneHub:
         self.locks: dict[str, asyncio.Lock] = {}  # een verzender per apparaat
         self.rmem: dict[str, dict] = {}  # blok -> {"scene": de scène die de regels de vorige ronde kozen}; ontbreekt = nog geen eerste stand
         self.rnote: dict[str, dict] = {}  # blok -> {"idx": regel die nu klopt, "unsure": bool}, voor de pagina
+        self.keep: dict[str, dict] = {}  # blok -> {"seen": sinds wanneer we de scène zagen spelen, "started": wanneer wij hem startten, "last": laatste herstart}; zie _keep_alive
         self._prune()
 
     # ------------------------------------------------------------ opruimen en overzetten
@@ -705,12 +708,59 @@ class SceneHub:
                 continue
             mem = self.rmem.get(bid)
             self.rmem[bid] = {"scene": sid}
-            if mem is None or mem["scene"] == sid:
+            if mem is None:
+                self.keep.pop(bid, None)
                 continue
+            if mem["scene"] == sid:
+                if sid is not None:
+                    self._keep_alive(did, bid, sid)
+                continue
+            self.keep.pop(bid, None)
             if sid is not None:
+                self.keep[bid] = {"seen": None, "started": self.mono(), "last": -1e9}
                 self._enqueue(did, "start", sid)
             elif mem["scene"] in self.lib.items and self.lib.items[mem["scene"]]["release"] == "stop":
                 self._enqueue(did, "stop", mem["scene"])
+
+    def _unbounded(self, sid: str) -> bool:
+        """Een scène zonder eigen einde (een nachtlamp, een lus): het apparaat kapt die zelf af na zijn plafond (de kidswekker: `hold_min`, standaard 60 minuten)."""
+        data = self.lib.bytes.get(sid)
+        if data is None:
+            return False
+        try:
+            return not sc.is_bounded(sc.parse(data))
+        except sc.SceneError:
+            return False
+
+    def _keep_alive(self, did: str, bid: str, sid: str) -> None:
+        """De regels kiezen nog steeds `sid`, maar een scène zonder einde kan intussen door het plafond van het apparaat gestopt zijn: dan start hij opnieuw. Alleen als
+        wij hem zagen spelen (of zelf startten) en hij daarna zonder stop van de pagina verdween, na minstens KEEP_MIN seconden (een stop met de knop van het apparaat
+        direct na de start blijft zo staan) en hoogstens elke KEEP_GAP seconden. Speelt er iets anders, dan blijft dat ongemoeid. Een begrensde scène (een wekker) niet:
+        die eindigt zelf en hoort niet te herhalen zolang de regel klopt."""
+        k = self.keep.get(bid)
+        rt = self.rt.get(did)
+        if k is None or rt is None or not rt["known"] or did not in self.hub.online or self.q.get(did) or not self._unbounded(sid):
+            return
+        run, now = rt["run"], self.mono()
+        if run and "seek" not in run and run["h"] == self.lib.hashes.get(sid):
+            if k["seen"] is None:
+                k["seen"] = k["started"] if k.get("started") is not None else float("-inf")  # zonder onze eigen start weten we niet hoe lang hij al speelt: lang genoeg
+            return
+        if run:
+            k["seen"] = None  # iets anders speelt (met de hand): niet ingrijpen
+            return
+        if k["seen"] is None or now - k["seen"] < KEEP_MIN or now - k["last"] < KEEP_GAP:
+            return
+        k["seen"], k["last"] = None, now
+        log.info("%s: scène %s liep af (plafond van het apparaat), de regel klopt nog: opnieuw gestart", self.hub.devices[did].get("name", did), self.lib.name(sid))
+        self._enqueue(did, "start", sid)
+
+    def _hush(self, did: str) -> None:
+        """Iemand stopte of startte met de hand iets op dit apparaat: de blokken ervan herstarten niets meer tot de regels een andere scène kiezen."""
+        for bid, b in self.rules.items.items():
+            if b["device"] == did and bid in self.keep:
+                self.keep[bid]["seen"] = None
+                self.keep[bid]["started"] = None
 
     def _lock(self, did: str) -> asyncio.Lock:
         return self.locks.setdefault(did, asyncio.Lock())
@@ -878,6 +928,7 @@ class SceneHub:
         b = b if isinstance(b, dict) else {}
         dev = self._ready(did)
         self._cancel_seek(did, "vervangen door een start")
+        self._hush(did)
         async with self._lock(did):
             if "id" in b:
                 if not isinstance(b["id"], str) or b["id"] not in self.lib.items:
@@ -902,6 +953,7 @@ class SceneHub:
         b = b if isinstance(b, dict) else {}
         dev = self._ready(did)
         self._cancel_seek(did, "vervangen door een stop")
+        self._hush(did)
         async with self._lock(did):
             if "id" in b:
                 if not isinstance(b["id"], str) or b["id"] not in self.lib.items:

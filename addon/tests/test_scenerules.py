@@ -383,3 +383,108 @@ def test_night_still_starts_when_loxone_switches_off_and_on_again_while_the_alar
             await shutdown(hub, esp)
     asyncio.run(go())
 
+
+
+# ------------------------------------------------------------ een scène zonder einde die het plafond van het apparaat afkapt
+
+async def capped(tmp_path, monkeypatch, definition):
+    """Een blok met een regel `Slapen is 1` -> een scène; de scène speelt (gestart door de regel)."""
+    r, hub, esp, did, clock = await env(tmp_path, monkeypatch)
+    sid = hub.scn.add({"name": "Lamp", "def": definition})
+    setter, src = switch(r)
+    bid = hub.scn.add_block({"name": "K", "device": did, "inputs": [{"name": "Slapen", "kind": "bool", "ref": src}]})
+    hub.scn.update_block(bid, {"rules": [{"scene": sid, "when": [{"op": "on", "in": "i1"}]}]})
+    await fill(hub, did, esp)
+    at(r, clock, local(2027, 1, 5, 20, 0))
+    hub.tick()  # ingang uit: de eerste stand
+    setter(True)
+    hub.tick()
+    await settle(hub, did)
+    assert esp.run is not None and len(calls(esp, "play")) == 1
+    return r, hub, esp, did, clock, bid, sid, setter
+
+
+def test_an_unbounded_scene_cut_off_by_the_device_ceiling_starts_again_while_the_rule_holds(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock, bid, sid, setter = await capped(tmp_path, monkeypatch, NIGHT)
+        try:
+            await cycle(hub, did)
+            hub.tick()
+            clock.advance(3600)
+            esp.run = None  # het plafond van het apparaat (hold_min): de strip is uit
+            await cycle(hub, did)
+            hub.tick()
+            await settle(hub, did)
+            assert len(calls(esp, "play")) == 2 and esp.run["h"] == hub.scn.lib.hashes[sid], "de regel klopt nog: de scène start opnieuw"
+            hub.tick()
+            await settle(hub, did)
+            assert len(calls(esp, "play")) == 2, "en loopt weer: niets meer te doen"
+            setter(False)  # de regel klopt niet meer: de scène stopt (release stop), en komt niet terug
+            hub.tick()
+            await settle(hub, did)
+            esp.run = None
+            clock.advance(3600)
+            for _ in range(3):
+                await cycle(hub, did)
+                hub.tick()
+            await settle(hub, did)
+            assert len(calls(esp, "play")) == 2
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_a_scene_stopped_by_hand_is_not_started_again(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock, bid, sid, setter = await capped(tmp_path, monkeypatch, NIGHT)
+        try:
+            await cycle(hub, did)
+            hub.tick()
+            clock.advance(3600)
+            await hub.scn.stop(did, {})  # de pagina stopt de strip
+            for _ in range(3):
+                await cycle(hub, did)
+                hub.tick()
+                clock.advance(60)
+            await settle(hub, did)
+            assert len(calls(esp, "play")) == 1 and esp.run is None, "met de hand gestopt: de regel start hem niet opnieuw"
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_a_short_run_that_vanishes_is_a_stop_on_the_device_not_a_ceiling(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock, bid, sid, setter = await capped(tmp_path, monkeypatch, NIGHT)
+        try:
+            await cycle(hub, did)
+            hub.tick()
+            clock.advance(60)
+            esp.run = None  # iemand drukte op de knop van het apparaat, een minuut na de start
+            for _ in range(3):
+                await cycle(hub, did)
+                hub.tick()
+                clock.advance(60)
+            await settle(hub, did)
+            assert len(calls(esp, "play")) == 1
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
+
+
+def test_a_bounded_scene_that_ends_by_itself_is_not_repeated(tmp_path, monkeypatch):
+    async def go():
+        r, hub, esp, did, clock, bid, sid, setter = await capped(tmp_path, monkeypatch, WAKE)
+        try:
+            await cycle(hub, did)
+            hub.tick()
+            clock.advance(7200)
+            esp.run = None  # de wekker is afgelopen (fade-out en uit), de regel klopt nog (minuten erna)
+            for _ in range(3):
+                await cycle(hub, did)
+                hub.tick()
+            await settle(hub, did)
+            assert len(calls(esp, "play")) == 1, "een wekker eindigt zelf en herhaalt niet"
+        finally:
+            await shutdown(hub, esp)
+    asyncio.run(go())
