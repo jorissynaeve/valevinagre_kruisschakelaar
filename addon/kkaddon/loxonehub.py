@@ -635,6 +635,10 @@ class LoxoneHub:
             return str(ex)
         old = self.vals.get(sid)
         e["keep"] = self._kept(old, e) if kind == "time" and old else None
+        if kind == "time":  # een wekkertekst wijzigt zelden: elke is het waard in het logboek (de volgorde van de teksten rond het afgaan is het enige dat verklaart wat de regels deden)
+            log.info("Loxone %s: %r -> %s; vorige %r (%s, %s), vastgehouden %s", sid, value, f"{e['min'] // 60:02d}:{e['min'] % 60:02d} op {e['date'] or 'elke dag'}" if e["min"] is not None else "geen tijd",
+                     old["raw"] if old else None, f"{old['min'] // 60:02d}:{old['min'] % 60:02d}" if old and old["min"] is not None else "geen tijd", old["date"] if old else None,
+                     f"{e['keep']['min'] // 60:02d}:{e['keep']['min'] % 60:02d}" if e["keep"] else "niets")
         self.vals[sid] = e
         if old and all(old.get(k) == e[k] for k in ("v", "raw", "min", "date", "keep")):
             return "zelfde"

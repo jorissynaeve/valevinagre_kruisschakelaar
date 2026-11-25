@@ -716,6 +716,7 @@ class SceneHub:
                     self._keep_alive(did, bid, sid)
                 continue
             self.keep.pop(bid, None)
+            log.info("%s: de regels kiezen nu %s (was %s)", b["name"], self.lib.name(sid) if sid else "niets", self.lib.name(mem["scene"]) if mem["scene"] else "niets")
             if sid is not None:
                 self.keep[bid] = {"seen": None, "started": self.mono(), "last": -1e9}
                 self._enqueue(did, "start", sid)
