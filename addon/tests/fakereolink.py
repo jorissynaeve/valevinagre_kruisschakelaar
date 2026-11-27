@@ -21,6 +21,9 @@ class FakeReolink:
         self.led = {"channel": 0, "state": 0, "mode": 1, "bright": 100} if led else None
         self.calls: list[tuple[str, dict]] = []  # (opdracht, param)
         self.down = False  # de camera antwoordt niet
+        self.snaps = 0  # aantal opnames dat de camera gaf
+        self.snap_params: list[dict] = []  # de parameters van elke opname-aanvraag (er mag nooit een wachtwoord in staan)
+        self.snap_body = bytes([255, 216, 255, 224]) + b"JFIF-nep-beeld" * 40 + bytes([255, 217])  # een JPEG begint met FFD8 en eindigt op FFD9
         self.runner = None
         self.port = 0
 
@@ -68,9 +71,22 @@ class FakeReolink:
         token_ok = r.query.get("token", "") in self.tokens
         return web.json_response([self._one(c, token_ok) for c in body])
 
+    async def _snap(self, r: web.Request) -> web.Response:
+        """`GET api.cgi?cmd=Snap&channel=0&rs=..&token=..` geeft een JPEG; met een verlopen token geeft de camera (met status 200) een JSON-fout."""
+        if self.down:
+            return web.Response(status=503)
+        self.snap_params.append(dict(r.query))
+        if r.query.get("cmd") != "Snap":
+            return web.Response(status=400, text="alleen Snap")
+        if r.query.get("token", "") not in self.tokens:
+            return web.json_response([{"cmd": "Snap", "code": 1, "error": {"detail": "please login first", "rspCode": -6}}])
+        self.snaps += 1
+        return web.Response(body=self.snap_body, content_type="image/jpeg")
+
     async def start(self, port=0):
         app = web.Application()
         app.router.add_post("/cgi-bin/api.cgi", self._api)
+        app.router.add_get("/cgi-bin/api.cgi", self._snap)
         self.runner = web.AppRunner(app, access_log=None)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", port)

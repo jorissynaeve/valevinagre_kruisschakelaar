@@ -111,7 +111,36 @@ function tileEnergy(e, now, tz) {
     <div class="legend"><span><i style="background:#4da3ff"></i>Verbruik</span>${ser.length > 1 ? '<span><i style="background:#f2b84b"></i>Productie</span>' : ''}</div>` : ''}</section>`;
 }
 
+// Camera's: een momentopname elke 2 seconden (de add-on haalt ze bij de camera; de tv ziet geen inloggegevens). Het laatste beeld blijft staan tijdens het verversen.
+const camFrames = {};
+let camBusy = false;
+function tileCameras(d) {
+  const cams = d.cameras || [];
+  const demo = new URLSearchParams(location.search).get('demo');
+  const cells = cams.map((c) => `<div class="cam ${demo ? 'demo' : ''}" data-n="${c.n}">${camFrames[c.n] ? `<img alt="" src="${camFrames[c.n]}">` : '<img alt="">'}<div class="cl">${esc(c.label)}</div><div class="cb">Camera niet bereikbaar</div></div>`).join('');
+  return `<section class="card hero cams n${Math.min(cams.length, 4)}">${cells}</section>`;
+}
+async function camTick() {
+  if (camBusy || document.hidden || new URLSearchParams(location.search).get('demo')) return;
+  camBusy = true;
+  try {
+    for (const el of document.querySelectorAll('.cam')) {
+      const n = el.dataset.n;
+      try {
+        const r = await fetch(`cam/${n}.jpg?t=${Date.now()}`, { cache: 'no-store' });
+        if (!r.ok) throw new Error(r.status);
+        const url = URL.createObjectURL(await r.blob()), old = camFrames[n];
+        camFrames[n] = url;
+        document.querySelectorAll(`.cam[data-n="${n}"] img`).forEach((i) => { i.src = url; });
+        if (old) URL.revokeObjectURL(old);
+        document.querySelectorAll(`.cam[data-n="${n}"]`).forEach((c) => c.classList.remove('bad'));
+      } catch { document.querySelectorAll(`.cam[data-n="${n}"]`).forEach((c) => c.classList.add('bad')); }
+    }
+  } finally { camBusy = false; }
+}
+
 function tileHero(d) {
+  if ((d.cameras || []).length) return tileCameras(d);
   const st = d.status || { ok: true };
   const note = `<div class="note ${st.ok ? '' : 'warn'}">${ic(st.ok ? 'check' : 'warn', 36)}<div><b>${st.ok ? 'Alles in orde' : esc(st.text || 'Let op')}</b><span>${st.ok ? 'Geen meldingen' : esc((st.alerts || []).join(' · '))}</span></div></div>`;
   if (d.photo) return `<section class="card hero" style="background-image:url('${esc(d.photo)}')"><div class="shade"></div>${note}</section>`;
@@ -228,6 +257,7 @@ const DEMO = (() => {
     waste: { configured: true, today: new Date().toISOString().slice(0, 10), items: [{ date: new Date(Date.now() + 864e5).toISOString().slice(0, 10), label: 'PMD', days: 1 }, { date: new Date(Date.now() + 4 * 864e5).toISOString().slice(0, 10), label: 'Restafval', days: 4 }, { date: new Date(Date.now() + 9 * 864e5).toISOString().slice(0, 10), label: 'GFT', days: 9 }] },
     chips: [{ label: 'Eco modus', text: 'Actief', icon: 'leaf', on: true }, { label: 'Nachtmodus', text: 'Uit', icon: 'moon' }, { label: 'Alarm', text: 'Uit', icon: 'lock' }, { label: 'Deurbel', text: 'Geen meldingen', icon: 'bell' }],
     next: { label: 'Volgende activiteit:', text: 'Zwembadpomp 22:00' },
+    cameras: new URLSearchParams(location.search).get('cam') ? [{ n: 0, label: 'Voortuin' }] : [],
   };
 })();
 
@@ -276,3 +306,5 @@ showHint();
 fit();
 tick();
 setInterval(tick, POLL);
+setInterval(camTick, 2000);
+setTimeout(camTick, 400);

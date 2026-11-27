@@ -46,13 +46,14 @@ from aiohttp import web
 
 from .engine import Engine
 from .model import ENTITY_RE, SOURCE_RE, ModelError
+from .reolink import ReoError
 
 log = logging.getLogger("kk.tv")
 
 STATIC = Path(__file__).parent / "static" / "tv"
 ICON_NAMES = ("dot sun moon cloud partly rain pour snow bolt fog wind drop flask power pump home thermo flake fan cal bin leaf lock unlock bell door check warn solar "
               "battery zap waves flame car water gauge").split()  # zoals ICONS in static/tv/display.js (een test bewaakt dat)
-MAX_TILES, MAX_ROWS, MAX_CHIPS, MAX_ALERTS = 3, 4, 5, 20
+MAX_TILES, MAX_ROWS, MAX_CHIPS, MAX_ALERTS, MAX_CAMERAS = 3, 4, 5, 20, 4
 HISTORY_HOURS = 12.0
 KEEP = 13 * 60  # meetpunten per bron (een per minuut)
 SAMPLE_EVERY = 60.0
@@ -101,6 +102,14 @@ def _key(v, what: str, default: str) -> str:
     return s
 
 
+def _power_unit(v, what: str) -> str:
+    """De eenheid van een vermogen: leeg (die van de bron zelf), W of kW. Een waarde van Loxone heeft geen eenheid, dus daar kies je ze."""
+    s = _text(v, 4, what)
+    if s.lower() not in ("", "w", "kw"):
+        raise ModelError(f"{what}: leeg (automatisch), W of kW")
+    return {"w": "W", "kw": "kW"}.get(s.lower(), "")
+
+
 def _icon(v, what: str = "pictogram") -> str:
     s = _text(v, 20, what)
     if s and s not in ICON_NAMES:
@@ -139,9 +148,9 @@ def _list(b, n: int, what: str) -> list:
 def defaults() -> dict:
     return {"token": secrets.token_urlsafe(16), "title": "Mijn huis", "photo": "", "weather": "", "alerts": [],
             "weather_json": {"url": "", "temp": "outTemp_C", "pressure": "barometer_mbar", "humidity": "outHumidity", "rain_total": "rainTotal", "max_age": 60},
-            "energy": {"consumption": "", "max": 5.0, "solar": "", "battery": "", "battery_kwh": "", "grid": ""},
+            "energy": {"consumption": "", "max": 5.0, "solar": "", "battery": "", "battery_kwh": "", "grid": "", "units": {"consumption": "", "solar": "", "grid": ""}},
             "tiles": [], "climate": {"title": "Temperaturen", "rows": [], "chart": []},
-            "waste": {"on": True, "calendar": "", "ics": "", "days": 21}, "chips": [], "next": {"label": "Volgende afspraak:", "calendar": ""}}
+            "cameras": [], "waste": {"on": True, "calendar": "", "ics": "", "days": 21}, "chips": [], "next": {"label": "Volgende afspraak:", "calendar": ""}}
 
 
 def clean(b: dict, token: str) -> dict:
@@ -165,6 +174,8 @@ def clean(b: dict, token: str) -> dict:
     e = b.get("energy") if isinstance(b.get("energy"), dict) else {}
     out["energy"] = {k: _src(e.get(k), f"energie {k}") for k in ("consumption", "solar", "battery", "battery_kwh", "grid")}
     out["energy"]["max"] = _num(e.get("max"), "energie maximum", 0.5, 100, 5.0)
+    eu = e.get("units") if isinstance(e.get("units"), dict) else {}
+    out["energy"]["units"] = {k: _power_unit(eu.get(k), f"energie eenheid {k}") for k in ("consumption", "solar", "grid")}
     out["tiles"] = [{"id": f"t{i + 1}", "title": _text(t.get("title"), 30, "tegel titel") or f"Tegel {i + 1}", "icon": _icon(t.get("icon")) or "waves",
                      "tag": _src(t.get("tag"), "tegel label"), "chart": _src(t.get("chart"), "tegel grafiek"),
                      "rows": [_row(r, "tegel meetwaarde") for r in _list(t.get("rows"), MAX_ROWS, "meetwaarden")]}
@@ -172,6 +183,13 @@ def clean(b: dict, token: str) -> dict:
     c = b.get("climate") if isinstance(b.get("climate"), dict) else {}
     out["climate"] = {"title": _text(c.get("title"), 30, "klimaat titel") or "Temperaturen", "rows": [_row(r, "temperatuur") for r in _list(c.get("rows"), MAX_ROWS, "temperaturen")],
                       "chart": [_src(x, "klimaat grafiek") for x in _list(c.get("chart"), 2, "grafiek") if x]}
+    out["cameras"] = []
+    for c_ in _list(b.get("cameras"), MAX_CAMERAS, "camera's"):
+        if isinstance(c_, dict) and c_.get("device"):
+            dev = _text(c_.get("device"), 40, "camera")
+            if not re.fullmatch(r"[a-z0-9_]{1,40}", dev):
+                raise ModelError("camera: kies een Reolink-camera uit de lijst")
+            out["cameras"].append({"label": _text(c_.get("label"), 30, "camera naam"), "device": dev})
     wa = b.get("waste") if isinstance(b.get("waste"), dict) else {}
     cal = _src(wa.get("calendar"), "ophaalkalender")
     if cal and not cal.startswith("calendar."):
@@ -360,6 +378,7 @@ class TvHub:
         self.engine = engine
         self.port = port
         self.ha = None  # HaBridge: standen, voorspelling, geschiedenis, kalenders
+        self.espdev = None  # EspDevHub: de Reolink-camera's (een momentopname)
         self.changed = None
         self.cfg: dict = defaults()
         self.hist: dict[str, deque] = {}
@@ -444,12 +463,13 @@ class TvHub:
         except ValueError:
             return None, unit, state, attrs
 
-    def kw(self, src: str) -> tuple[float | None, str]:
-        """Een vermogen in kW (een sensor in W wordt omgerekend)."""
-        v, unit, _t, _a = self.read(src)
+    def kw(self, src: str, unit: str = "") -> tuple[float | None, str]:
+        """Een vermogen in kW. De eenheid van de bron (W wordt omgerekend), of de gekozen eenheid: een waarde van Loxone heeft er geen."""
+        v, own, _t, _a = self.read(src)
         if v is None:
             return None, "kW"
-        return (v / 1000.0, "kW") if unit.strip() == "W" else (v, unit or "kW")
+        u = (unit or own).strip()
+        return (v / 1000.0, "kW") if u == "W" else (v, u or "kW")
 
     def _on(self, text: str | None) -> bool:
         return (text or "").lower() in ON_STATES
@@ -557,16 +577,17 @@ class TvHub:
         if not (e["consumption"] or e["solar"] or e["battery"] or e["grid"]):
             return None
         out: dict[str, Any] = {"max": e["max"], "series": {}}
-        v, unit = self.kw(e["consumption"])
+        un = e["units"]
+        v, unit = self.kw(e["consumption"], un["consumption"])
         if e["consumption"]:
             out["consumption"] = {"value": v, "unit": unit}
-            out["series"]["consumption"] = self._kw_series(e["consumption"])
+            out["series"]["consumption"] = self._kw_series(e["consumption"], un["consumption"])
         if e["solar"]:
-            v, unit = self.kw(e["solar"])
+            v, unit = self.kw(e["solar"], un["solar"])
             out["solar"] = {"value": v, "unit": unit}
-            out["series"]["solar"] = self._kw_series(e["solar"])
+            out["series"]["solar"] = self._kw_series(e["solar"], un["solar"])
         if e["grid"]:
-            v, unit = self.kw(e["grid"])
+            v, unit = self.kw(e["grid"], un["grid"])
             out["grid"] = {"value": v, "unit": unit, "label": "Net"}
         if e["battery"]:
             pct = self.read(e["battery"])[0]
@@ -575,9 +596,9 @@ class TvHub:
         out["series"] = {k: v for k, v in out["series"].items() if v}
         return out
 
-    def _kw_series(self, src: str) -> list[list[float]]:
-        """De meetpunten van een vermogen, in kW (de punten van een sensor in W worden omgerekend, want de gauge en de grafiek tonen kW)."""
-        unit = self.read(src)[1].strip()
+    def _kw_series(self, src: str, unit: str = "") -> list[list[float]]:
+        """De meetpunten van een vermogen, in kW (de punten van een bron in W worden omgerekend, want de gauge en de grafiek tonen kW)."""
+        unit = (unit or self.read(src)[1]).strip()
         k = 0.001 if unit == "W" else 1.0
         return [[round(t, 1), round(v * k, 3)] for t, v in sorted(self.hist.get(src, ()), key=lambda p: p[0])]
 
@@ -621,6 +642,27 @@ class TvHub:
         when = f"{start:%H:%M}" if timed and start.date() == now.date() else f"{start:%d/%m}" + (f" {start:%H:%M}" if timed else "")
         return {"label": n["label"], "text": f"{str(ev.get('summary') or '').strip()[:40]} {when}".strip()}
 
+    def _camera_name(self, c: dict) -> str:
+        dev = (self.espdev.devices.get(c["device"]) if self.espdev else None) or {}
+        return c["label"] or str(dev.get("name") or "Camera")
+
+    async def camera_snapshot(self, n: int) -> bytes:
+        """De opname van camera `n` van de pagina. IndexError als die niet bestaat, ReoError als de camera niet antwoordt (de fout staat dan in het tabblad)."""
+        if not 0 <= n < len(self.cfg["cameras"]):
+            raise IndexError(n)
+        if self.espdev is None:
+            raise ReoError("none", "camera's zijn niet beschikbaar")
+        key = f"camera {n + 1}"
+        try:
+            jpg = await self.espdev.reolink_snapshot(self.cfg["cameras"][n]["device"])
+        except ReoError as e:
+            if self.errors.get(key) != str(e):
+                log.info("%s: %s", key, e)
+            self.errors[key] = str(e)
+            raise
+        self.errors.pop(key, None)
+        return jpg
+
     def data(self) -> dict:
         c = self.cfg
         alerts = self._alerts()
@@ -649,7 +691,7 @@ class TvHub:
                 shown, tone = (ch["on_text"] or "Aan") if on else (ch["off_text"] or "Uit"), ("on" if on else "")
             chips.append({"label": ch["label"] or attrs.get("friendly_name") or ch["source"], "text": shown, "icon": ch["icon"] or "dot", "on": on, "tone": tone})
         return {"title": c["title"], "now": int(time.time()), "tz": getattr(tz, "key", "") or "", "photo": c["photo"], "status": status, "weather": self._weather(),
-                "energy": self._energy(), "tiles": tiles, "climate": climate, "waste": self._waste(), "chips": chips, "next": self._next()}
+                "energy": self._energy(), "cameras": [{"n": i, "label": self._camera_name(cam)} for i, cam in enumerate(c["cameras"])], "tiles": tiles, "climate": climate, "waste": self._waste(), "chips": chips, "next": self._next()}
 
     # ------------------------------------------------------------ verversen op de achtergrond
 
@@ -901,9 +943,10 @@ class TvHub:
                 if ent.split(".")[0] in ("sensor", "binary_sensor", "weather", "calendar", "input_boolean", "switch", "climate", "alarm_control_panel", "lock",
                                          "person", "input_number", "number", "cover", "fan", "light", "sun", "input_select", "select"):
                     ha.append([ent, str(attrs.get("friendly_name") or ent), str(attrs.get("unit_of_measurement") or ""), state])
+        cams = [[did, str(dev.get("name") or did)] for did, dev in sorted((self.espdev.devices if self.espdev else {}).items()) if dev.get("driver") == "reolink"]
         addon = [[o["ref"], f"{b['name']} · {o['label']}", str(o.get("unit") or ""), "" if o.get("value") is None else str(o["value"])]
                  for b in blocks for o in (b.get("all") or b.get("outs") or []) if o.get("ref")]
-        return {"ha": ha, "addon": addon}
+        return {"ha": ha, "addon": addon, "cameras": cams}
 
 
 def _event_date(ev: dict):
@@ -948,4 +991,15 @@ def routes(app: web.Application, hub: TvHub, prefix: str, check: bool) -> None:
 
     app.router.add_get(prefix + "/", page)
     app.router.add_get(prefix + "/{file:display\\.(css|js)}", asset)
+    async def cam(request: web.Request) -> web.Response:
+        guard(request)
+        try:
+            jpg = await hub.camera_snapshot(int(request.match_info["n"]))
+        except IndexError:
+            raise web.HTTPNotFound() from None
+        except ReoError as e:
+            return web.Response(status=503, text="camera niet bereikbaar", headers={"Cache-Control": "no-store"})  # de reden (met het adres van de camera) staat alleen in het tabblad
+        return web.Response(body=jpg, content_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
     app.router.add_get(prefix + "/data", data)
+    app.router.add_get(prefix + "/cam/{n:\\d{1,2}}.jpg", cam)

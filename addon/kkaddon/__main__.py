@@ -107,6 +107,7 @@ async def run() -> None:
     mqtt.extras.append(espdev)
     espdev.changed = mqtt.resync
     espdev.start()
+    tv.espdev = espdev  # de tv-pagina toont een momentopname van een Reolink-camera
     access = AccessHub(s.data_dir, engine)  # het toegangslogboek: detecties en deuren uit punten van die blokken
     access.espdev = espdev
     loxone = LoxoneHub(s.data_dir, engine, espdev, port=s.loxone_port)  # de brug naar een Loxone Miniserver, in plaats van JavaLox

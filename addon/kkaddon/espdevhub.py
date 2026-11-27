@@ -81,6 +81,7 @@ NUKI_BACKOFF = 90.0  # s wachten na "te veel verzoeken"
 REO_FAST = 1.0  # s tussen twee vragen aan een Reolink zolang er beweging is of net een webhook kwam
 REO_SLOW = 2.0  # s tussen twee vragen zolang de camera nog geen webhook stuurde
 REO_HOOKED = 30.0  # s tussen twee vragen als de camera zijn webhook gebruikt (die wekt de taak bij een gebeurtenis)
+SNAP_MAX = 4_000_000  # bytes: een momentopname van een camera (op volle resolutie een paar honderd kB)
 REO_HOLD = 20.0  # s na een webhook of een opdracht blijven we snel vragen
 WEBHOOK_PORT = 47520  # TCP: hier luistert de add-on naar het webhook van een camera
 LID_RE = re.compile(r"^[0-9]{1,20}$")
@@ -351,6 +352,8 @@ class EspDevHub:
         self._listen = None
         self._ask = None
         self._http: aiohttp.ClientSession | None = None
+        self._snaps: dict[str, tuple[float, bytes]] = {}  # camera -> (wanneer, jpeg): meerdere kijkers delen een opname
+        self._snap_wait: dict[str, asyncio.Future] = {}  # camera -> een opname die al onderweg is
         self._stream_http: aiohttp.ClientSession | None = None  # zonder totaaltijd: een eventstroom duurt zolang het toestel leeft
         self.udp_port = port or UDP_PORT
         self._load()
@@ -1376,6 +1379,56 @@ class EspDevHub:
         data = await self._reo_call(dev, reolink.login_body(user, pw))
         st["token"], lease = reolink.parse_login(data)
         st["exp"] = time.monotonic() + max(60.0, lease - 120.0)
+
+    async def reolink_snapshot(self, did: str, max_age: float = 1.5) -> bytes:
+        """Een momentopname (JPEG) van een Reolink-camera, voor de tv-pagina. De camera wordt niet vaker bevraagd dan eens per `max_age`, ook al kijken er meer mensen
+        (een opname wordt gedeeld, en een opname die al onderweg is, wordt afgewacht). De inloggegevens blijven hier: wie de opname krijgt, ziet alleen het beeld.
+        Raises ReoError als de camera niet bereikbaar is of geen afbeelding geeft."""
+        dev = self.devices.get(did)
+        if dev is None or dev["driver"] != "reolink":
+            raise reolink.ReoError("none", "geen Reolink-camera")
+        hit = self._snaps.get(did)
+        if hit and time.monotonic() - hit[0] < max_age:
+            return hit[1]
+        wait = self._snap_wait.get(did)
+        if wait is not None:
+            return await asyncio.shield(wait)
+        fut = asyncio.get_running_loop().create_future()
+        fut.add_done_callback(lambda f: f.cancelled() or f.exception())  # een fout die niemand afwacht, is geen waarschuwing
+        self._snap_wait[did] = fut
+        try:
+            jpg = await self._reo_snap(dev, self.reo.setdefault(did, self._reo_new()))
+        except BaseException as e:
+            fut.set_exception(e if isinstance(e, Exception) else reolink.ReoError("net", "afgebroken"))
+            raise
+        else:
+            self._snaps[did] = (time.monotonic(), jpg)
+            fut.set_result(jpg)
+            return jpg
+        finally:
+            self._snap_wait.pop(did, None)
+
+    async def _reo_snap(self, dev: dict, st: dict) -> bytes:
+        """`cmd=Snap` van `api.cgi`: een GET met het token geeft een JPEG. Een verlopen token (de camera antwoordt dan met JSON) geeft eenmalig opnieuw inloggen."""
+        for attempt in (0, 1):
+            if not st["token"] or time.monotonic() >= st["exp"] or attempt:
+                await self._reo_login(dev, st)
+            url = f"http://{dev['host']}:{dev['port']}{reolink.API}"
+            params = {"cmd": "Snap", "channel": (dev.get("reo") or {}).get("channel", 0), "rs": str(time.time_ns() % 10**8), "token": st["token"]}
+            try:
+                async with self._session().get(url, params=params, timeout=aiohttp.ClientTimeout(total=reolink.TIMEOUT + 4)) as r:
+                    body = await r.content.read(SNAP_MAX + 1)
+                    status = r.status
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+                raise reolink.ReoError("net", f"geen verbinding met {dev['host']}: {e or 'time-out'}") from None
+            if status == 200 and body[:2] == b"\xff\xd8":
+                if len(body) > SNAP_MAX:
+                    raise reolink.ReoError("http", "de opname is te groot")
+                return body
+            if attempt == 0 and (status in (401, 403) or b"login" in body[:400].lower() or b"token" in body[:400].lower()):
+                continue
+            raise reolink.ReoError("http", f"{dev['host']} geeft geen afbeelding (HTTP {status})")
+        raise reolink.ReoError("token", f"inloggen bij {dev['host']} helpt niet")
 
     async def add_reolink(self, host: str, port=80, user: str = "", password: str = "", name: str = "") -> str:
         """Een Reolink-camera toevoegen: inloggen, kijken wat hij kan (beweging, persoon, voertuig, schijnwerper) en er een blok van maken. Het wachtwoord komt alleen in dit bestand."""

@@ -86,6 +86,7 @@ function tvIn(label, path, o = {}) {
     ${o.state ? tvState(v) : ''}</div>`;
 }
 
+const tvUnit = (path) => `<div style="min-width:96px;flex:0"><label>Eenheid</label><select data-tv="${path}">${[['', 'automatisch'], ['W', 'W'], ['kW', 'kW']].map(([v, t]) => `<option value="${v}" ${(tvVal(path) || '') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>`;
 const tvSrc = (label, path, list = 'tvsrc', ph = 'sensor.…') => tvIn(label, path, { list, ph, state: true, w: 200 });
 const tvIcon = (path) => `<div style="min-width:120px"><label>Pictogram</label><select data-tv="${path}" data-re="1">${Object.entries({ '': '(geen)', ...TV_ICONS }).map(([k, t]) => `<option value="${k}" ${tvVal(path) === k ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>`;
 
@@ -144,9 +145,9 @@ function viewTvBody() {
         <div><label>Meldingen (bv. rookmelder, waterlek): staat er een aan, dan toont de kop "Let op"</label>${alerts}
           <div class="row" style="margin-top:4px"><button class="btn small" type="button" data-tvact="addalert" ${(c.alerts || []).length >= 20 ? 'disabled' : ''}>+ Melding</button></div></div></div>
       <div class="card"><h3>Energie</h3>
-        <div class="row">${tvSrc('Verbruik (W of kW)', 'energy.consumption')}${tvSrc('Zonnepanelen', 'energy.solar')}${tvIn('Meter tot (kW)', 'energy.max', { w: 90, flex: 0, type: 'number', step: '0.5', min: 0.5, maxv: 100 })}</div>
-        <div class="row">${tvSrc('Batterij (%)', 'energy.battery')}${tvSrc('Batterij (kWh, mag leeg)', 'energy.battery_kwh')}${tvSrc('Net (mag leeg)', 'energy.grid')}</div>
-        <div class="sub">Een bron in W wordt omgerekend naar kW. De grafiek toont de laatste 12 uur van verbruik en zonnepanelen, uit de geschiedenis van HA aangevuld met wat de add-on zelf meet.</div></div>
+        <div class="row">${tvSrc('Verbruik', 'energy.consumption')}${tvUnit('energy.units.consumption')}${tvSrc('Zonnepanelen', 'energy.solar')}${tvUnit('energy.units.solar')}${tvIn('Meter tot (kW)', 'energy.max', { w: 90, flex: 0, type: 'number', step: '0.5', min: 0.5, maxv: 100 })}</div>
+        <div class="row">${tvSrc('Batterij (%)', 'energy.battery')}${tvSrc('Batterij (kWh, mag leeg)', 'energy.battery_kwh')}${tvSrc('Net (mag leeg)', 'energy.grid')}${tvUnit('energy.units.grid')}</div>
+        <div class="sub">Een bron in W wordt omgerekend naar kW. <b>Een waarde van Loxone heeft geen eenheid</b>: kies W of kW bij de bron (de lijst bevat die als <i>Loxone · naam</i>; je maakt ze aan bij Instellingen → Loxone → <i>Een waarde van Loxone gebruiken</i>, soort <i>getal</i>). De grafiek toont de laatste 12 uur van verbruik en zonnepanelen, uit de geschiedenis van HA aangevuld met wat de add-on zelf meet; bij een waarde van Loxone bouwt ze zich op vanaf het opstarten.</div></div>
       <div class="card"><h3>Tegels</h3><div class="sub">Tot 3 eigen tegels, bv. een zwembad, een kelder of een serre: een titel, tot 4 meetwaarden en een grafiek van één waarde. De onderste rij heeft plaats voor 3 tegels: <b>tegel 1</b>, <b>Temperaturen</b> en de <b>ophaalkalender</b>, en daarna de overige tegels voor zover er plaats is. Zet Temperaturen leeg of de ophaalkalender uit om plaats te maken.</div>${tiles}
         <div class="row"><button class="btn small" type="button" data-tvact="addtile" ${(c.tiles || []).length >= 3 ? 'disabled' : ''}>+ Tegel</button></div></div>
       <div class="card"><h3>Temperaturen</h3>
@@ -161,6 +162,11 @@ function viewTvBody() {
         <div class="sub" id="tvics">${tvStatusIcs()}</div>
         <div class="sub">Heeft je afvalophaler geen link, upload dan het ICS-bestand dat je van zijn website downloadt (bv. de agenda-export van Ivago). Het wordt in de add-on bewaard en blijft werken na een herstart; je adres staat er niet in. Elke afspraak is een ophaling; herhalingen (bv. elke twee weken) worden uitgewerkt. Een kalender loopt maar een jaar: de pagina meldt het als het bestand bijna op is.</div>
         <div class="sub">De plaats is gereserveerd, ook zonder kalender. Elke afspraak in de gekozen kalender telt als een ophaling; de titel (bv. <i>PMD</i>, <i>GFT</i>, <i>Restafval</i>, <i>Papier</i>) bepaalt de kleur. In Home Assistant komt zo'n kalender uit bv. de integratie van je gemeente of intercommunale, of uit een ICS-bestand (<i>Remote Calendar</i>).</div></div>
+      <div class="card"><h3>Camera's</h3>
+        <div class="sub">Een Reolink-camera in het midden van de pagina, als een opname die elke 2 seconden ververst (geen film). Kies een camera die je als apparaat hebt toegevoegd (Zelfbouw, ESPHome en Hue → Reolink). De inloggegevens blijven in de add-on: de tv krijgt alleen het beeld, via het adres met het geheim. Zonder camera staat daar een begroeting. Met één camera is het beeld het mooist; twee staan boven elkaar, drie of vier in een raster.</div>
+        ${(c.cameras || []).map((cm, i) => `<div class="row" style="align-items:flex-start;border-top:1px dashed var(--line);padding-top:6px"><div style="min-width:220px;flex:1"><label>Camera</label><select data-tv="cameras.${i}.device" data-re="1"><option value="">(kies een camera)</option>${(TV.src.cameras || []).map(([id, nm]) => `<option value="${esc(id)}" ${cm.device === id ? 'selected' : ''}>${esc(nm)}</option>`).join('')}${cm.device && !(TV.src.cameras || []).some(([id]) => id === cm.device) ? `<option value="${esc(cm.device)}" selected>${esc(cm.device)} (niet gevonden)</option>` : ''}</select>${TV.errors && TV.errors[`camera ${i + 1}`] ? `<span class="sub" style="color:var(--bad)">${esc(TV.errors[`camera ${i + 1}`])}</span>` : ''}</div>${tvIn('Naam op het beeld', `cameras.${i}.label`, { w: 160, max: 30, ph: 'bv. Voortuin' })}
+          <button class="btn small danger" type="button" data-tvact="del" data-p="cameras.${i}" title="Weghalen" style="margin-top:22px">✕</button></div>`).join('')}
+        <div class="row" style="margin-top:4px"><button class="btn small" type="button" data-tvact="addcam" ${(c.cameras || []).length >= 4 || !(TV.src.cameras || []).length ? 'disabled' : ''}>+ Camera</button>${(TV.src.cameras || []).length ? '' : '<span class="sub">Er is nog geen Reolink-camera toegevoegd.</span>'}</div></div>
       <div class="card"><h3>Onderaan</h3><div class="sub">Tot 5 standen in een ronde knop, bv. eco-modus, nachtmodus, alarm of deurbel. Rechts staat de eerstvolgende afspraak uit een kalender.</div>${chips}
         <div class="row" style="margin-top:4px"><button class="btn small" type="button" data-tvact="addchip" ${(c.chips || []).length >= 5 ? 'disabled' : ''}>+ Knop</button></div>
         <div class="row">${tvIn('Volgende afspraak: tekst ervoor', 'next.label', { w: 220, max: 30 })}${tvSrc('Kalender', 'next.calendar', 'tvcal', 'calendar.gezin')}</div></div>
@@ -194,6 +200,7 @@ const TV_ACTIONS = {
   addrow: (d) => { tvVal(d.p).push(TV_ROW()); tvDraw(); },
   addtile: () => { TV.config.tiles.push({ title: `Tegel ${TV.config.tiles.length + 1}`, icon: 'waves', tag: '', chart: '', rows: [TV_ROW()] }); tvDraw(); tvSoon(); },
   addchip: () => { TV.config.chips.push({ label: '', source: '', icon: '', on_text: '', off_text: '' }); tvDraw(); },
+  addcam: () => { TV.config.cameras.push({ label: '', device: ((TV.src.cameras || [])[0] || [''])[0] }); tvDraw(); tvSoon(); },
   addalert: () => { TV.config.alerts.push(''); tvDraw(); },
   del: (d) => {
     const keys = d.p.split('.'), idx = +keys.pop();

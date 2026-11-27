@@ -284,8 +284,18 @@ het wanneer jij dat wilt en haalt het weg zodra er gekeken wordt.
   (eco-modus, alarm, ...) en de eerstvolgende afspraak. Wat je leeg laat, verschijnt niet.
 * **Bronnen**: elke waarde kies je uit een HA-entiteit (`sensor.stroomverbruik`) of uit een uitgang van een blok in het schema (`o:deye:pv`, een
   airco, het tv-blok). Een omvormer hoeft dus niet eerst in HA te staan. Onder elk veld staat de naam en de stand van wat je koos, ter controle.
-  Een vermogen in W wordt omgerekend naar kW. Een getal toont de waarde met zijn eenheid; een stand (aan/uit, open/dicht) toont een woord, met eigen
+  Een vermogen in W wordt omgerekend naar kW. **Een waarde van Loxone** (Instellingen → Loxone → *Een waarde van Loxone gebruiken*, soort *getal* of *0/1*) staat in de
+  lijst als *Loxone · naam* en kan overal als bron dienen (energie, tegels, temperaturen, knoppen). Loxone stuurt een kaal getal zonder eenheid: bij *Energie* kies je
+  daarom naast de bron **W** of **kW** (*automatisch* neemt kW aan), bij een tegel of temperatuur typ je de eenheid. Zolang Loxone nog niets stuurde, is de waarde onbekend
+  (een streepje) en geen nul; de grafiek van zo'n waarde bouwt zich op vanaf het opstarten. Een getal toont de waarde met zijn eenheid; een stand (aan/uit, open/dicht) toont een woord, met eigen
   teksten bij *tekst bij aan* en *tekst bij uit*. Onbekend toont een streepje, geen nul.
+* **Camera's**: een **Reolink-camera** (die je als apparaat hebt toegevoegd: *+ Module → Zelfbouw, ESPHome en Hue → Reolink*) staat in het midden van de pagina, op de plaats van
+  de begroeting. Het is geen film maar een **opname die elke 2 seconden ververst**: de add-on vraagt hem aan de camera (`cmd=Snap`, met het token van de koppeling) en geeft
+  hem door via het adres met het geheim. De inloggegevens van de camera komen dus nooit bij de tv. Meer kijkers delen één opname, zodat de camera niet vaker dan eens per
+  anderhalve seconde bevraagd wordt, en een tv die niet kijkt, vraagt niets. Is de camera niet bereikbaar, dan blijft het laatste beeld staan met *Camera niet bereikbaar*
+  erover, en de reden staat bij de camera op het tabblad. Met één camera is het beeld het mooist; twee staan boven elkaar, drie of vier in een raster (tot vier). De opname
+  heeft de resolutie die de camera geeft; op een Wi-Fi-camera of een zwakke verbinding kan dat zwaar zijn. Niet getest tegen een echte Reolink (alleen tegen een nagebootste
+  camera): of `cmd=Snap` op jouw model werkt, zie je meteen op het tabblad.
 * **Grafieken**: de add-on neemt elke minuut een meetpunt (13 uur in het geheugen) en haalt bij het opstarten de laatste uren uit de geschiedenis
   van HA (de recorder), zodat ze niet leeg beginnen. Een uitgang van een blok heeft geen geschiedenis in HA; die grafiek bouwt zich vanaf het
   opstarten op.
