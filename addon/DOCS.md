@@ -272,6 +272,37 @@ andere merken die de app *Gree+* of *EWPE Smart* gebruiken. Het is een eigen blo
   ingang van een andere airco. Offline is de waarde onbekend.
 * De sleutels staan in `/data/gree.json`: in de HA-back-up, niet in *Exporteer configuratie*. Op armv7 is deze functie niet beschikbaar.
 
+## TV-pagina (een dashboard voor de tv)
+
+Het tabblad **TV** (naast Energie, Laden en Toegang) ontwerpt een alleen-lezen dashboard voor de tv. Er is niets te bedienen en er staat geen menu
+op, want op een tv kun je niet navigeren; ook de verlichting staat er bewust niet op. Het is bedoeld als screensaver: het tv-blok (zie *TV*) toont
+het wanneer jij dat wilt en haalt het weg zodra er gekeken wordt.
+
+* **Wat erop staat**: een kop met de naam van het huis, de stand (*Alles OK* of *Let op*), de datum, de klok en het weer; links *Energie* (verbruik als
+  meter, zonnepanelen, batterij en een grafiek van de laatste 12 uur), in het midden een begroeting of een foto, rechts het *Weer* (nu, maximum en
+  minimum en de volgende vijf uur); eronder tot drie tegels uit *eigen tegels*, *Temperaturen* en de *Ophaalkalender*; onderaan tot vijf standen
+  (eco-modus, alarm, ...) en de eerstvolgende afspraak. Wat je leeg laat, verschijnt niet.
+* **Bronnen**: elke waarde kies je uit een HA-entiteit (`sensor.stroomverbruik`) of uit een uitgang van een blok in het schema (`o:deye:pv`, een
+  airco, het tv-blok). Een omvormer hoeft dus niet eerst in HA te staan. Onder elk veld staat de naam en de stand van wat je koos, ter controle.
+  Een vermogen in W wordt omgerekend naar kW. Een getal toont de waarde met zijn eenheid; een stand (aan/uit, open/dicht) toont een woord, met eigen
+  teksten bij *tekst bij aan* en *tekst bij uit*. Onbekend toont een streepje, geen nul.
+* **Grafieken**: de add-on neemt elke minuut een meetpunt (13 uur in het geheugen) en haalt bij het opstarten de laatste uren uit de geschiedenis
+  van HA (de recorder), zodat ze niet leeg beginnen. Een uitgang van een blok heeft geen geschiedenis in HA; die grafiek bouwt zich vanaf het
+  opstarten op.
+* **Weer**: kies een `weather.*`-entiteit. De voorspelling per uur en het maximum en minimum komen uit HA (`weather.get_forecasts`), elk kwartier
+  ververst. Een heldere hemel 's nachts toont een maan.
+* **Ophaalkalender**: de plaats is gereserveerd, ook zonder kalender (*Nog niet gekoppeld*). Kies een `calendar.*`-entiteit en elke afspraak telt als
+  een ophaling: de titel (*PMD*, *GFT*, *Restafval*, *Papier*, *Glas*) bepaalt de kleur, de ophaling van vandaag of morgen krijgt een amberkleurige rand.
+  Zo'n kalender komt in HA uit de integratie van je gemeente of intercommunale, of uit een ICS-bestand (*Remote Calendar*). Niet getest tegen een echte kalender van HA.
+* **Het adres voor de tv**: de tv kan niet via HA-ingress, dus de pagina draait op een eigen poort (optie `tv_port`, standaard 47530; 0 zet hem uit) met
+  een geheim in het adres: `http://<IP van HA>:47530/tv/<geheim>/`. Dat adres is alleen-lezen en toont nooit meer dan wat je koos. *Nieuw adres*
+  maakt een nieuw geheim (het oude werkt dan niet meer); *Zet als dashboard-adres van deze tv* vult het in bij het tv-blok. Geef Home Assistant een
+  vast IP-adres in je router. Het adres staat op het thuisnetwerk en is niet beveiligd met een wachtwoord: alleen wie het geheim kent, komt erbij.
+* **Voorvertoning**: rechts op het tabblad staat de echte pagina. Elke wijziging wordt meteen bewaard (in `/data/tv.json`, in de HA-back-up) en de
+  voorvertoning ververst; de tv zelf ververst elke 10 seconden.
+* **Voor een LCD-tv**: de pagina gebruikt een donkere achtergrond en zacht wit (geen puur wit), want op een LCD met backlight bepalen vooral de helderheid
+  en de inschakeltijd het verbruik, en kleine felle tekst op zwart kan blooming geven. Meet het verbruik zelf (zie het testplan in `TV-OVERDRACHT.md`).
+
 ## TV (LG met webOS, als huis-screensaver)
 
 *+ Module → TV* zet een tv-blok op de pagina, voor een LG-tv met webOS (getest op een 85QNED93A6A). De add-on praat rechtstreeks met de tv over
@@ -285,7 +316,7 @@ een alleen-lezen scherm met klok, agenda en weer dat verschijnt als je het nodig
 * **Ingangen** (links): *aan* (0/1) en *dashboard* (0/1). Zoals bij de airco doet een ingang pas iets als ze **verandert**: na een herstart of
   als de bron weer bekend wordt, onthoudt ze alleen de stand. *Aan* op 1 wekt de tv (Wake-on-LAN als hij uit is, het scherm aan als alleen het
   scherm uit was), op 0 zet hij uit. *Dashboard* op 1 zet de tv zo nodig aan, wacht tot hij bereikbaar is (hoogstens 3 minuten) en opent het
-  **adres van het dashboard** in de browser van de tv. Op 0 haalt de add-on het weg: *scherm uit*, *tv uit* of *terug naar het beginscherm*, naar
+  **adres van het dashboard** in de browser van de tv (het adres van de *TV-pagina*: zie het tabblad TV). Op 0 haalt de add-on het weg: *scherm uit*, *tv uit* of *terug naar het beginscherm*, naar
   keuze, maar **nooit terwijl er gekeken wordt**; dan blijft de tv zoals hij is.
 * **Uitgangen** (rechts): *aan* is 1 als de tv wakker is met het scherm aan (een tv die uit staat, niet bereikbaar is of waarvan alleen het
   scherm uit is, geeft 0). *Wordt bekeken* is 1 als hij aan is en er een app vooraan staat die niet bij de **eigen apps** hoort (standaard de

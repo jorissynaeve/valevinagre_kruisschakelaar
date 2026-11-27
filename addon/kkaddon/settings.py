@@ -37,6 +37,7 @@ class Settings:
     link_port: int = 47490  # TCP: koppelingen met de add-on van een ander subnet (linkhub.py)
     loxone_port: int = 47510  # UDP en TCP: hier luistert de add-on naar de Loxone Miniserver (loxonehub.py)
     webhook_port: int = 47520  # TCP: hier luistert de add-on naar het webhook van een Reolink-camera (espdevhub.py)
+    tv_port: int = 47530  # TCP: de alleen-lezen tv-pagina (tvhub.py), met een geheim in het adres; 0 zet hem uit
     web_port: int = WEB_PORT
     dev_mode: bool = False  # web-UI ook buiten HA-ingress toegankelijk
     log_level: str = "info"
@@ -142,6 +143,7 @@ def load(env: dict | None = None) -> Settings:
         link_port=int(get("link_port", 47490)),
         loxone_port=int(get("loxone_port", 47510)),
         webhook_port=int(get("webhook_port", 47520)),
+        tv_port=int(get("tv_port", 47530)),
         web_port=int(get("web_port", WEB_PORT)),
         dev_mode=_bool(get("dev_mode", False)),
         log_level=str(get("log_level", "info")).lower(),

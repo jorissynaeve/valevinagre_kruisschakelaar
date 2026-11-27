@@ -10,7 +10,7 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from . import __version__, appdaemon_import, inventory, schema, tasmota
+from . import __version__, appdaemon_import, inventory, schema, tasmota, tvhub
 from .engine import Engine
 from .link import LinkError
 from .model import ENTITY_RE, Model, ModelError
@@ -29,11 +29,12 @@ PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "
 class Ctx:
     """Alles wat de handlers nodig hebben."""
 
-    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None, energy=None, charge=None, espdev=None, loxone=None, access=None, lg=None) -> None:
+    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None, energy=None, charge=None, espdev=None, loxone=None, access=None, lg=None, tv=None) -> None:
         self.settings, self.engine, self.model = settings, engine, engine.model
         self.transport, self.mqtt, self.ha, self.panels, self.tuya, self.links = transport, mqtt, ha, panels, tuya, links
         self.airco = airco
         self.lg = lg  # LG-tv's met webOS (lghub.py)
+        self.tv = tv  # de tv-pagina (tvhub.py)
         self.charge = charge  # laadpalen met sessies (chargehub.py)
         self.solar = solar  # omvormers (solarhub.py)
         self.espdev = espdev  # zelfbouwapparaten met het HUISDEV-protocol (espdevhub.py)
@@ -725,6 +726,30 @@ async def lg_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
+def _tv(request: web.Request):
+    hub = request.app[CTX].tv
+    if hub is None:
+        raise ModelError("de tv-pagina is niet beschikbaar")
+    return hub
+
+
+async def tv_get(request: web.Request) -> web.Response:
+    return web.json_response(_tv(request).view())
+
+
+async def tv_put(request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, "config": _tv(request).update(await _body(request))})
+
+
+async def tv_token(request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, "token": _tv(request).renew_token()})
+
+
+async def tv_sources(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    return web.json_response(_tv(request).sources(schema.view(ctx.model, ctx.engine.snapshot())["blocks"]))
+
+
 def _solar(request: web.Request):
     hub = request.app[CTX].solar
     if hub is None:
@@ -1411,6 +1436,12 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/airco/{did}", airco_put)
     r.add_delete("/api/airco/{did}", airco_delete)
     r.add_post("/api/airco/{did}/set", airco_set)
+    r.add_get("/api/tv", tv_get)
+    r.add_put("/api/tv", tv_put)
+    r.add_post("/api/tv/token", tv_token)
+    r.add_get("/api/tv/sources", tv_sources)
+    if ctx.tv is not None:
+        tvhub.routes(app, ctx.tv, "/tv/view", check=False)  # de voorvertoning op het tabblad (achter ingress); de tv zelf gebruikt een eigen poort met een geheim
     r.add_post("/api/lg", lg_post)
     r.add_put("/api/lg/{did}", lg_put)
     r.add_delete("/api/lg/{did}", lg_delete)

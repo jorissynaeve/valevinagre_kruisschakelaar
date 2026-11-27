@@ -38,5 +38,8 @@ configuration:
   link_port:
     name: Poort voor koppelingen
     description: TCP-poort waarop andere Huisconfig-installaties (in een ander subnet) verbinden. Zet hem open tussen de subnetten. Sleutel en adressen stel je in op het tabblad Instellingen.
+  tv_port:
+    name: Poort voor de tv-pagina
+    description: TCP-poort waarop de alleen-lezen tv-pagina luistert (het adres staat op het tabblad TV, met een geheim erin). 0 zet hem uit.
   log_level:
     name: Logniveau

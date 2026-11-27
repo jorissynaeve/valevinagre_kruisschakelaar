@@ -359,3 +359,12 @@ details.lxgroup > summary select { width: auto; max-width: 160px; padding: 2px 6
   .sctabrow { flex-basis: 100%; }
 }
 .t-loxone { --tc: var(--t-remote); } .t-loxone .bkhead { fill: var(--t-remote); }
+
+/* tabblad TV: het formulier links, de voorvertoning van de tv-pagina rechts */
+.tvgrid { display: grid; grid-template-columns: minmax(420px, 1fr) minmax(340px, 560px); gap: 16px; align-items: start; }
+.tvform { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.tvprev { position: sticky; top: 8px; }
+.tvframe { position: relative; width: 100%; aspect-ratio: 16 / 9; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #050b1a; }
+.tvframe iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+@media (max-width: 1100px) { .tvgrid { grid-template-columns: 1fr; } .tvprev { position: static; order: -1; } }
+body.tvtab main { max-width: 1480px; }

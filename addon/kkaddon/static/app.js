@@ -233,12 +233,14 @@ function render() {
   banner();
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   document.body.classList.toggle('wide', tab === 'schema');
+  document.body.classList.toggle('tvtab', tab === 'tv'); // het formulier en de voorvertoning naast elkaar: breder dan de andere tabbladen
   if (tab === 'schema') { // het kader blijft staan, anders verspring je bij elke druk terug naar de linkerbovenhoek
     if (!$('#scsvg')) { $('#main').innerHTML = viewSchema(); SC.lastPanel = ''; }
     schemaUpdate();
   } else if (tab === 'sessions') { if (!$('#chargebox')) $('#main').innerHTML = viewCharge(); // de filters blijven staan
   } else if (tab === 'access') { if (!$('#accessbox')) $('#main').innerHTML = viewAccess(); // de filters blijven staan
   } else if (tab === 'energy') { if (!$('#energybox')) $('#main').innerHTML = viewEnergy(); // wat je typt blijft staan
+  } else if (tab === 'tv') { if (!$('#tvbox')) $('#main').innerHTML = viewTv(); // wat je typt blijft staan
   } else if (tab !== 'settings' || !$('#keybox')) $('#main').innerHTML = { nodes: viewNodes, log: viewLog, settings: viewSettings }[tab]();
   else linksUpdate(); // de rest van Instellingen blijft staan, de verbindingen niet
   if (L) refreshPicks();
@@ -547,7 +549,7 @@ function connect() {
 const NAV = [
   [['schema', 'Schema', 'schema']],
   [['nodes', 'Apparaten', 'nodes']],
-  [['energy', 'Energie', 'energy'], ['sessions', 'Laden', 'charge'], ['access', 'Toegang', 'door']],
+  [['energy', 'Energie', 'energy'], ['sessions', 'Laden', 'charge'], ['access', 'Toegang', 'door'], ['tv', 'TV', 'tv']],
   [['log', 'Logboek', 'log'], ['settings', 'Instellingen', 'settings']],
 ];
 $('#brand').innerHTML = `${ico('home', 22)}<span>Huisconfig</span>`;

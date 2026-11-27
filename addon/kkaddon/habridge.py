@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 import aiohttp
@@ -32,6 +33,35 @@ REGISTRY_EVENTS = ("entity_registry_updated", "device_registry_updated", "area_r
 
 class HaError(Exception):
     pass
+
+
+def _epoch(v) -> float | None:
+    """Een tijdstip uit de geschiedenis van HA: seconden (kort formaat `lu`) of een ISO-tekst."""
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def parse_history(rows: list, step: float = 600.0) -> list[tuple[float, float]]:
+    """De getallen uit een antwoord van `history/history_during_period`, per `step` seconden gemiddeld (een grafiek heeft er geen duizend nodig).
+    Staten die geen getal zijn (unavailable, unknown) worden overgeslagen. HA geeft `s`/`lu` (kort) of `state`/`last_updated`."""
+    buckets: dict[int, list[float]] = {}
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        ts = _epoch(r.get("lu", r.get("last_updated", r.get("last_changed"))))
+        try:
+            v = float(r.get("s", r.get("state")))
+        except (TypeError, ValueError):
+            continue
+        if ts is not None and v == v and abs(v) != float("inf"):
+            buckets.setdefault(int(ts // step), []).append(v)
+    return [(k * step + step / 2, sum(vs) / len(vs)) for k, vs in sorted(buckets.items())]
 
 
 class HaBridge:
@@ -348,6 +378,27 @@ class HaBridge:
             res = await self._request({"type": "call_service", "domain": "weather", "service": "get_forecasts", "service_data": {"type": kind},
                                        "target": {"entity_id": entity}, "return_response": True})
             return ((res.get("result") or {}).get("response") or {}).get(entity, {}).get("forecast") or []
+        except (HaError, asyncio.TimeoutError):
+            return []
+
+    async def history(self, entity: str, hours: float = 12.0) -> list[tuple[float, float]]:
+        """De getallen van een entiteit over de laatste uren, voor een grafiek; leeg als HA ze niet geeft (geen recorder, geen rechten)."""
+        end = datetime.now(timezone.utc)
+        try:
+            res = await self._request({"type": "history/history_during_period", "start_time": (end - timedelta(hours=hours)).isoformat(), "end_time": end.isoformat(),
+                                       "entity_ids": [entity], "minimal_response": True, "no_attributes": True, "significant_changes_only": False}, timeout=30.0)
+            return parse_history((res.get("result") or {}).get(entity) or [])
+        except (HaError, asyncio.TimeoutError):
+            return []
+
+    async def calendar_events(self, entity: str, days: int = 21) -> list[dict]:
+        """De afspraken van een kalender-entiteit voor de komende dagen (`calendar.get_events`); leeg als HA ze niet geeft."""
+        start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=12)
+        try:
+            res = await self._request({"type": "call_service", "domain": "calendar", "service": "get_events",
+                                       "service_data": {"start_date_time": start.isoformat(), "end_date_time": (start + timedelta(days=days + 1)).isoformat()},
+                                       "target": {"entity_id": entity}, "return_response": True})
+            return ((res.get("result") or {}).get("response") or {}).get(entity, {}).get("events") or []
         except (HaError, asyncio.TimeoutError):
             return []
 
