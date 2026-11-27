@@ -43,12 +43,13 @@ SCREEN_ON = URI + "com.webos.service.tvpower/power/turnOnScreen"
 OPEN = URI + "system.launcher/open"
 LAUNCH = URI + "system.launcher/launch"
 TOAST = URI + "system.notifications/createToast"
+POINTER = URI + "com.webos.service.networkinput/getPointerInputSocket"
 
 # Het manifest zonder handtekening. LG's eigen voorbeeldmanifest (com.lge.test, met handtekening) wordt door een tv met webOS 25 geweigerd
 # ("403 Pairing rejected: blacklisted certificate detected"), dus we vragen onze rechten zelf aan.
 PERMISSIONS = ["LAUNCH", "LAUNCH_WEBAPP", "APP_TO_APP", "CLOSE", "TEST_OPEN", "TEST_PROTECTED", "CONTROL_AUDIO", "CONTROL_DISPLAY",
                "CONTROL_INPUT_JOYSTICK", "CONTROL_INPUT_MEDIA_RECORDING", "CONTROL_INPUT_MEDIA_PLAYBACK", "CONTROL_INPUT_TV",
-               "CONTROL_POWER", "CONTROL_TV_SCREEN", "READ_APP_STATUS", "READ_CURRENT_CHANNEL", "READ_INPUT_DEVICE_LIST", "READ_NETWORK_STATE",
+               "CONTROL_POWER", "CONTROL_TV_SCREEN", "CONTROL_MOUSE_AND_KEYBOARD", "READ_APP_STATUS", "READ_CURRENT_CHANNEL", "READ_INPUT_DEVICE_LIST", "READ_NETWORK_STATE",
                "READ_RUNNING_APPS", "READ_TV_CHANNEL_LIST", "WRITE_NOTIFICATION_TOAST", "READ_POWER_STATE", "READ_COUNTRY_INFO"]
 MANIFEST = {"manifestVersion": 1, "appVersion": "1.1", "permissions": PERMISSIONS}
 
@@ -114,6 +115,7 @@ class LgClient:
         self.connected = False
         self.pairing = False  # de tv wacht op een druk op OK
         self.rejected = False  # de gebruiker weigerde op de tv: niet blijven aandringen, de run stopt
+        self.click_error = ""  # waarom de laatste klik niet lukte ("401 insufficient permissions": opnieuw koppelen geeft het recht)
         self.last_error = ""
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._n = 0
@@ -286,6 +288,40 @@ class LgClient:
             self.on_state(vals)
 
     # -- bevelen
+
+    async def click(self) -> None:
+        """Een klik van de aanwijzer, zoals de LG-app op een telefoon: de tv geeft een tweede websocket voor aanwijzer en toetsen, en daar sturen we
+        `type:click`. Voor de browser telt dat als een echte klik van de afstandsbediening, en dus als een handeling van de gebruiker (volledig scherm).
+        Vraagt het recht CONTROL_MOUSE_AND_KEYBOARD; een koppeling van voor dat recht geeft `401 insufficient permissions`."""
+        res = await self.request(POINTER)
+        path = res.get("socketPath")
+        if not isinstance(path, str) or not path.startswith(("ws://", "wss://")):
+            raise LgError("de tv gaf geen aanwijzer-socket")
+        async with aiohttp.ClientSession() as http:
+            ws = await asyncio.wait_for(http.ws_connect(path, ssl=False), CONNECT)
+            try:
+                await ws.send_str("type:click\n\n")
+                await asyncio.sleep(0.3)  # de tv leest het bericht pas als de socket nog open is
+            finally:
+                await ws.close()
+
+    def click_soon(self, delay: float, only_if: Callable[[], bool] | None = None) -> bool:
+        """Over `delay` seconden klikken, als `only_if` dan nog klopt (bv. de browser staat nog vooraan: nooit klikken op een film). Zonder wachten."""
+        if not self.connected:
+            return False
+
+        async def go() -> None:
+            await asyncio.sleep(delay)
+            if only_if is not None and not only_if():
+                return
+            try:
+                await asyncio.wait_for(self.click(), 15.0)
+                self.click_error = ""
+            except (LgError, aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
+                self.click_error = str(e) or type(e).__name__
+                log.info("%s: klik niet verstuurd: %s", self.host, self.click_error)
+        self._spawn(go())
+        return True
 
     def power_off(self) -> bool:
         return self.send(TURN_OFF)

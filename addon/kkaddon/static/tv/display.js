@@ -20,6 +20,7 @@ const ICONS = {
   bolt: '<path d="M13.4 2.5 5.5 13.2h5.6l-1 8.3 8.4-11.4h-5.8z"/>',
   fog: '<path d="M6.5 13h11a3.6 3.6 0 0 0 .4-7.2A5 5 0 0 0 8 5.3 4 4 0 0 0 6.5 13z"/><path d="M4 16.5h16M6.5 20h11"/>',
   wind: '<path d="M3 9h10.5a2.7 2.7 0 1 0-2.6-3.4M3 13.5h15a2.8 2.8 0 1 1-2.7 3.5M3 18h6"/>',
+  gauge: '<path d="M4.5 18a8.5 8.5 0 1 1 15 0"/><path d="M12 14l3.6-5.2"/><circle cx="12" cy="14" r="1.3"/>',
   drop: '<path d="M12 3.2s6 6.1 6 10.6a6 6 0 0 1-12 0C6 9.3 12 3.2 12 3.2z"/>',
   flask: '<path d="M9.5 3h5M10.2 3v6.3L4.8 18.2A2 2 0 0 0 6.5 21h11a2 2 0 0 0 1.7-2.8l-5.4-8.9V3M7.5 15.2h9"/>',
   power: '<path d="M12 3v8.5M7 6.2a8 8 0 1 0 10 0"/>',
@@ -121,11 +122,15 @@ function tileHero(d) {
 
 function tileWeather(w, d) {
   if (!w) return '';
-  const [icon, text] = COND[w.state] || ['cloud', w.text || ''];
-  const hours = (w.hours || []).map((h) => `<div class="h"><div class="t">${esc(h.t)}</div>${ic((COND[h.state] || ['cloud'])[0], 44)}<div class="d">${num(h.temp, 0)}°</div></div>`).join('');
+  const [icon, text] = w.state ? (COND[w.state] || ['cloud', w.text || '']) : ['thermo', ''];
+  const hours = (w.hours || []).map((h) => `<div class="h"><div class="t">${esc(h.t)}</div>${ic((COND[h.state] || ['cloud'])[0], 38)}<div class="d">${num(h.temp, 0)}°</div></div>`).join('');
+  const stats = [w.pressure != null && ['gauge', `${num(w.pressure, 0)}<small>hPa</small>`, 'Luchtdruk'], w.rain != null && ['rain', `${num(w.rain, 1)}<small>mm</small>`, 'Neerslag'],
+    w.humidity != null && ['drop', `${num(w.humidity, 0)}<small>%</small>`, 'Vocht']].filter(Boolean)
+    .map(([i, v, l]) => `<div class="ws">${ic(i, 34)}<div><b>${v}</b><span>${l}</span></div></div>`).join('');
   return `<section class="card weather"><h2>${ic(icon, 40)}Weer</h2>
-    <div class="top"><div><div class="big">${num(w.temp, 0)}<span class="u">°C</span></div><div class="cond">${esc(w.text || text)}</div></div>
+    <div class="top"><div><div class="big">${num(w.temp, 1)}<span class="u">°C</span></div><div class="cond">${esc(w.text || text)}</div></div>
       ${w.max != null || w.min != null ? `<div class="mm"><div>Max <b>${num(w.max, 0)}°C</b></div><div>Min <b>${num(w.min, 0)}°C</b></div></div>` : ''}</div>
+    ${stats ? `<div class="wstats">${stats}</div>` : ''}
     ${hours ? `<div class="hours">${hours}</div>` : ''}</section>`;
 }
 
@@ -175,12 +180,12 @@ const chip = (c) => `<div class="chip ${c.tone || (c.on ? 'on' : '')}"><div clas
 // ---------------------------------------------------------------- pagina
 function render(d) {
   const tz = d.tz || undefined, now = d.now, w = d.weather;
-  const [wi] = w ? (COND[w.state] || ['cloud']) : [];
+  const [wi] = w && w.state ? (COND[w.state] || ['cloud']) : [];
   const st = d.status || { ok: true };
   const date = new Date(now * 1000).toLocaleDateString('nl-BE', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: tz }).replace(/\.$/, '');
   const head = `<div class="head"><h1>${esc(d.title || 'Mijn huis')}</h1><div class="pill ${st.ok ? '' : 'warn'}"><i></i>${st.ok ? 'Alles OK' : esc(st.text || 'Let op')}</div><div class="sp"></div>
     <div class="date">${esc(date.charAt(0).toUpperCase() + date.slice(1))}</div><div class="clock" id="clock">${hhmm(now, tz)}</div>
-    ${w ? `<div class="now">${ic(wi, 52)}<div><div class="t">${num(w.temp, 0)}°C</div>${w.feels != null ? `<div class="f">Voelt aan: ${num(w.feels, 0)}°C</div>` : ''}</div></div>` : ''}</div>`;
+    ${w ? `<div class="now">${ic(wi || 'thermo', 52)}<div><div class="t">${num(w.temp, 0)}°C</div>${w.feels != null ? `<div class="f">Voelt aan: ${num(w.feels, 0)}°C</div>` : ''}</div></div>` : ''}</div>`;
   const r1 = [tileEnergy(d.energy, now, tz), tileHero(d), tileWeather(w, d)].filter(Boolean);
   const tiles = (d.tiles || []).map((t) => tileSensors(t, now, tz));
   const r2 = [tiles[0], tileClimate(d.climate, now, tz), tileWaste(d.waste, d), ...tiles.slice(1)].filter(Boolean).slice(0, 3);
@@ -207,7 +212,7 @@ const DEMO = (() => {
   const now = Math.floor(Date.now() / 1000), series = (f, n = 72) => Array.from({ length: n }, (_, i) => [now - (n - i) * 600, f(i / n)]);
   return {
     title: 'Mijn Huis', now, tz: 'Europe/Brussels', age: 0, status: { ok: true }, photo: '',
-    weather: { state: 'partlycloudy', temp: 8, feels: 6, text: 'Licht bewolkt', max: 10, min: 4, hours: [{ t: '21u', state: 'clear-night', temp: 6 }, { t: '22u', state: 'clear-night', temp: 5 }, { t: '23u', state: 'clear-night', temp: 5 }, { t: '00u', state: 'cloudy', temp: 5 }, { t: '01u', state: 'cloudy', temp: 4 }] },
+    weather: { state: 'partlycloudy', temp: 8.4, feels: 6, text: 'Licht bewolkt', max: 10, min: 4, pressure: 1022, humidity: 83, rain: 0.4, hours: [{ t: '21u', state: 'clear-night', temp: 6 }, { t: '22u', state: 'clear-night', temp: 5 }, { t: '23u', state: 'clear-night', temp: 5 }, { t: '00u', state: 'cloudy', temp: 5 }, { t: '01u', state: 'cloudy', temp: 4 }] },
     energy: { consumption: { value: 1.24, unit: 'kW' }, max: 5, solar: { value: 3.8, unit: 'kW' }, battery: { pct: 68, detail: '2,1 kWh' }, trend: -12,
       series: { consumption: series((x) => 0.8 + 0.6 * Math.sin(x * 9) ** 2 + 0.3 * Math.sin(x * 31)), solar: series((x) => Math.max(0, 3.6 * Math.sin(Math.PI * Math.min(1, x * 1.3)))) } },
     tiles: [{ id: 'zwembad', title: 'Zwembad', icon: 'waves', tag: '24,6°C', rows: [{ label: 'pH', value: 7.2, icon: 'drop' }, { label: 'Chloor', value: 1.1, unit: 'ppm', icon: 'flask' }, { label: 'Pomp', text: 'Aan', icon: 'pump', tone: 'on' }], series: series((x) => 25 - 1.2 * Math.sin(x * 5)), unit: '°' }],
@@ -242,6 +247,25 @@ setInterval(() => { // de klok loopt zelf, tussen twee ophaalrondes
   const el = $('#clock');
   if (el) el.textContent = hhmm(last.now + (Date.now() - fetchedAt) / 1000, last.tz);
 }, 1000);
+// Volledig scherm. De browser van de tv houdt zijn adresbalk over de pagina tot de pagina volledig scherm krijgt, en dat mag alleen na een klik
+// met de aanwijzer (op een echte LG gemeten: een druk op OK bereikt de pagina niet, een klik wel). De add-on stuurt die klik zelf nadat hij de
+// pagina opende (lghub.py); wie de pagina met de hand opent, klikt eenmaal. In de voorvertoning (een iframe) doen we dit niet.
+const isFrame = window.self !== window.top;
+const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement;
+function goFull() {
+  if (isFrame || fsElement()) return;
+  const el = document.documentElement, f = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (f) try { Promise.resolve(f.call(el)).catch(() => {}); } catch { /* geen volledig scherm mogelijk */ }
+}
+for (const ev of ['pointerdown', 'click', 'keydown']) addEventListener(ev, goFull, true);
+const hint = document.createElement('div');
+hint.className = 'fshint';
+hint.textContent = 'Klik met de aanwijzer voor volledig scherm';
+document.body.appendChild(hint);
+const showHint = () => { hint.style.display = isFrame || fsElement() || new URLSearchParams(location.search).get('demo') ? 'none' : 'block'; };
+['fullscreenchange', 'webkitfullscreenchange'].forEach((ev) => document.addEventListener(ev, () => { showHint(); fit(); }));
+showHint();
+
 fit();
 tick();
 setInterval(tick, POLL);

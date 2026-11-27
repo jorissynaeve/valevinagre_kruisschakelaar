@@ -22,12 +22,20 @@ class StubClient:
         self.connected, self.pairing, self.rejected, self.last_error = True, False, False, ""
         self.sent: list = []
         self.ok = True
+        self.click_error = ""
+        self.clicks: list = []  # (wachttijd, bewaking) van elke klik voor volledig scherm
 
     def _do(self, *what) -> bool:
         if self.ok and self.connected:
             self.sent.append(what)
             return True
         return False
+
+    def click_soon(self, delay, only_if=None):
+        if not self.connected:
+            return False
+        self.clicks.append((delay, only_if))
+        return True
 
     def power_off(self): return self._do("off")
     def screen(self, on): return self._do("screen", on)

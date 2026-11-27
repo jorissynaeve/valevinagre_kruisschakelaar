@@ -17,6 +17,13 @@ alleen-lezen. Het adres bevat een geheim (`/tv/<geheim>/`), dat je op het tabbla
 
 Grafieken: elke minuut een meetpunt in het geheugen (13 uur), bij het opstarten aangevuld uit de geschiedenis van HA.
 Het bestand: /data/tv.json.
+
+Twee bronnen buiten HA, allebei een adres dat jij opgeeft (de add-on haalt ze zelf op, met een time-out en een grootte-grens):
+
+  weerstation  een JSON-adres met metingen (bv. een eigen weerstation): temperatuur, luchtdruk, luchtvochtigheid en een regenteller. Een meting is
+               `{"time": ..., "value": ...}` of een kaal getal; een meting die ouder is dan `max_age` minuten telt als onbekend. De regenteller loopt op
+               (mm sinds de installatie): de neerslag van vandaag is het verschil met middernacht, uit een meetpunt per 10 minuten in /data/tv_rain.json.
+  ICS          een kalenderlink (.ics), bv. de agenda-export van een afvalophaler; elke afspraak is een ophaling. Geen herhalingsregels (RRULE).
 """
 from __future__ import annotations
 
@@ -30,10 +37,11 @@ import secrets
 import socket
 import time
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 from aiohttp import web
 
 from .engine import Engine
@@ -43,7 +51,7 @@ log = logging.getLogger("kk.tv")
 
 STATIC = Path(__file__).parent / "static" / "tv"
 ICON_NAMES = ("dot sun moon cloud partly rain pour snow bolt fog wind drop flask power pump home thermo flake fan cal bin leaf lock unlock bell door check warn solar "
-              "battery zap waves flame car water").split()  # zoals ICONS in static/tv/display.js (een test bewaakt dat)
+              "battery zap waves flame car water gauge").split()  # zoals ICONS in static/tv/display.js (een test bewaakt dat)
 MAX_TILES, MAX_ROWS, MAX_CHIPS, MAX_ALERTS = 3, 4, 5, 20
 HISTORY_HOURS = 12.0
 KEEP = 13 * 60  # meetpunten per bron (een per minuut)
@@ -54,6 +62,13 @@ ON_STATES = {"on", "true", "home", "open", "unlocked", "active", "playing", "hea
 BAD_STATES = {"unavailable", "unknown", "none", ""}
 SRC_RE = re.compile(rf"^({ENTITY_RE.pattern[1:-1]}|{SOURCE_RE.pattern[1:-1]})$")
 DISPLAY_FILES = {"display.css": "text/css", "display.js": "application/javascript"}
+WX_EVERY = 60.0  # s: het weerstation
+ICS_EVERY = 6 * 3600.0  # s: de ophaalkalender verandert zelden
+RAIN_EVERY = 600.0  # s tussen twee punten van de regenteller
+RAIN_KEEP = 27 * 3600  # s
+MAX_BODY = 2_000_000  # bytes van een bron buiten HA
+URL_RE = re.compile(r"^https?://[^\s'\"<>]{1,400}$")
+KEY_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,60}$")
 
 
 def _text(v, n: int, what: str = "tekst") -> str:
@@ -69,6 +84,20 @@ def _src(v, what: str) -> str:
     s = _text(v, 120, what)
     if s and not SRC_RE.match(s):
         raise ModelError(f"{what}: kies een HA-entiteit (bv. sensor.stroomverbruik) of een uitgang van een blok (bv. o:deye:pv)")
+    return s
+
+
+def _url(v, what: str) -> str:
+    s = _text(v, 400, what)
+    if s and not URL_RE.match(s):
+        raise ModelError(f"{what}: een adres dat met http:// of https:// begint")
+    return s
+
+
+def _key(v, what: str, default: str) -> str:
+    s = _text(v, 60, what) or default
+    if not KEY_RE.match(s):
+        raise ModelError(f"{what}: de naam van een veld in de JSON (bv. outTemp_C, of a.b voor een veld in een veld)")
     return s
 
 
@@ -109,9 +138,10 @@ def _list(b, n: int, what: str) -> list:
 
 def defaults() -> dict:
     return {"token": secrets.token_urlsafe(16), "title": "Mijn huis", "photo": "", "weather": "", "alerts": [],
+            "weather_json": {"url": "", "temp": "outTemp_C", "pressure": "barometer_mbar", "humidity": "outHumidity", "rain_total": "rainTotal", "max_age": 60},
             "energy": {"consumption": "", "max": 5.0, "solar": "", "battery": "", "battery_kwh": "", "grid": ""},
             "tiles": [], "climate": {"title": "Temperaturen", "rows": [], "chart": []},
-            "waste": {"on": True, "calendar": "", "days": 21}, "chips": [], "next": {"label": "Volgende afspraak:", "calendar": ""}}
+            "waste": {"on": True, "calendar": "", "ics": "", "days": 21}, "chips": [], "next": {"label": "Volgende afspraak:", "calendar": ""}}
 
 
 def clean(b: dict, token: str) -> dict:
@@ -127,6 +157,10 @@ def clean(b: dict, token: str) -> dict:
     if w and not w.startswith("weather."):
         raise ModelError("weer: kies een entiteit van het soort weather.*")
     out["weather"] = w
+    wj = b.get("weather_json") if isinstance(b.get("weather_json"), dict) else {}
+    d0 = defaults()["weather_json"]
+    out["weather_json"] = {"url": _url(wj.get("url"), "weerstation"), **{k: _key(wj.get(k), f"weerstation {k}", d0[k]) for k in ("temp", "pressure", "humidity", "rain_total")},
+                           "max_age": int(_num(wj.get("max_age"), "weerstation maximale ouderdom (minuten)", 5, 1440, 60))}
     out["alerts"] = [_src(a, "melding") for a in _list(b.get("alerts"), MAX_ALERTS, "meldingen") if a]
     e = b.get("energy") if isinstance(b.get("energy"), dict) else {}
     out["energy"] = {k: _src(e.get(k), f"energie {k}") for k in ("consumption", "solar", "battery", "battery_kwh", "grid")}
@@ -142,13 +176,80 @@ def clean(b: dict, token: str) -> dict:
     cal = _src(wa.get("calendar"), "ophaalkalender")
     if cal and not cal.startswith("calendar."):
         raise ModelError("ophaalkalender: kies een entiteit van het soort calendar.*")
-    out["waste"] = {"on": bool(wa.get("on", True)), "calendar": cal, "days": int(_num(wa.get("days"), "dagen vooruit", 3, 60, 21))}
+    out["waste"] = {"on": bool(wa.get("on", True)), "calendar": cal, "ics": _url(wa.get("ics"), "kalenderlink (ICS)"), "days": int(_num(wa.get("days"), "dagen vooruit", 3, 60, 21))}
     out["chips"] = [{k: v for k, v in _row(c_, "knop").items() if k in ("label", "source", "icon", "on_text", "off_text")} for c_ in _list(b.get("chips"), MAX_CHIPS, "knoppen") if isinstance(c_, dict)]
     n = b.get("next") if isinstance(b.get("next"), dict) else {}
     ncal = _src(n.get("calendar"), "volgende afspraak")
     if ncal and not ncal.startswith("calendar."):
         raise ModelError("volgende afspraak: kies een entiteit van het soort calendar.*")
     out["next"] = {"label": _text(n.get("label"), 30, "label") or "Volgende afspraak:", "calendar": ncal}
+    return out
+
+
+def _pick(obj, path: str):
+    """Een veld in een JSON-object; `a.b` gaat een niveau dieper."""
+    for k in path.split("."):
+        if not isinstance(obj, dict) or k not in obj:
+            return None
+        obj = obj[k]
+    return obj
+
+
+def reading(obj, path: str, now: float, max_age_min: float) -> float | None:
+    """Een meting uit de JSON van een weerstation: `{"time": ..., "value": ...}` of een kaal getal. Een meting die te oud is, telt als onbekend: een
+    weerstation dat uitviel, mag niet vorige week als nu tonen."""
+    v = _pick(obj, path)
+    stamp = None
+    if isinstance(v, dict):
+        stamp, v = v.get("time"), v.get("value")
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+        return None
+    if stamp is not None:
+        try:
+            t = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+        if now - t > max_age_min * 60 or t - now > 3600:
+            return None
+    return float(v)
+
+
+def parse_ics(text: str, tz=None) -> list[dict]:
+    """De afspraken uit een ICS-bestand als `{"start": "JJJJ-MM-DD", "summary": ...}` (zoals `calendar.get_events` van HA). Geen herhalingsregels.
+    Een afspraak met een tijd in UTC wordt naar de datum in `tz` omgezet; een geannuleerde afspraak telt niet."""
+    lines: list[str] = []
+    for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if raw[:1] in (" ", "\t") and lines:
+            lines[-1] += raw[1:]  # een regel die doorloopt
+        else:
+            lines.append(raw)
+    out, ev = [], None
+    for ln in lines:
+        if ln == "BEGIN:VEVENT":
+            ev = {}
+        elif ln == "END:VEVENT":
+            if ev and ev.get("start") and ev.get("summary") and ev.get("status") != "CANCELLED":
+                out.append({"start": ev["start"], "summary": ev["summary"]})
+            ev = None
+        elif ev is not None and ":" in ln:
+            name, _, val = ln.partition(":")
+            base = name.split(";")[0].upper()
+            if base == "DTSTART":
+                m = re.match(r"^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z?))?$", val.strip())
+                if not m:
+                    continue
+                y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                try:
+                    day = datetime(y, mo, d)
+                    if m.group(7) == "Z":
+                        day = datetime(y, mo, d, int(m.group(4)), int(m.group(5)), int(m.group(6)), tzinfo=timezone.utc).astimezone(tz) if tz else day
+                except ValueError:
+                    continue
+                ev["start"] = day.date().isoformat()
+            elif base == "SUMMARY":
+                ev["summary"] = val.replace("\\,", ",").replace("\\;", ";").replace("\\n", " ").replace("\\N", " ").replace("\\\\", "\\").strip()
+            elif base == "STATUS":
+                ev["status"] = val.strip().upper()
     return out
 
 
@@ -189,10 +290,17 @@ class TvHub:
         self.hist: dict[str, deque] = {}
         self.forecast: dict[str, Any] = {"hourly": [], "daily": [], "at": 0.0}
         self.events: dict[str, Any] = {"waste": [], "next": [], "at": 0.0}
+        self.wx: dict[str, Any] = {"temp": None, "pressure": None, "humidity": None, "rain_total": None, "at": 0.0, "ok": None}  # het weerstation (buiten HA)
+        self.ics: dict[str, Any] = {"events": [], "at": 0.0, "ok": None}
+        self.rain: deque = deque()  # (tijd, regenteller) per 10 minuten, bewaard in /data/tv_rain.json
+        self.rain_path = Path(data_dir) / "tv_rain.json"
+        self.rain_saved = 0.0
+        self.errors: dict[str, str] = {}  # bron -> waarom ze niet lukte, voor het tabblad
         self.tasks: list[asyncio.Task] = []
         self.runner: web.AppRunner | None = None
         self.listening = 0  # de poort waarop de tv-pagina echt luistert (0: uit)
         self._load()
+        self._load_rain()
 
     # ------------------------------------------------------------ opslag
 
@@ -217,7 +325,7 @@ class TvHub:
     def update(self, b: dict) -> dict:
         self.cfg = clean(b, self.cfg["token"])
         self._save()
-        self.forecast["at"] = self.events["at"] = 0.0  # een andere entiteit: opnieuw ophalen
+        self.forecast["at"] = self.events["at"] = self.wx["at"] = self.ics["at"] = 0.0  # een andere bron: opnieuw ophalen
         self._wake()
         if self.changed:
             self.changed()
@@ -308,11 +416,13 @@ class TvHub:
         return out
 
     def _weather(self) -> dict | None:
-        ent = self.cfg["weather"]
+        """Het weer: de stand en de voorspelling uit een `weather.*`-entiteit van HA, en de metingen van een eigen weerstation (die voor de temperatuur voorgaan)."""
+        ent, w = self.cfg["weather"], self.wx
         st = self.ha.states.get(ent) if (ent and self.ha) else None
-        if st is None:
+        station = self.cfg["weather_json"]["url"] and any(w[k] is not None for k in ("temp", "pressure", "humidity", "rain_total"))
+        if st is None and not station:
             return None
-        state, a = st
+        state, a = st if st is not None else ("", {})
         tz = getattr(self.engine, "tz", None)
         daily = (self.forecast["daily"] or [{}])[0]
 
@@ -320,7 +430,7 @@ class TvHub:
             return float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else None
         now = time.time()
         hours = []
-        for h in self.forecast["hourly"]:
+        for h in self.forecast["hourly"] if st is not None else []:
             try:
                 t = datetime.fromisoformat(str(h.get("datetime")).replace("Z", "+00:00"))
             except ValueError:
@@ -334,12 +444,25 @@ class TvHub:
             hours.append({"t": f"{local.hour:02d}u", "state": cond, "temp": num(h.get("temperature"))})
             if len(hours) == 5:
                 break
-        cond = state if state not in BAD_STATES else "cloudy"
-        local_now = self.engine.local_now()
-        if cond == "sunny" and self._night(local_now):
-            cond = "clear-night"
-        return {"state": cond, "temp": num(a.get("temperature")), "feels": num(a.get("apparent_temperature")), "max": num(daily.get("temperature")), "min": num(daily.get("templow")),
-                "hours": hours}
+        cond = ""
+        if st is not None:
+            cond = state if state.lower() not in BAD_STATES else "cloudy"
+            if cond == "sunny" and self._night(self.engine.local_now()):
+                cond = "clear-night"
+        temp = w["temp"] if w["temp"] is not None else num(a.get("temperature"))
+        return {"state": cond, "temp": temp, "feels": num(a.get("apparent_temperature")), "max": num(daily.get("temperature")), "min": num(daily.get("templow")),
+                "pressure": w["pressure"], "humidity": w["humidity"] if w["humidity"] is not None else num(a.get("humidity")), "rain": self._rain_today(), "hours": hours}
+
+    def _rain_today(self) -> float | None:
+        """De neerslag sinds middernacht (mm): het verschil van de regenteller met het laatste punt van voor middernacht, of met het eerste punt dat we hebben.
+        Een teller die terugvalt (een reset) telt als een nieuw begin. Onbekend zolang het weerstation geen teller gaf."""
+        if self.wx["rain_total"] is None or not self.rain:
+            return None
+        mid = self.engine.local_now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        pts = sorted(self.rain)  # chronologisch, ook als het bestand dat niet was
+        base = next((p for p in reversed(pts) if p[0] <= mid), pts[0])
+        total = self.wx["rain_total"]
+        return round(max(0.0, total - base[1]), 1) if total >= base[1] else 0.0
 
     def _night(self, local: datetime) -> bool:
         sun = self.engine.sun_today()
@@ -386,7 +509,7 @@ class TvHub:
             return None
         today = self.engine.local_now().date()
         items = []
-        for ev in self.events["waste"]:
+        for ev in [*self.events["waste"], *self.ics["events"]]:
             d = _event_date(ev)
             if d is None or d < today:
                 continue
@@ -394,7 +517,7 @@ class TvHub:
             if label and not any(i["date"] == d.isoformat() and i["label"] == label for i in items):
                 items.append({"date": d.isoformat(), "label": label[:30], "days": (d - today).days})
         items.sort(key=lambda i: (i["date"], i["label"]))
-        return {"configured": bool(w["calendar"]), "today": today.isoformat(), "items": items[:6]}
+        return {"configured": bool(w["calendar"] or w["ics"]), "today": today.isoformat(), "items": items[:6]}
 
     def _next(self) -> dict | None:
         n = self.cfg["next"]
@@ -469,6 +592,7 @@ class TvHub:
         while True:
             try:
                 self.sample()
+                await self._refresh_web()
                 if self.ha and self.ha.connected:
                     await self._backfill(backfilled)
                     await self._refresh()
@@ -507,6 +631,99 @@ class TvHub:
             self.events["waste"] = await self.ha.calendar_events(w["calendar"], w["days"]) if (w["on"] and w["calendar"]) else []
             self.events["next"] = await self.ha.calendar_events(n["calendar"], 7) if n["calendar"] else []
 
+    async def _get(self, url: str, what: str) -> bytes | None:
+        """Een adres buiten HA ophalen, met een time-out en een grens aan de grootte. Een fout komt in `errors` (voor het tabblad) en geeft None."""
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12)) as http:
+                async with http.get(url, headers={"User-Agent": "Huisconfig (tv-pagina)"}) as r:
+                    if r.status != 200:
+                        raise ValueError(f"HTTP {r.status}")
+                    body = await r.content.read(MAX_BODY + 1)
+                    if len(body) > MAX_BODY:
+                        raise ValueError("antwoord te groot")
+            self.errors.pop(what, None)
+            return body
+        except (aiohttp.ClientError, OSError, asyncio.TimeoutError, ValueError) as e:
+            msg = str(e) or type(e).__name__
+            if self.errors.get(what) != msg:
+                log.info("%s niet opgehaald: %s", what, msg)
+            self.errors[what] = msg
+            return None
+
+    async def _refresh_web(self) -> None:
+        """De bronnen buiten HA: het weerstation (elke minuut) en de ophaalkalender (ICS, elke 6 uur). Ze hebben HA niet nodig."""
+        now = time.monotonic()
+        wj = self.cfg["weather_json"]
+        if wj["url"] and now - self.wx["at"] >= WX_EVERY - 1:
+            self.wx["at"] = now
+            body = await self._get(wj["url"], "weerstation")
+            try:
+                obj = json.loads(body) if body is not None else None
+            except ValueError:
+                self.errors["weerstation"] = "geen geldige JSON"
+                obj = None
+            if isinstance(obj, dict):
+                t = time.time()
+                for k in ("temp", "pressure", "humidity", "rain_total"):
+                    self.wx[k] = reading(obj, wj[k], t, wj["max_age"])
+                self.wx["ok"] = True
+                self._rain_sample(t)
+            else:
+                self.wx.update(temp=None, pressure=None, humidity=None, rain_total=None, ok=False)  # onbekend, niet de vorige meting
+        elif not wj["url"]:
+            self.wx.update(temp=None, pressure=None, humidity=None, rain_total=None, ok=None)
+            self.errors.pop("weerstation", None)
+        ics = self.cfg["waste"]["ics"]
+        if ics and self.cfg["waste"]["on"] and now - self.ics["at"] >= ICS_EVERY:
+            self.ics["at"] = now
+            body = await self._get(ics, "ophaalkalender")
+            if body is not None:
+                self.ics["events"] = parse_ics(body.decode("utf-8", "replace"), getattr(self.engine, "tz", None))
+                self.ics["ok"] = True
+            else:
+                self.ics["ok"] = False  # de vorige afspraken blijven staan: een kalender die even niet antwoordt, is niet leeg
+        elif not ics:
+            self.ics.update(events=[], ok=None)
+            self.errors.pop("ophaalkalender", None)
+
+    # ------------------------------------------------------------ de regenteller
+
+    def _load_rain(self) -> None:
+        try:
+            raw = json.loads(self.rain_path.read_text(encoding="utf-8"))
+            now = time.time()
+            for t, v in raw:
+                if isinstance(t, (int, float)) and isinstance(v, (int, float)) and now - t <= RAIN_KEEP:
+                    self.rain.append((float(t), float(v)))
+        except FileNotFoundError:
+            pass
+        except (ValueError, OSError, TypeError) as e:
+            log.warning("%s niet leesbaar (%s): de regenteller begint opnieuw", self.rain_path, e)
+
+    def _rain_sample(self, now: float) -> None:
+        """Een punt per 10 minuten (en meteen bij een reset van de teller); bewaard, zodat een herstart de neerslag van vandaag niet kwijtraakt."""
+        total = self.wx["rain_total"]
+        if total is None:
+            return
+        while self.rain and now - self.rain[0][0] > RAIN_KEEP:
+            self.rain.popleft()
+        if self.rain and total < self.rain[-1][1]:
+            self.rain.clear()  # de teller viel terug: een nieuw begin
+        if not self.rain or now - self.rain[-1][0] >= RAIN_EVERY - 1:
+            self.rain.append((now, total))
+            self._save_rain(now)
+
+    def _save_rain(self, now: float) -> None:
+        if now - self.rain_saved < RAIN_EVERY - 1 and self.rain_saved:
+            return
+        self.rain_saved = now
+        try:
+            tmp = self.rain_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps([[round(t, 1), v] for t, v in self.rain]), encoding="utf-8")
+            os.replace(tmp, self.rain_path)
+        except OSError as e:
+            log.warning("regenteller niet bewaard: %s", e)
+
     # ------------------------------------------------------------ de server voor de tv
 
     async def _serve(self) -> None:
@@ -535,7 +752,9 @@ class TvHub:
     # ------------------------------------------------------------ voor het tabblad
 
     def view(self) -> dict:
-        return {"config": self.cfg, "port": self.port, "listening": self.listening, "ha": bool(self.ha and self.ha.connected), "host": lan_ip()}
+        return {"config": self.cfg, "port": self.port, "listening": self.listening, "ha": bool(self.ha and self.ha.connected), "host": lan_ip(),
+                "errors": dict(self.errors), "station": {k: self.wx[k] for k in ("temp", "pressure", "humidity", "rain_total", "ok")}, "rain_today": self._rain_today(),
+                "ics_count": len(self.ics["events"]), "ics_ok": self.ics["ok"]}
 
     def sources(self, blocks: list[dict]) -> dict:
         """Wat je op het tabblad kunt kiezen: HA-entiteiten per soort, en de uitgangen van blokken (airco, omvormer, tv, ...)."""

@@ -537,6 +537,8 @@ function scLgPanel(b, props) {
     <h2>Dashboard</h2>
     <label>Adres van het dashboard</label><input type="text" inputmode="url" maxlength="500" data-lgfield="url" spellcheck="false" autocomplete="off" placeholder="http://homeassistant.local:8123/dashboard-tv/0" value="${esc(b.url)}">
     <label>Dashboard weghalen</label><select data-lgfield="off_mode">${Object.entries(SC_LG_OFF).map(([v, t]) => opt(v, b.off_mode, t)).join('')}</select>
+    <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-lgbool="fullscreen" ${b.fullscreen ? 'checked' : ''}> Volledig scherm (adresbalk verbergen)</label>
+    <div class="sub">De browser van de tv toont zijn adresbalk tot de pagina volledig scherm krijgt, en dat mag alleen na een klik met de aanwijzer. De add-on stuurt die klik zelf, 5 seconden nadat hij het dashboard opende en alleen als de browser dan nog vooraan staat.${b.click_error ? (/401|permission/i.test(b.click_error) ? ' <b>Het recht voor de klik ontbreekt: kies Opnieuw koppelen en bevestig op de tv.</b>' : ` <b>De laatste klik lukte niet: ${esc(b.click_error)}</b>`) : ''}</div>
     <label>Eigen apps (tellen niet als kijken)</label><input type="text" maxlength="1000" data-lgfield="apps" spellcheck="false" autocomplete="off" value="${esc(b.apps.join(' '))}">
     <div class="sub">App-id's gescheiden door spaties. Standaard: de browser (het dashboard zelf), de screensaver en het beginscherm. Een spelconsole of Netflix telt dus als kijken. Zet een app erbij als hij niet als kijken moet gelden.</div>
     <h2>Toestel</h2>
@@ -3125,10 +3127,11 @@ document.addEventListener('change', (ev) => {
       act(() => scSaveAirco(b, { mac, host }))();
     } else if (ds.awfield && (value || ds.awfield !== 'key')) act(() => scSaveAirco(b, { [ds.awfield]: value }))();
   }
-  if (t.dataset && (t.dataset.lgin || t.dataset.lgfield) && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'lg') {
+  if (t.dataset && (t.dataset.lgin || t.dataset.lgfield || t.dataset.lgbool) && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'lg') {
     const b = scBlock(SC.sel), ds = t.dataset, value = t.value.trim();
     t.blur();
-    if (ds.lgin) act(() => scSaveLg(b, { inputs: { [ds.lgin]: value || null } }))();
+    if (ds.lgbool) act(() => scSaveLg(b, { [ds.lgbool]: t.checked }))();
+    else if (ds.lgin) act(() => scSaveLg(b, { inputs: { [ds.lgin]: value || null } }))();
     else act(() => scSaveLg(b, { [ds.lgfield]: value }))();
   }
   if (t.dataset && (t.dataset.esset || t.dataset.esin || t.dataset.esshow !== undefined || t.dataset.esha !== undefined) && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'espdev') {

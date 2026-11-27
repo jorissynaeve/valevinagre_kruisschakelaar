@@ -10,7 +10,7 @@ let TVSAVING = 0;
 const TV_ICONS = { dot: 'punt', sun: 'zon', moon: 'maan', cloud: 'wolk', partly: 'half bewolkt', rain: 'regen', pour: 'zware regen', snow: 'sneeuw', bolt: 'bliksem', fog: 'mist', wind: 'wind',
   drop: 'druppel', flask: 'maatkolf', power: 'aan/uit', pump: 'pomp', home: 'huis', thermo: 'thermometer', flake: 'koelen', fan: 'ventilator', cal: 'kalender', bin: 'afval', leaf: 'blad',
   lock: 'slot', unlock: 'open slot', bell: 'bel', door: 'deur', check: 'vinkje', warn: 'waarschuwing', solar: 'zonnepanelen', battery: 'batterij', zap: 'stroom', waves: 'water', flame: 'vlam',
-  car: 'auto', water: 'water (druppel)' };
+  car: 'auto', water: 'water (druppel)', gauge: 'meter' };
 const TV_ROW = () => ({ label: '', source: '', icon: '', unit: '', dec: 1, on_text: '', off_text: '' });
 
 async function loadTv() {
@@ -44,6 +44,30 @@ function tvState(src) { // de stand van een gekozen bron, ter controle
   const hit = [...TV.src.ha, ...TV.src.addon].find((x) => x[0] === src);
   if (!hit) return src.includes('.') || /^[a-z]:/.test(src) ? '<span class="sub" style="color:var(--bad)">niet gevonden</span>' : '';
   return `<span class="sub">${esc(hit[1])}${hit[3] !== '' ? ` · nu ${esc(hit[3])} ${esc(hit[2])}` : ''}</span>`;
+}
+
+function tvStatusWx() { // wat het weerstation nu geeft, of waarom niet
+  if (!TV || !TV.config.weather_json.url) return '';
+  if (TV.errors && TV.errors.weerstation) return `<span style="color:var(--bad)">Weerstation: ${esc(TV.errors.weerstation)}</span>`;
+  const s = TV.station || {};
+  if (s.ok !== true) return 'Weerstation: nog niet opgehaald…';
+  const f = (v, u, d = 1) => (v == null ? '–' : `${Number(v).toLocaleString('nl-BE', { maximumFractionDigits: d })} ${u}`);
+  return `Weerstation nu: ${f(s.temp, '°C')} · ${f(s.pressure, 'hPa', 0)} · ${f(s.humidity, '%', 0)} · neerslag vandaag ${f(TV.rain_today, 'mm')} (een veld dat '–' toont, bestaat niet of is te oud)`;
+}
+function tvStatusIcs() {
+  if (!TV || !TV.config.waste.ics) return '';
+  if (TV.errors && TV.errors.ophaalkalender) return `<span style="color:var(--bad)">Kalenderlink: ${esc(TV.errors.ophaalkalender)}</span>`;
+  if (TV.ics_ok === null || TV.ics_ok === undefined) return 'Kalenderlink: nog niet opgehaald…';
+  return `Kalenderlink: ${TV.ics_count} afspraken gelezen`;
+}
+async function tvStatus() { // alleen de statusregels bijwerken, zonder het formulier opnieuw te tekenen
+  try {
+    const v = await api('GET', 'tv');
+    Object.assign(TV, { errors: v.errors, station: v.station, rain_today: v.rain_today, ics_count: v.ics_count, ics_ok: v.ics_ok });
+    const a = $('#tvwx'), b = $('#tvics');
+    if (a) a.innerHTML = tvStatusWx();
+    if (b) b.innerHTML = tvStatusIcs();
+  } catch { /* de volgende keer */ }
 }
 
 function tvIn(label, path, o = {}) {
@@ -103,7 +127,11 @@ function viewTvBody() {
         ${tvblock}${warn}${TV.ha ? '' : '<p class="empty">Home Assistant is niet verbonden: er zijn nog geen entiteiten om uit te kiezen.</p>'}</div>
       <div class="card"><h3>Algemeen</h3>
         <div class="row">${tvIn('Titel', 'title', { w: 200, max: 40 })}${tvIn('Foto in het midden (adres, mag leeg)', 'photo', { w: 260, max: 300, ph: '/local/huis.jpg' })}</div>
-        <div class="row">${tvSrc('Weer', 'weather', 'tvweather', 'weather.thuis')}</div>
+        <div class="row">${tvSrc('Weer (voorspelling en beeld, uit HA)', 'weather', 'tvweather', 'weather.thuis')}</div>
+        <div class="row">${tvIn('Weerstation (JSON-adres, mag leeg)', 'weather_json.url', { w: 360, max: 400, ph: 'https://…/current/all' })}</div>
+        <div class="row">${tvIn('Temperatuur', 'weather_json.temp', { w: 110, max: 60 })}${tvIn('Luchtdruk', 'weather_json.pressure', { w: 110, max: 60 })}${tvIn('Vochtigheid', 'weather_json.humidity', { w: 110, max: 60 })}${tvIn('Regenteller', 'weather_json.rain_total', { w: 110, max: 60 })}${tvIn('Hoogstens zo oud (min)', 'weather_json.max_age', { w: 90, flex: 0, type: 'number', step: '5', min: 5, maxv: 1440 })}</div>
+        <div class="sub" id="tvwx">${tvStatusWx()}</div>
+        <div class="sub">Een eigen weerstation: de temperatuur, luchtdruk, luchtvochtigheid en de neerslag van vandaag komen dan van dat adres (de temperatuur gaat voor die van HA). De namen zijn de velden in de JSON; een meting is <code>{"time": …, "value": …}</code> of een kaal getal, en een meting die ouder is dan de grens telt als onbekend. De regenteller loopt op (mm sinds de installatie): de neerslag van vandaag is het verschil met middernacht. Zonder HA-weer toont de tegel alleen deze metingen.</div>
         <div><label>Meldingen (bv. rookmelder, waterlek): staat er een aan, dan toont de kop "Let op"</label>${alerts}
           <div class="row" style="margin-top:4px"><button class="btn small" type="button" data-tvact="addalert" ${(c.alerts || []).length >= 20 ? 'disabled' : ''}>+ Melding</button></div></div></div>
       <div class="card"><h3>Energie</h3>
@@ -116,7 +144,10 @@ function viewTvBody() {
         <div class="row">${tvIn('Titel', 'climate.title', { w: 200, max: 30 })}${tvSrc('Grafiek 1', 'climate.chart.0')}${tvSrc('Grafiek 2', 'climate.chart.1')}</div>
         ${tvRows('climate.rows', 4, { ph: 'bv. Woonkamer' })}<div class="sub">De eerste twee staan groot, de volgende twee kleiner.</div></div>
       <div class="card"><h3>Ophaalkalender</h3>
-        <div class="row"><label style="margin:0"><input type="checkbox" data-tv="waste.on" ${c.waste.on ? 'checked' : ''}> Tonen</label>${tvSrc('Kalender', 'waste.calendar', 'tvcal', 'calendar.afval')}${tvIn('Dagen vooruit', 'waste.days', { w: 90, flex: 0, type: 'number', step: '1', min: 3, maxv: 60 })}</div>
+        <div class="row"><label style="margin:0"><input type="checkbox" data-tv="waste.on" ${c.waste.on ? 'checked' : ''}> Tonen</label>${tvSrc('Kalender in HA', 'waste.calendar', 'tvcal', 'calendar.afval')}${tvIn('Dagen vooruit', 'waste.days', { w: 90, flex: 0, type: 'number', step: '1', min: 3, maxv: 60 })}</div>
+        <div class="row">${tvIn('Of een kalenderlink (ICS)', 'waste.ics', { w: 360, max: 400, ph: 'https://…/kalender.ics' })}</div>
+        <div class="sub" id="tvics">${tvStatusIcs()}</div>
+        <div class="sub">Een ICS-link kan zonder HA: kies bij je afvalophaler (bv. Ivago, op <i>ivago.be/nl/particulier/afval/ophaling</i>, na het invullen van je adres) de optie om de kalender aan je agenda toe te voegen, en plak die link hier. Je adres blijft dan buiten de add-on. Elke afspraak is een ophaling; herhalingsregels worden niet uitgewerkt, maar een kalender van een afvalophaler somt de dagen gewoon op.</div>
         <div class="sub">De plaats is gereserveerd, ook zonder kalender. Elke afspraak in de gekozen kalender telt als een ophaling; de titel (bv. <i>PMD</i>, <i>GFT</i>, <i>Restafval</i>, <i>Papier</i>) bepaalt de kleur. In Home Assistant komt zo'n kalender uit bv. de integratie van je gemeente of intercommunale, of uit een ICS-bestand (<i>Remote Calendar</i>).</div></div>
       <div class="card"><h3>Onderaan</h3><div class="sub">Tot 5 standen in een ronde knop, bv. eco-modus, nachtmodus, alarm of deurbel. Rechts staat de eerstvolgende afspraak uit een kalender.</div>${chips}
         <div class="row" style="margin-top:4px"><button class="btn small" type="button" data-tvact="addchip" ${(c.chips || []).length >= 5 ? 'disabled' : ''}>+ Knop</button></div>
@@ -138,7 +169,7 @@ async function tvSave() {
   const n = ++TVSAVING;
   try {
     const r = await api('PUT', 'tv', TV.config);
-    if (n === TVSAVING) { TV.config.token = r.config.token; const e = $('#tverr'); if (e) e.textContent = 'Opgeslagen'; tvPreview(); }
+    if (n === TVSAVING) { TV.config.token = r.config.token; const e = $('#tverr'); if (e) e.textContent = 'Opgeslagen'; tvPreview(); setTimeout(tvStatus, 2500); setTimeout(tvStatus, 9000); }
   } catch (e) {
     const el = $('#tverr');
     if (el) el.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`;

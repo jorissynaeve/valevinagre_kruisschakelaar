@@ -45,6 +45,8 @@ WAKE_EVERY = 15.0  # s: zo vaak een Wake-on-LAN-pakket zolang de tv niet reageer
 SHOW_FOR = 180.0  # s: zo lang wachten tot een tv na aanzetten bereikbaar is voor het dashboard
 RETRY = 30.0  # s: een ingang die niet doorkwam, opnieuw proberen
 HOME = "com.webos.app.home"
+BROWSER = "com.webos.app.browser"
+FS_DELAY = 5.0  # s na het openen van het dashboard: de pagina is dan geladen en klaar voor de klik
 OWN_APPS = ["com.webos.app.browser", "com.webos.app.screensaver", HOME]  # wat niet als "kijken" telt
 OFF_MODES = {"screen": "scherm uit", "power": "tv uit", "home": "terug naar het beginscherm"}
 # de ingangen en uitgangen: (naam, soort, label)
@@ -92,7 +94,7 @@ class LgHub:
         ins = v.get("inputs") if isinstance(v.get("inputs"), dict) else {}
         apps = v.get("apps") if isinstance(v.get("apps"), list) else OWN_APPS
         return {"name": str(v.get("name") or "TV")[:60], "host": str(v.get("host") or ""), "mac": norm_mac(v.get("mac") or ""), "key": str(v.get("key") or ""),
-                "url": str(v.get("url") or ""), "off_mode": v.get("off_mode") if v.get("off_mode") in OFF_MODES else "screen",
+                "url": str(v.get("url") or ""), "off_mode": v.get("off_mode") if v.get("off_mode") in OFF_MODES else "screen", "fullscreen": v.get("fullscreen") is not False,
                 "apps": [a for a in apps if isinstance(a, str) and APP_RE.match(a)][:40],
                 "inputs": {n: ins[n] for n, _, _ in INPUTS if isinstance(ins.get(n), str)}}
 
@@ -155,6 +157,8 @@ class LgHub:
             if b["off_mode"] not in OFF_MODES:
                 raise ModelError("onbekende keuze voor het weghalen van het dashboard")
             new["off_mode"] = b["off_mode"]
+        if "fullscreen" in b:
+            new["fullscreen"] = bool(b["fullscreen"])
         if "apps" in b:
             apps = b["apps"] if isinstance(b["apps"], list) else str(b["apps"] or "").replace(",", " ").split()
             if not all(isinstance(a, str) and APP_RE.match(a) for a in apps) or len(apps) > 40:
@@ -378,6 +382,8 @@ class LgHub:
             return
         if s["on"] and c.open_url(dev["url"]):
             self.pending.pop(did)
+            if dev["fullscreen"]:  # de browser toont zijn adresbalk tot de pagina volledig scherm krijgt, en dat mag alleen na een klik
+                c.click_soon(FS_DELAY, lambda: self.state(did)["app"] == BROWSER)
             self.last.setdefault(did, {})["show"] = "dashboard: geopend"
             self.engine._emit("lg", what="show", lg=did, log=False)
             self._poke()
@@ -441,7 +447,7 @@ class LgHub:
         out = []
         for did, dev in self.devices.items():
             c = self.clients.get(did)
-            out.append({"id": did, "name": dev["name"], "host": dev["host"], "mac": dev["mac"], "url": dev["url"], "off_mode": dev["off_mode"],
+            out.append({"id": did, "name": dev["name"], "host": dev["host"], "mac": dev["mac"], "url": dev["url"], "off_mode": dev["off_mode"], "fullscreen": dev["fullscreen"], "click_error": c.click_error if c else "",
                         "apps": list(dev["apps"]), "has_key": bool(dev["key"]), "configured": bool(dev["host"]), "online": self.is_online(did),
                         "pairing": bool(c and c.pairing), "rejected": bool(c and c.rejected), "error": c.last_error if c else "",
                         "showing": did in self.pending, "inputs": dict(dev["inputs"]), "last": dict(self.last.get(did, {})), "state": self.state(did),

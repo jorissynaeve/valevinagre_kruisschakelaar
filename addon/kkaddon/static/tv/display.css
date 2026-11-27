@@ -77,16 +77,22 @@ body { font-family: "Segoe UI", "Helvetica Neue", Arial, "Noto Sans", sans-serif
 .hero .shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(5, 11, 26, .25) 0%, rgba(5, 11, 26, 0) 35%, rgba(5, 11, 26, .55) 100%); }
 
 /* weer */
-.weather .top { display: flex; align-items: center; gap: 20px; flex: none; height: 168px; }
-.weather .big { font-size: 112px; font-weight: 600; line-height: 1; }
+.weather .top { display: flex; align-items: center; gap: 20px; flex: none; height: 108px; }
+.weather .big { font-size: 88px; font-weight: 600; line-height: 1; }
 .weather .big .u { font-size: .42em; color: var(--text); font-weight: 500; vertical-align: top; margin-left: .06em; }
-.weather .cond { font-size: 30px; color: var(--text); margin-top: 6px; }
+.weather .cond { font-size: 28px; color: var(--text); margin-top: 4px; }
 .weather .mm { margin-left: auto; padding-left: 26px; border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; font-size: 28px; }
 .weather .mm span { color: var(--muted); }
-.hours { display: flex; justify-content: space-between; margin: 18px -32px -28px; padding: 24px 32px 20px; background: rgba(4, 10, 24, .35); border-top: 1px solid var(--line); flex: 1; align-items: center; }
-.hours .h { display: flex; flex-direction: column; align-items: center; gap: 14px; flex: 1; }
-.hours .h .t { font-size: 24px; color: var(--muted); }
-.hours .h .d { font-size: 30px; font-weight: 600; }
+.wstats { display: flex; gap: 10px; flex: none; margin-top: 8px; }
+.ws { flex: 1; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 18px; background: rgba(4, 10, 24, .38); border: 1px solid rgba(120, 165, 255, .12); min-width: 0; }
+.ws .ic { color: var(--blue); }
+.ws b { display: block; font-size: 26px; font-weight: 600; white-space: nowrap; line-height: 1.1; }
+.ws b small { font-size: .62em; font-weight: 500; color: var(--muted); margin-left: .2em; }
+.ws span { font-size: 17px; color: var(--muted); white-space: nowrap; }
+.hours { display: flex; justify-content: space-between; margin: 10px -30px -24px; padding: 10px 30px 8px; background: rgba(4, 10, 24, .35); border-top: 1px solid var(--line); flex: 1; align-items: center; }
+.hours .h { display: flex; flex-direction: column; align-items: center; gap: 8px; flex: 1; }
+.hours .h .t { font-size: 22px; color: var(--muted); }
+.hours .h .d { font-size: 28px; font-weight: 600; }
 
 /* meetwaarden (zwembad, klimaat, ...) */
 .metrics { display: flex; gap: 16px; flex: none; }
@@ -143,4 +149,5 @@ body { font-family: "Segoe UI", "Helvetica Neue", Arial, "Noto Sans", sans-serif
 .chip.next span { color: var(--text); }
 
 .stale { position: absolute; right: 44px; bottom: 6px; font-size: 18px; color: var(--amber); }
+.fshint { position: fixed; left: 0; right: 0; bottom: 4px; text-align: center; font-size: 16px; color: var(--dim); opacity: .8; pointer-events: none; }
 .msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 40px; color: var(--muted); }

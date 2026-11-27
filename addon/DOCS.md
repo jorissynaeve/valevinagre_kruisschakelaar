@@ -291,9 +291,18 @@ het wanneer jij dat wilt en haalt het weg zodra er gekeken wordt.
   opstarten op.
 * **Weer**: kies een `weather.*`-entiteit. De voorspelling per uur en het maximum en minimum komen uit HA (`weather.get_forecasts`), elk kwartier
   ververst. Een heldere hemel 's nachts toont een maan.
+* **Eigen weerstation**: vul bij *Weerstation* een JSON-adres in (bv. `https://…/wgl/home/current/all`). De add-on haalt het elke minuut op en toont de
+  **temperatuur** (die gaat voor die van HA), de **luchtdruk**, de **luchtvochtigheid** en de **neerslag van vandaag**. Een meting is
+  `{"time": …, "value": …}` of een kaal getal; je kiest de namen van de velden (standaard `outTemp_C`, `barometer_mbar`, `outHumidity`, `rainTotal`). Een
+  meting die ouder is dan de grens (standaard 60 minuten) telt als onbekend, dus een station dat uitviel toont een streepje en geen oude waarde. De
+  regenteller loopt op (mm sinds de installatie): de neerslag van vandaag is het verschil met middernacht, uit een meetpunt per 10 minuten in
+  `/data/tv_rain.json`. Op de dag van de installatie telt hij vanaf de eerste meting. Zonder `weather.*`-entiteit toont de tegel alleen deze metingen.
 * **Ophaalkalender**: de plaats is gereserveerd, ook zonder kalender (*Nog niet gekoppeld*). Kies een `calendar.*`-entiteit en elke afspraak telt als
   een ophaling: de titel (*PMD*, *GFT*, *Restafval*, *Papier*, *Glas*) bepaalt de kleur, de ophaling van vandaag of morgen krijgt een amberkleurige rand.
   Zo'n kalender komt in HA uit de integratie van je gemeente of intercommunale, of uit een ICS-bestand (*Remote Calendar*). Niet getest tegen een echte kalender van HA.
+  Zonder HA kan het ook met een **kalenderlink (ICS)**: kies bij je afvalophaler (bv. Ivago, op *ivago.be/nl/particulier/afval/ophaling*, na het invullen van
+  je adres) de optie om de kalender aan je agenda toe te voegen en plak die link in het tabblad. De add-on haalt hem elke 6 uur op; je adres blijft buiten
+  de add-on. Elke afspraak is een ophaling. Herhalingsregels (RRULE) worden niet uitgewerkt. Antwoordt de link even niet, dan blijven de laatste ophalingen staan.
 * **Het adres voor de tv**: de tv kan niet via HA-ingress, dus de pagina draait op een eigen poort (optie `tv_port`, standaard 47530; 0 zet hem uit) met
   een geheim in het adres: `http://<IP van HA>:47530/tv/<geheim>/`. Dat adres is alleen-lezen en toont nooit meer dan wat je koos. *Nieuw adres*
   maakt een nieuw geheim (het oude werkt dan niet meer); *Zet als dashboard-adres van deze tv* vult het in bij het tv-blok. Geef Home Assistant een
@@ -318,6 +327,11 @@ een alleen-lezen scherm met klok, agenda en weer dat verschijnt als je het nodig
   scherm uit was), op 0 zet hij uit. *Dashboard* op 1 zet de tv zo nodig aan, wacht tot hij bereikbaar is (hoogstens 3 minuten) en opent het
   **adres van het dashboard** in de browser van de tv (het adres van de *TV-pagina*: zie het tabblad TV). Op 0 haalt de add-on het weg: *scherm uit*, *tv uit* of *terug naar het beginscherm*, naar
   keuze, maar **nooit terwijl er gekeken wordt**; dan blijft de tv zoals hij is.
+* **Volledig scherm**: de ingebouwde browser van de tv toont zijn adresbalk over de pagina tot de pagina volledig scherm krijgt, en dat mag alleen na een
+  klik met de aanwijzer (op een echte 85QNED93A6A gemeten: een druk op OK bereikt de pagina niet, een klik wel, en dan verdwijnt de balk). De add-on stuurt die klik zelf,
+  5 seconden nadat hij het dashboard opende en alleen als de browser dan nog vooraan staat (nooit op een film), via de aanwijzer-socket van webOS. Daarvoor
+  is het recht `CONTROL_MOUSE_AND_KEYBOARD` nodig: een tv die van voor versie 0.55 gekoppeld is, mist dat en antwoordt `401`. Kies dan **Opnieuw koppelen**
+  en bevestig op de tv. Het vinkje *Volledig scherm* in de zijbalk zet het uit; wie de pagina met de hand opent, klikt eenmaal met de aanwijzer.
 * **Uitgangen** (rechts): *aan* is 1 als de tv wakker is met het scherm aan (een tv die uit staat, niet bereikbaar is of waarvan alleen het
   scherm uit is, geeft 0). *Wordt bekeken* is 1 als hij aan is en er een app vooraan staat die niet bij de **eigen apps** hoort (standaard de
   browser, de screensaver en het beginscherm). Netflix of een spelconsole op HDMI telt dus als kijken; zet een app erbij als dat niet zo hoort.
