@@ -300,9 +300,12 @@ het wanneer jij dat wilt en haalt het weg zodra er gekeken wordt.
 * **Ophaalkalender**: de plaats is gereserveerd, ook zonder kalender (*Nog niet gekoppeld*). Kies een `calendar.*`-entiteit en elke afspraak telt als
   een ophaling: de titel (*PMD*, *GFT*, *Restafval*, *Papier*, *Glas*) bepaalt de kleur, de ophaling van vandaag of morgen krijgt een amberkleurige rand.
   Zo'n kalender komt in HA uit de integratie van je gemeente of intercommunale, of uit een ICS-bestand (*Remote Calendar*). Niet getest tegen een echte kalender van HA.
-  Zonder HA kan het ook met een **kalenderlink (ICS)**: kies bij je afvalophaler (bv. Ivago, op *ivago.be/nl/particulier/afval/ophaling*, na het invullen van
-  je adres) de optie om de kalender aan je agenda toe te voegen en plak die link in het tabblad. De add-on haalt hem elke 6 uur op; je adres blijft buiten
-  de add-on. Elke afspraak is een ophaling. Herhalingsregels (RRULE) worden niet uitgewerkt. Antwoordt de link even niet, dan blijven de laatste ophalingen staan.
+  Zonder HA kan het met een **ICS-bestand**: download bij je afvalophaler (bv. Ivago, op *ivago.be/nl/particulier/afval/ophaling*, na het invullen van je adres)
+  de kalender als `.ics` en upload hem met *Kies een ICS-bestand* op het tabblad TV. Het bestand wordt in `/data` bewaard (in de HA-back-up) en blijft werken na
+  een herstart; je adres staat er niet in. Elke afspraak is een ophaling, twee op dezelfde dag staan op één regel, en een titel in hoofdletters (*RESTAFVAL*) wordt
+  *Restafval*. Herhalingen (dagelijks, wekelijks met `BYDAY`, maandelijks, jaarlijks, met `INTERVAL`, `COUNT`, `UNTIL` en `EXDATE`) worden uitgewerkt; een regel die de
+  add-on niet kent, telt alleen de eerste keer. Een kalender loopt maar een jaar: het tabblad meldt het als het bestand bijna op is, en dan upload je een nieuw.
+  Heeft de ophaler wel een **kalenderlink (ICS)**, dan kan die ook: de add-on haalt hem elke 6 uur op. Antwoordt de link even niet, dan blijven de laatste ophalingen staan.
 * **Het adres voor de tv**: de tv kan niet via HA-ingress, dus de pagina draait op een eigen poort (optie `tv_port`, standaard 47530; 0 zet hem uit) met
   een geheim in het adres: `http://<IP van HA>:47530/tv/<geheim>/`. Dat adres is alleen-lezen en toont nooit meer dan wat je koos. *Nieuw adres*
   maakt een nieuw geheim (het oude werkt dan niet meer); *Zet als dashboard-adres van deze tv* vult het in bij het tv-blok. Geef Home Assistant een

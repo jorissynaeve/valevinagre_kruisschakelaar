@@ -168,9 +168,16 @@ function tileWaste(w, d) {
     return `<section class="card waste empty"><h2>${ic('bin', 40)}Ophaalkalender</h2><div class="ghost"><div class="bins">${bins}</div><div>${w.configured ? 'Geen ophaling de komende dagen' : 'Nog niet gekoppeld'}</div>${w.configured ? '' : '<div style="font-size:21px;color:var(--dim)">Kies een kalender in Huisconfig → TV</div>'}</div></section>`;
   }
   const today = w.today || new Date().toISOString().slice(0, 10);
-  const rows = w.items.slice(0, 3).map((it) => {
-    const [a, b] = dayText(it.date, today), col = wasteColor(it.label, it.color);
-    return `<div class="pick ${it.days <= 1 ? 'soon' : ''}"><div class="dot" style="background:${col}">${ic('bin', 34)}</div><div class="nm">${esc(it.label)}</div><div class="dt"><b>${esc(a)}</b><span>${esc(b)}</span></div></div>`;
+  const byDay = []; // twee ophalingen op één dag (PMD en restafval) horen op één regel
+  for (const it of w.items) {
+    const last = byDay[byDay.length - 1];
+    if (last && last.date === it.date) last.items.push(it);
+    else byDay.push({ date: it.date, days: it.days, items: [it] });
+  }
+  const rows = byDay.slice(0, 3).map((g) => {
+    const [a, b] = dayText(g.date, today), cols = g.items.map((it) => wasteColor(it.label, it.color));
+    const dots = g.items.length > 1 ? `<div class="dots">${g.items.map((it, i) => `<i style="background:${cols[i]}"></i>`).join('')}</div>` : `<div class="dot" style="background:${cols[0]}">${ic('bin', 34)}</div>`;
+    return `<div class="pick ${g.days <= 1 ? 'soon' : ''}">${dots}<div class="nm ${g.items.length > 1 ? 'many' : ''}">${g.items.map((it) => esc(it.label)).join(' · ')}</div><div class="dt"><b>${esc(a)}</b><span>${esc(b)}</span></div></div>`;
   }).join('');
   return `<section class="card waste"><h2>${ic('bin', 40)}Ophaalkalender</h2><div class="list">${rows}</div></section>`;
 }

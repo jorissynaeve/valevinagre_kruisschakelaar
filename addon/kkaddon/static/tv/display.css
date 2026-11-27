@@ -120,6 +120,9 @@ body { font-family: "Segoe UI", "Helvetica Neue", Arial, "Noto Sans", sans-serif
 .pick { display: flex; align-items: center; gap: 16px; padding: 6px 16px; border-radius: 18px; background: rgba(4, 10, 24, .38); border: 1px solid rgba(120, 165, 255, .10); }
 .pick .dot { width: 46px; height: 46px; border-radius: 14px; display: flex; align-items: center; justify-content: center; color: #08122a; flex: none; }
 .pick .nm { font-size: 30px; font-weight: 600; }
+.pick .dots { display: grid; grid-template-columns: repeat(2, 22px); gap: 2px; width: 46px; flex: none; }
+.pick .dots i { width: 22px; height: 22px; border-radius: 7px; }
+.pick .nm.many { font-size: 26px; min-width: 0; }
 .pick .dt { margin-left: auto; text-align: right; }
 .pick .dt b { display: block; font-size: 24px; font-weight: 600; line-height: 1.15; }
 .pick .dt span { font-size: 18px; color: var(--muted); }

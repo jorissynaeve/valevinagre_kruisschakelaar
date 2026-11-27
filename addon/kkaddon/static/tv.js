@@ -54,6 +54,13 @@ function tvStatusWx() { // wat het weerstation nu geeft, of waarom niet
   const f = (v, u, d = 1) => (v == null ? '–' : `${Number(v).toLocaleString('nl-BE', { maximumFractionDigits: d })} ${u}`);
   return `Weerstation nu: ${f(s.temp, '°C')} · ${f(s.pressure, 'hPa', 0)} · ${f(s.humidity, '%', 0)} · neerslag vandaag ${f(TV.rain_today, 'mm')} (een veld dat '–' toont, bestaat niet of is te oud)`;
 }
+function tvStatusIcsFile() { // het geüploade bestand: wat erin zit, en of het nog lang genoeg loopt
+  const f = TV && TV.ics_file;
+  if (!f || !f.loaded) return 'Geen bestand geüpload.';
+  const d = (iso) => (iso ? new Date(`${iso}T12:00:00`).toLocaleDateString('nl-BE', { day: 'numeric', month: 'short', year: 'numeric' }) : '–');
+  const soon = f.last && (new Date(`${f.last}T12:00:00`) - Date.now()) / 864e5 < 30;
+  return `Bestand${f.name ? ` “${esc(f.name)}”` : ''}: ${f.count} ophalingen, van ${d(f.first)} tot ${d(f.last)}.${soon ? ' <span style="color:var(--bad)">Het bestand loopt bijna af: upload een nieuw.</span>' : ''}${f.count ? '' : ' <span style="color:var(--bad)">Geen enkele ophaling komt nog.</span>'}`;
+}
 function tvStatusIcs() {
   if (!TV || !TV.config.waste.ics) return '';
   if (TV.errors && TV.errors.ophaalkalender) return `<span style="color:var(--bad)">Kalenderlink: ${esc(TV.errors.ophaalkalender)}</span>`;
@@ -63,10 +70,12 @@ function tvStatusIcs() {
 async function tvStatus() { // alleen de statusregels bijwerken, zonder het formulier opnieuw te tekenen
   try {
     const v = await api('GET', 'tv');
-    Object.assign(TV, { errors: v.errors, station: v.station, rain_today: v.rain_today, ics_count: v.ics_count, ics_ok: v.ics_ok });
+    Object.assign(TV, { errors: v.errors, station: v.station, rain_today: v.rain_today, ics_count: v.ics_count, ics_ok: v.ics_ok, ics_file: v.ics_file });
     const a = $('#tvwx'), b = $('#tvics');
     if (a) a.innerHTML = tvStatusWx();
     if (b) b.innerHTML = tvStatusIcs();
+    const c = $('#tvicsf');
+    if (c) c.innerHTML = tvStatusIcsFile();
   } catch { /* de volgende keer */ }
 }
 
@@ -145,9 +154,12 @@ function viewTvBody() {
         ${tvRows('climate.rows', 4, { ph: 'bv. Woonkamer' })}<div class="sub">De eerste twee staan groot, de volgende twee kleiner.</div></div>
       <div class="card"><h3>Ophaalkalender</h3>
         <div class="row"><label style="margin:0"><input type="checkbox" data-tv="waste.on" ${c.waste.on ? 'checked' : ''}> Tonen</label>${tvSrc('Kalender in HA', 'waste.calendar', 'tvcal', 'calendar.afval')}${tvIn('Dagen vooruit', 'waste.days', { w: 90, flex: 0, type: 'number', step: '1', min: 3, maxv: 60 })}</div>
-        <div class="row">${tvIn('Of een kalenderlink (ICS)', 'waste.ics', { w: 360, max: 400, ph: 'https://…/kalender.ics' })}</div>
+        <div class="row"><label class="btn small" style="cursor:pointer;margin:0">Kies een ICS-bestand…<input type="file" id="tvicsfile" accept=".ics,text/calendar,text/plain" hidden></label>
+          <button class="btn small danger" type="button" data-tvact="icsdel" ${TV.ics_file && TV.ics_file.loaded ? '' : 'disabled'}>Bestand verwijderen</button></div>
+        <div class="sub" id="tvicsf">${tvStatusIcsFile()}</div>
+        <div class="row">${tvIn('Of een kalenderlink (ICS), als je er een hebt', 'waste.ics', { w: 360, max: 400, ph: 'https://…/kalender.ics' })}</div>
         <div class="sub" id="tvics">${tvStatusIcs()}</div>
-        <div class="sub">Een ICS-link kan zonder HA: kies bij je afvalophaler (bv. Ivago, op <i>ivago.be/nl/particulier/afval/ophaling</i>, na het invullen van je adres) de optie om de kalender aan je agenda toe te voegen, en plak die link hier. Je adres blijft dan buiten de add-on. Elke afspraak is een ophaling; herhalingsregels worden niet uitgewerkt, maar een kalender van een afvalophaler somt de dagen gewoon op.</div>
+        <div class="sub">Heeft je afvalophaler geen link, upload dan het ICS-bestand dat je van zijn website downloadt (bv. de agenda-export van Ivago). Het wordt in de add-on bewaard en blijft werken na een herstart; je adres staat er niet in. Elke afspraak is een ophaling; herhalingen (bv. elke twee weken) worden uitgewerkt. Een kalender loopt maar een jaar: de pagina meldt het als het bestand bijna op is.</div>
         <div class="sub">De plaats is gereserveerd, ook zonder kalender. Elke afspraak in de gekozen kalender telt als een ophaling; de titel (bv. <i>PMD</i>, <i>GFT</i>, <i>Restafval</i>, <i>Papier</i>) bepaalt de kleur. In Home Assistant komt zo'n kalender uit bv. de integratie van je gemeente of intercommunale, of uit een ICS-bestand (<i>Remote Calendar</i>).</div></div>
       <div class="card"><h3>Onderaan</h3><div class="sub">Tot 5 standen in een ronde knop, bv. eco-modus, nachtmodus, alarm of deurbel. Rechts staat de eerstvolgende afspraak uit een kalender.</div>${chips}
         <div class="row" style="margin-top:4px"><button class="btn small" type="button" data-tvact="addchip" ${(c.chips || []).length >= 5 ? 'disabled' : ''}>+ Knop</button></div>
@@ -201,6 +213,13 @@ const TV_ACTIONS = {
     tvDraw();
     toast('Nieuw adres. Vul het opnieuw in bij het tv-blok.', 6000);
   },
+  icsdel: async () => {
+    if (!confirm('Het geüploade ICS-bestand verwijderen? De ophaalkalender toont dan alleen nog wat uit HA of de link komt.')) return;
+    await api('DELETE', 'tv/ics');
+    TV.ics_file = { loaded: false, count: 0 };
+    tvDraw();
+    tvSoon();
+  },
   seturl: async () => {
     const id = $('#tvblock').value;
     await api('PUT', `lg/${id}`, { url: tvAddress() });
@@ -224,8 +243,22 @@ document.addEventListener('click', (ev) => {
   act(() => TV_ACTIONS[el.dataset.tvact](el.dataset))();
 });
 
+async function tvUploadIcs(file) {
+  if (file.size > 1024 * 1024) throw new Error('Het bestand is te groot (hoogstens 1 MB).');
+  const text = await file.text();
+  const r = await fetch(`api/tv/ics?name=${encodeURIComponent(file.name)}`, { method: 'PUT', headers: { 'Content-Type': 'text/calendar' }, body: text });
+  let j = null;
+  try { j = await r.json(); } catch { /* geen JSON */ }
+  if (!r.ok) throw new Error((j && j.error) || `Fout ${r.status}`);
+  TV.ics_file = j.file;
+  tvDraw();
+  tvPreview();
+  toast(`${j.file.count} ophalingen gelezen`);
+}
+
 document.addEventListener('change', (ev) => {
   const t = ev.target;
+  if (t && t.id === 'tvicsfile' && TV && t.files && t.files[0]) { act(() => tvUploadIcs(t.files[0]))(); t.value = ''; return; }
   if (!TV || !t.dataset || !t.dataset.tv) return;
   const p = t.dataset.tv;
   let v = t.type === 'checkbox' ? t.checked : t.type === 'number' ? (t.value === '' ? '' : Number(t.value)) : t.value.trim();

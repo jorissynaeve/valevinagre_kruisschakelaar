@@ -37,7 +37,7 @@ import secrets
 import socket
 import time
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -214,9 +214,80 @@ def reading(obj, path: str, now: float, max_age_min: float) -> float | None:
     return float(v)
 
 
-def parse_ics(text: str, tz=None) -> list[dict]:
-    """De afspraken uit een ICS-bestand als `{"start": "JJJJ-MM-DD", "summary": ...}` (zoals `calendar.get_events` van HA). Geen herhalingsregels.
-    Een afspraak met een tijd in UTC wordt naar de datum in `tz` omgezet; een geannuleerde afspraak telt niet."""
+WEEKDAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+MAX_OCCURRENCES = 2000
+
+
+def _ymd(v: str) -> date | None:
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})", v.strip())
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+    except ValueError:
+        return None
+
+
+def _add_months(d: date, n: int) -> date | None:
+    y, m = divmod(d.year * 12 + d.month - 1 + n, 12)
+    try:
+        return date(y, m + 1, d.day)  # een 31e in een maand van 30 dagen bestaat niet: die keer vervalt (zoals in een agenda)
+    except ValueError:
+        return None
+
+
+def expand(start: date, rrule: str, skip: set, lo: date, hi: date) -> list[date]:
+    """De dagen van een herhaling tussen `lo` en `hi`: DAILY, WEEKLY (met BYDAY), MONTHLY (zelfde dag van de maand) en YEARLY, met INTERVAL, COUNT, UNTIL
+    en EXDATE. Een regel die we niet kennen (bv. "de eerste maandag van de maand") telt alleen de eerste keer: liever te weinig dan een verkeerde dag."""
+    parts = dict(p.split("=", 1) for p in rrule.split(";") if "=" in p)
+    freq = parts.get("FREQ", "")
+    try:
+        interval = max(1, int(parts.get("INTERVAL", "1")))
+        count = int(parts["COUNT"]) if "COUNT" in parts else None
+    except ValueError:
+        return [start] if lo <= start <= hi and start not in skip else []
+    until = _ymd(parts["UNTIL"]) if "UNTIL" in parts else None
+    byday = [d for d in parts.get("BYDAY", "").split(",") if d]
+    if freq not in ("DAILY", "WEEKLY", "MONTHLY", "YEARLY") or (byday and (freq != "WEEKLY" or any(d not in WEEKDAYS for d in byday))) or "BYMONTHDAY" in parts or "BYSETPOS" in parts:
+        return [start] if lo <= start <= hi and start not in skip else []
+
+    def candidates():
+        k = 0
+        while True:
+            if freq == "DAILY":
+                yield start + timedelta(days=k * interval)
+            elif freq == "WEEKLY":
+                monday = start - timedelta(days=start.weekday()) + timedelta(weeks=k * interval)
+                for wd in sorted(WEEKDAYS.index(d) for d in (byday or [WEEKDAYS[start.weekday()]])):
+                    yield monday + timedelta(days=wd)
+            elif freq == "MONTHLY":
+                yield _add_months(start, k * interval)
+            else:
+                yield _add_months(start, 12 * k * interval)
+            k += 1
+
+    out, n = [], 0
+    for i, day in enumerate(candidates()):
+        if i > MAX_OCCURRENCES * 4 or n >= MAX_OCCURRENCES:
+            break
+        if day is None or day < start:
+            continue
+        if (until and day > until) or day > hi:
+            if freq != "WEEKLY" or day > hi + timedelta(days=7):
+                break
+            continue
+        n += 1
+        if count is not None and n > count:
+            break
+        if day >= lo and day not in skip:
+            out.append(day)
+    return out
+
+
+def parse_ics(text: str, tz=None, today: date | None = None, back: int = 1, ahead: int = 400) -> list[dict]:
+    """De afspraken uit een ICS-bestand als `{"start": "JJJJ-MM-DD", "summary": ...}` (zoals `calendar.get_events` van HA), van `back` dagen terug tot `ahead` dagen
+    vooruit. Herhalingsregels worden uitgewerkt (zie `expand`). Een afspraak met een tijd in UTC wordt naar de datum in `tz` omgezet; een geannuleerde
+    afspraak telt niet, een verplaatste herhaling (RECURRENCE-ID) wordt niet bijgewerkt."""
+    today = today or datetime.now(tz).date()
+    lo, hi = today - timedelta(days=back), today + timedelta(days=ahead)
     lines: list[str] = []
     for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         if raw[:1] in (" ", "\t") and lines:
@@ -226,10 +297,11 @@ def parse_ics(text: str, tz=None) -> list[dict]:
     out, ev = [], None
     for ln in lines:
         if ln == "BEGIN:VEVENT":
-            ev = {}
+            ev = {"skip": set()}
         elif ln == "END:VEVENT":
             if ev and ev.get("start") and ev.get("summary") and ev.get("status") != "CANCELLED":
-                out.append({"start": ev["start"], "summary": ev["summary"]})
+                days = expand(ev["start"], ev["rrule"], ev["skip"], lo, hi) if ev.get("rrule") else ([ev["start"]] if lo <= ev["start"] <= hi else [])
+                out.extend({"start": d.isoformat(), "summary": ev["summary"]} for d in days)
             ev = None
         elif ev is not None and ":" in ln:
             name, _, val = ln.partition(":")
@@ -238,19 +310,22 @@ def parse_ics(text: str, tz=None) -> list[dict]:
                 m = re.match(r"^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z?))?$", val.strip())
                 if not m:
                     continue
-                y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
                 try:
-                    day = datetime(y, mo, d)
+                    day = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
                     if m.group(7) == "Z":
-                        day = datetime(y, mo, d, int(m.group(4)), int(m.group(5)), int(m.group(6)), tzinfo=timezone.utc).astimezone(tz) if tz else day
+                        day = datetime(day.year, day.month, day.day, int(m.group(4)), int(m.group(5)), int(m.group(6)), tzinfo=timezone.utc).astimezone(tz) if tz else day
                 except ValueError:
                     continue
-                ev["start"] = day.date().isoformat()
+                ev["start"] = day.date()
             elif base == "SUMMARY":
                 ev["summary"] = val.replace("\\,", ",").replace("\\;", ";").replace("\\n", " ").replace("\\N", " ").replace("\\\\", "\\").strip()
             elif base == "STATUS":
                 ev["status"] = val.strip().upper()
-    return out
+            elif base == "RRULE":
+                ev["rrule"] = val.strip().upper()
+            elif base == "EXDATE":
+                ev["skip"].update(d for d in (_ymd(v) for v in val.split(",")) if d)
+    return sorted(out, key=lambda e: (e["start"], e["summary"]))
 
 
 def lan_ip() -> str:
@@ -295,12 +370,18 @@ class TvHub:
         self.rain: deque = deque()  # (tijd, regenteller) per 10 minuten, bewaard in /data/tv_rain.json
         self.rain_path = Path(data_dir) / "tv_rain.json"
         self.rain_saved = 0.0
+        self.ics_text = ""  # een geüpload ICS-bestand (/data/tv_ics.ics), bv. de export van een afvalophaler
+        self.ics_name = ""
+        self.ics_path = Path(data_dir) / "tv_ics.ics"
+        self.ics_meta = Path(data_dir) / "tv_ics.json"
+        self._file_cache: tuple = (None, [])
         self.errors: dict[str, str] = {}  # bron -> waarom ze niet lukte, voor het tabblad
         self.tasks: list[asyncio.Task] = []
         self.runner: web.AppRunner | None = None
         self.listening = 0  # de poort waarop de tv-pagina echt luistert (0: uit)
         self._load()
         self._load_rain()
+        self._load_ics()
 
     # ------------------------------------------------------------ opslag
 
@@ -509,15 +590,17 @@ class TvHub:
             return None
         today = self.engine.local_now().date()
         items = []
-        for ev in [*self.events["waste"], *self.ics["events"]]:
+        for ev in [*self.events["waste"], *self.ics["events"], *self.file_events()]:
             d = _event_date(ev)
             if d is None or d < today:
                 continue
             label = str(ev.get("summary") or "").strip()
+            if len(label) > 4 and label.isupper():  # "RESTAFVAL" schreeuwt op een tv; een afkorting (GFT, PMD) blijft hoe ze is
+                label = label.capitalize()
             if label and not any(i["date"] == d.isoformat() and i["label"] == label for i in items):
                 items.append({"date": d.isoformat(), "label": label[:30], "days": (d - today).days})
         items.sort(key=lambda i: (i["date"], i["label"]))
-        return {"configured": bool(w["calendar"] or w["ics"]), "today": today.isoformat(), "items": items[:6]}
+        return {"configured": bool(w["calendar"] or w["ics"] or self.ics_text), "today": today.isoformat(), "items": items[:6]}
 
     def _next(self) -> dict | None:
         n = self.cfg["next"]
@@ -678,13 +761,67 @@ class TvHub:
             self.ics["at"] = now
             body = await self._get(ics, "ophaalkalender")
             if body is not None:
-                self.ics["events"] = parse_ics(body.decode("utf-8", "replace"), getattr(self.engine, "tz", None))
+                self.ics["events"] = parse_ics(body.decode("utf-8", "replace"), getattr(self.engine, "tz", None), self.engine.local_now().date())
                 self.ics["ok"] = True
             else:
                 self.ics["ok"] = False  # de vorige afspraken blijven staan: een kalender die even niet antwoordt, is niet leeg
         elif not ics:
             self.ics.update(events=[], ok=None)
             self.errors.pop("ophaalkalender", None)
+
+    # ------------------------------------------------------------ een geüpload ICS-bestand
+
+    def _load_ics(self) -> None:
+        try:
+            self.ics_text = self.ics_path.read_text(encoding="utf-8")
+            self.ics_name = str(json.loads(self.ics_meta.read_text(encoding="utf-8")).get("name") or "")[:80]
+        except FileNotFoundError:
+            pass
+        except (ValueError, OSError) as e:
+            log.warning("%s niet leesbaar: %s", self.ics_path, e)
+            if not self.ics_text:
+                self.ics_name = ""
+
+    def upload_ics(self, text: str, name: str = "") -> dict:
+        """Een ICS-bestand bewaren als ophaalkalender. Het moet ophalingen bevatten (tot een jaar terug of vooruit); anders is het geen kalender."""
+        text = str(text or "")
+        if len(text.encode("utf-8")) > MAX_BODY:
+            raise ModelError("het bestand is te groot (hoogstens 2 MB)")
+        if "BEGIN:VCALENDAR" not in text:
+            raise ModelError("dit is geen ICS-bestand (het begint niet met BEGIN:VCALENDAR)")
+        today = self.engine.local_now().date()
+        found = parse_ics(text, getattr(self.engine, "tz", None), today, back=366, ahead=366)
+        if not found:
+            raise ModelError("geen ophalingen gevonden in dit bestand (of ze liggen allemaal meer dan een jaar van nu)")
+        for path, data in ((self.ics_path, text), (self.ics_meta, json.dumps({"name": str(name)[:80]}))):
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(data, encoding="utf-8")
+            os.replace(tmp, path)
+        self.ics_text, self.ics_name, self._file_cache = text, str(name)[:80], (None, [])
+        if self.changed:
+            self.changed()
+        return self.ics_view()
+
+    def clear_ics(self) -> None:
+        for p in (self.ics_path, self.ics_meta):
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
+        self.ics_text, self.ics_name, self._file_cache = "", "", (None, [])
+
+    def file_events(self) -> list[dict]:
+        """De ophalingen uit het geüploade bestand voor vandaag (herhalingen uitgewerkt); per dag eenmaal berekend."""
+        if not self.ics_text:
+            return []
+        today = self.engine.local_now().date()
+        if self._file_cache[0] != (today, len(self.ics_text)):
+            self._file_cache = ((today, len(self.ics_text)), parse_ics(self.ics_text, getattr(self.engine, "tz", None), today))
+        return self._file_cache[1]
+
+    def ics_view(self) -> dict:
+        ev = self.file_events()
+        return {"name": self.ics_name, "count": len(ev), "first": ev[0]["start"] if ev else None, "last": ev[-1]["start"] if ev else None, "loaded": bool(self.ics_text)}
 
     # ------------------------------------------------------------ de regenteller
 
@@ -754,7 +891,7 @@ class TvHub:
     def view(self) -> dict:
         return {"config": self.cfg, "port": self.port, "listening": self.listening, "ha": bool(self.ha and self.ha.connected), "host": lan_ip(),
                 "errors": dict(self.errors), "station": {k: self.wx[k] for k in ("temp", "pressure", "humidity", "rain_total", "ok")}, "rain_today": self._rain_today(),
-                "ics_count": len(self.ics["events"]), "ics_ok": self.ics["ok"]}
+                "ics_count": len(self.ics["events"]), "ics_ok": self.ics["ok"], "ics_file": self.ics_view()}
 
     def sources(self, blocks: list[dict]) -> dict:
         """Wat je op het tabblad kunt kiezen: HA-entiteiten per soort, en de uitgangen van blokken (airco, omvormer, tv, ...)."""

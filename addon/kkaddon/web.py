@@ -745,6 +745,21 @@ async def tv_token(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "token": _tv(request).renew_token()})
 
 
+async def tv_ics_put(request: web.Request) -> web.Response:
+    """Een ICS-bestand uploaden als ophaalkalender: de tekst van het bestand is de body, de naam staat in `?name=`."""
+    hub = _tv(request)
+    try:
+        text = await request.text()
+    except web.HTTPRequestEntityTooLarge:
+        raise ModelError("het bestand is te groot (hoogstens 1 MB)") from None
+    return web.json_response({"ok": True, "file": hub.upload_ics(text, request.query.get("name", ""))})
+
+
+async def tv_ics_delete(request: web.Request) -> web.Response:
+    _tv(request).clear_ics()
+    return web.json_response({"ok": True})
+
+
 async def tv_sources(request: web.Request) -> web.Response:
     ctx: Ctx = request.app[CTX]
     return web.json_response(_tv(request).sources(schema.view(ctx.model, ctx.engine.snapshot())["blocks"]))
@@ -1440,6 +1455,8 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/tv", tv_put)
     r.add_post("/api/tv/token", tv_token)
     r.add_get("/api/tv/sources", tv_sources)
+    r.add_put("/api/tv/ics", tv_ics_put)
+    r.add_delete("/api/tv/ics", tv_ics_delete)
     if ctx.tv is not None:
         tvhub.routes(app, ctx.tv, "/tv/view", check=False)  # de voorvertoning op het tabblad (achter ingress); de tv zelf gebruikt een eigen poort met een geheim
     r.add_post("/api/lg", lg_post)
