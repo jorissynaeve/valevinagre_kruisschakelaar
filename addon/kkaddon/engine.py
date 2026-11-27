@@ -177,6 +177,8 @@ class Engine:
         self.tuya_view: Callable[[], list[dict]] | None = None  # status van de Tuya-toestellen, zonder sleutels (tuyahub.py)
         self.airco_view: Callable[[], list[dict]] | None = None  # de airco's, zonder sleutels (greehub.py)
         self.airco_value: Callable[[str], Any] | None = None  # een uitgang van een airco: w:<id>:on|room|set
+        self.lg_view: Callable[[], list[dict]] | None = None  # de LG-tv's, zonder sleutels (lghub.py)
+        self.lg_value: Callable[[str], Any] | None = None  # een uitgang van een LG-tv: l:<id>:on|watch
         self.solar_view: Callable[[], list[dict]] | None = None  # de omvormers (solarhub.py)
         self.charge_view: Callable[[], list[dict]] | None = None  # de laadpalen met hun sessies (chargehub.py)
         self.solar_value: Callable[[str], Any] | None = None  # een uitgang van een omvormer: o:<id>:pv|load|grid|batt|soc|today
@@ -288,6 +290,8 @@ class Engine:
             return self.espdev_value(ref) if self.espdev_value else None
         if ref.startswith("x:"):
             return self.lox_value(ref) if self.lox_value else None
+        if ref.startswith("l:"):
+            return self.lg_value(ref) if self.lg_value else None
         return self.airco_value(ref) if self.airco_value else None
 
     def source_value(self, source: str) -> bool | None:
@@ -299,7 +303,7 @@ class Engine:
         if ref.startswith("v:"):
             dp, _, dev = ref[2:].partition("@")
             return self.points.number(dev, dp) if self.points else None
-        if ref.startswith(("w:", "o:", "e:", "x:")):
+        if ref.startswith(("w:", "o:", "e:", "x:", "l:")):
             return self._airco(ref)
         if ref.startswith("t:"):
             return self.timer_on(ref[2:]) if ref[2:] in self.model.timers else None
@@ -864,6 +868,7 @@ class Engine:
                                                                   "temperature": None, "rssi": None} for k, p in self.model.panels.items()],
             "tuya": self.tuya_view() if self.tuya_view else [],
             "airco": self.airco_view() if self.airco_view else [],
+            "lg": self.lg_view() if self.lg_view else [],
             "solar": self.solar_view() if self.solar_view else [],
             "espdev": self.espdev_view() if self.espdev_view else [],
             "scenerules": self.scenerules_view() if self.scenerules_view else [],

@@ -2,7 +2,7 @@
   --bg: #f6f7f9; --card: #fff; --ink: #1c2330; --mute: #667085; --line: #e3e6eb;
   --accent: #2563eb; --accent-ink: #fff; --on: #f5b301; --on-ink: #3b2a00;
   --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --chip: #eef1f5;
-  --t-lamp: #fdf0b5; --t-sw: #cfeeda; --t-box: #fcdcc2; --t-ext: #cdebf3; --t-node: #d9e2fb; --t-timer: #e7dcfb; --t-time: #d5e8f7; --t-logic: #f6dcec; --t-spr: #d3f0e4; --t-panel: #e3e6ea; --t-screen: #dfeaf7; --t-tuya: #fbe0d8; --t-airco: #d6eefb; --t-solar: #fbe7b0; --t-espdev: #e2f0cf; --t-card: #e9e3f5; --t-remote: #dff0ee;
+  --t-lamp: #fdf0b5; --t-sw: #cfeeda; --t-box: #fcdcc2; --t-ext: #cdebf3; --t-node: #d9e2fb; --t-timer: #e7dcfb; --t-time: #d5e8f7; --t-logic: #f6dcec; --t-spr: #d3f0e4; --t-panel: #e3e6ea; --t-screen: #dfeaf7; --t-tuya: #fbe0d8; --t-airco: #d6eefb; --t-lg: #e1dcf6; --t-solar: #fbe7b0; --t-espdev: #e2f0cf; --t-card: #e9e3f5; --t-remote: #dff0ee;
   --accent-soft: #e6eefc; --shadow: 0 10px 30px rgba(16, 24, 40, .18); --rail: 78px;
   --c0: #2563eb; --c1: #d55e00; --c2: #15803d; --c3: #c026d3; --c4: #0891b2; --c5: #7c3aed; --c6: #92400e; --c7: #475569;
 }
@@ -11,7 +11,7 @@
     --bg: #12161d; --card: #1b212b; --ink: #e8ecf2; --mute: #98a2b3; --line: #2b3340;
     --accent: #5b8def; --accent-ink: #0b1220; --on: #f5b301; --on-ink: #221800;
     --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --chip: #252d3a;
-    --t-lamp: #54470f; --t-sw: #1d4d33; --t-box: #5a3519; --t-ext: #17475a; --t-node: #283665; --t-timer: #41306a; --t-time: #1f3f5c; --t-logic: #5a2a48; --t-spr: #1b4a44; --t-panel: #3a4048; --t-screen: #24405e; --t-tuya: #5a2f26; --t-airco: #1c4660; --t-solar: #5a4713; --t-espdev: #34501f; --t-card: #3d3550; --t-remote: #1f4643;
+    --t-lamp: #54470f; --t-sw: #1d4d33; --t-box: #5a3519; --t-ext: #17475a; --t-node: #283665; --t-timer: #41306a; --t-time: #1f3f5c; --t-logic: #5a2a48; --t-spr: #1b4a44; --t-panel: #3a4048; --t-screen: #24405e; --t-tuya: #5a2f26; --t-airco: #1c4660; --t-lg: #3a3563; --t-solar: #5a4713; --t-espdev: #34501f; --t-card: #3d3550; --t-remote: #1f4643;
     --accent-soft: #1f2b45; --shadow: 0 12px 34px rgba(0, 0, 0, .55);
     --c0: #6ea0ff; --c1: #ff8a3d; --c2: #4ade80; --c3: #e879f9; --c4: #22d3ee; --c5: #a78bfa; --c6: #d6a45c; --c7: #94a3b8;
   }
@@ -137,7 +137,7 @@ details.dd > summary::-webkit-details-marker { display: none; }
 .tri .tic { grid-row: span 2; }
 /* een pictogram op een gekleurd vlak: de kleur van het soort blok */
 .t-lamp { --tc: var(--t-lamp); } .t-sw { --tc: var(--t-sw); } .t-box { --tc: var(--t-box); } .t-ext { --tc: var(--t-ext); } .t-node { --tc: var(--t-node); } .t-timer { --tc: var(--t-timer); } .t-time { --tc: var(--t-time); }
-.t-logic { --tc: var(--t-logic); } .t-spr { --tc: var(--t-spr); } .t-panel { --tc: var(--t-panel); } .t-screen { --tc: var(--t-screen); } .t-tuya { --tc: var(--t-tuya); } .t-airco { --tc: var(--t-airco); }
+.t-logic { --tc: var(--t-logic); } .t-spr { --tc: var(--t-spr); } .t-panel { --tc: var(--t-panel); } .t-screen { --tc: var(--t-screen); } .t-tuya { --tc: var(--t-tuya); } .t-airco { --tc: var(--t-airco); } .t-lg { --tc: var(--t-lg); }
 .t-solar { --tc: var(--t-solar); } .t-espdev { --tc: var(--t-espdev); } .t-card { --tc: var(--t-card); } .t-remote { --tc: var(--t-remote); }
 .tic { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 8px; background: var(--tc, var(--chip)); color: var(--ink); flex: none; }
 .tic.on { background: var(--on); color: var(--on-ink); }
@@ -151,7 +151,7 @@ details.dd > summary::-webkit-details-marker { display: none; }
 .bk.off .bkbox { stroke-dasharray: 5 4; }
 .bkhead { fill: var(--chip); stroke: none; }
 .t-lamp .bkhead { fill: var(--t-lamp); } .t-sw .bkhead { fill: var(--t-sw); } .t-box .bkhead { fill: var(--t-box); }
-.t-panel .bkhead { fill: var(--t-panel); } .t-card .bkhead { fill: var(--t-card); } .t-remote .bkhead { fill: var(--t-remote); } .t-screen .bkhead { fill: var(--t-screen); } .t-tuya .bkhead { fill: var(--t-tuya); } .t-airco .bkhead { fill: var(--t-airco); } .t-solar .bkhead { fill: var(--t-solar); } .t-espdev .bkhead { fill: var(--t-espdev); } .t-spr .bkhead { fill: var(--t-spr); } .bkt.zon { font-weight: 700; fill: var(--ok); }
+.t-panel .bkhead { fill: var(--t-panel); } .t-card .bkhead { fill: var(--t-card); } .t-remote .bkhead { fill: var(--t-remote); } .t-screen .bkhead { fill: var(--t-screen); } .t-tuya .bkhead { fill: var(--t-tuya); } .t-airco .bkhead { fill: var(--t-airco); } .t-lg .bkhead { fill: var(--t-lg); } .t-solar .bkhead { fill: var(--t-solar); } .t-espdev .bkhead { fill: var(--t-espdev); } .t-spr .bkhead { fill: var(--t-spr); } .bkt.zon { font-weight: 700; fill: var(--ok); }
 .t-time .bkhead { fill: var(--t-time); } .t-logic .bkhead { fill: var(--t-logic); }
 .t-timer .bkhead { fill: var(--t-timer); } .t-ext .bkhead { fill: var(--t-ext); } .t-node .bkhead { fill: var(--t-node); }
 .bkhead.lamph.on { fill: var(--on); }

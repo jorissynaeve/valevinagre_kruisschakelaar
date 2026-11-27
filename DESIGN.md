@@ -1083,3 +1083,15 @@ Code: `accesshub.py`, `static/access.js`, routes `/api/access` in `web.py`, `tes
 - **Onbekend is geen gebeurtenis**: een offline punt (`None`) geeft geen regel en sluit geen periode. Een lopende periode staat in het bestand en loopt na een herstart door, of sluit als het punt dan uit is. Een bron die uitgaat sluit zijn periode meteen.
 - **Pagina**: filter op apparaat en periode, CSV, Log wissen (lopende perioden blijven), push-event `access` herlaadt de lijst. Max 5000 regels.
 - **Niet gedaan**: een momentopname van de camera bij een detectie, en de regels als ingang voor scènes of meldingen. Nuki geeft niet door wie het slot bediende. Niet in een browser bekeken.
+
+## 46. LG-tv met webOS als huis-screensaver (0.53)
+
+- **Waarom**: de tv in de woonkamer moet een alleen-lezen dashboard tonen als HA dat wil, en niet als er gekeken wordt (`TV-OVERDRACHT.md`). Zoals bij de airco (§31) is het een eigen blok met poorten, zodat de bestaande modules (Tussen, En, Of) de beslissing nemen.
+- **Eigen client in plaats van de HA-integratie**: `lg.py` praat de webOS-websocket (SSAP) zelf, met `wss://:3001` en `ws://:3000` als terugval, en koppelt met `register`. Dat houdt het blok onafhankelijk van HA. De prijs: pairing, sleutelopslag (`/data/lgtv.json`, 0600) en Wake-on-LAN zijn onze zorg.
+- **Het manifest**: een ondertekend manifest van LG's voorbeeld-app (`com.lge.test`), zoals de open-source clients gebruiken, wordt door webOS 25 geweigerd (`403 … blacklisted certificate`). Een manifest zonder handtekening werkt, maar `turnOffScreen` en `turnOnScreen` antwoorden dan `401 insufficient permissions` zolang `CONTROL_TV_SCREEN` ontbreekt. Beide zijn op een 85QNED93A6A vastgesteld; `test_lg.py` bewaakt de rechten.
+- **Wat de tv meldt**: drie abonnementen (voorgrond-app, `getPowerState`, volume). De stand `Screen Off` is wakker maar donker. `aan` (uitgang) betekent: verbonden en `Active`; een tv die uit staat luistert niet meer, en dat is 0, niet onbekend. Alleen een tv zonder sleutel is onbekend.
+- **Wordt bekeken** is geen meting maar een afspraak: aan en een app vooraan die niet in de lijst eigen apps staat. Een dashboard in de browser telt niet als kijken, anders zou het zichzelf wegduwen.
+- **Dashboard weghalen** doet niets als er gekeken wordt: een ingang die om 09:00 naar 0 gaat, mag geen film afbreken. Dat is de enige plek waar de hub een bevel bewust niet uitvoert.
+- **Dashboard tonen als de tv uit is** is een stap-voor-stap proces in de tick (`pending`): Wake-on-LAN elke 15 s, wachten op een verbinding, het scherm aan als het uit was, dan de URL. Na 3 minuten opgeven met een regel in de zijbalk.
+- **Getest**: `test_lg.py` (client tegen een nagebootste tv over een echte websocket: koppelen, weigeren, verbinding herstellen, bevelen), `test_lghub.py` (stand, ingangen, uitgangen in de logica, schema, web-API en een rondgang met `FakeTv`) en op de echte tv: koppelen, standen, toast, scherm uit/aan, een URL openen en een app starten. Niet getest op de echte tv: `system/turnOff` en Wake-on-LAN, en hoe lang de ingebouwde browser een pagina vasthoudt.
+

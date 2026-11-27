@@ -32,7 +32,7 @@ const SC_GANGED = ['switch', 'panel', 'tuya', 'remote']; // blokken met gangen: 
 const scBlocks = () => S.schema.blocks;
 const scBlock = (k) => scBlocks().find((b) => b.key === k);
 const scW = (b) => (b.kind === 'lamp' ? LAMP_W : b.kind === 'tuya' || (b.kind === 'remote' && b.sub === 'tuya') ? TUYA_W : SW_W);
-const scRows = (b) => (b.kind === 'card' || b.kind === 'remote' || b.kind === 'action' || b.kind === 'scenes' || b.kind === 'airco' || b.kind === 'solar' || b.kind === 'loxone' || b.kind === 'charge' || b.kind === 'espdev' ? b.rows : b.kind === 'panel' || b.kind === 'screen' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
+const scRows = (b) => (b.kind === 'card' || b.kind === 'remote' || b.kind === 'action' || b.kind === 'scenes' || b.kind === 'airco' || b.kind === 'lg' || b.kind === 'solar' || b.kind === 'loxone' || b.kind === 'charge' || b.kind === 'espdev' ? b.rows : b.kind === 'panel' || b.kind === 'screen' ? b.gangs.length + b.cards.length + 1 : b.kind === 'timer' ? 1 : b.kind === 'sprinkler' ? Math.max(b.ports.length, b.zones.length) : b.kind === 'module' ? Math.max(b.ports.length, 1) : b.kind === 'lamp' ? Math.max(b.inputs.length, b.outputs.length) + (b.source === 'ha' ? 3 : 1) : b.gangs.length);
 const scH = (b) => SC_HEAD + scRows(b) * SC_ROW + SC_FOOT;
 const rowY = (b, i) => b.y + SC_HEAD + i * SC_ROW + SC_ROW / 2;
 const scPageName = (id) => (S.schema.pages.find((p) => p.id === id) || {}).name || '';
@@ -58,7 +58,7 @@ function scType(b) { // bepaalt de kleur van het blok
   if (b.kind === 'sprinkler' || b.kind === 'action' || b.kind === 'scenes') return 'spr';
   if (b.kind === 'charge') return 'tuya';
   if (b.kind === 'loxone') return 'remote'; // zelfde kleur als een andere installatie: een bron van buiten
-  if (b.kind === 'panel' || b.kind === 'screen' || b.kind === 'tuya' || b.kind === 'airco' || b.kind === 'solar' || b.kind === 'espdev' || b.kind === 'card' || b.kind === 'remote') return b.kind;
+  if (b.kind === 'panel' || b.kind === 'screen' || b.kind === 'tuya' || b.kind === 'airco' || b.kind === 'lg' || b.kind === 'solar' || b.kind === 'espdev' || b.kind === 'card' || b.kind === 'remote') return b.kind;
   if (b.source === 'node') return 'node';
   if (b.source === 'virtual') return 'ext';
   const conns = scConns().filter((x) => x.sw && x.sw.key === b.key);
@@ -278,9 +278,9 @@ const scDevOf = (b) => (b.kind === 'tuya' ? { id: b.id, card: `y:${b.id}`, point
 
 function scSrc(ref) { // de bron van een ingang: een blok, of een datapunt (v:<dp>@<toestel>) -> {key, name, out}
   if (!ref) return null;
-  if (ref.startsWith('w:') || ref.startsWith('o:') || ref.startsWith('e:') || ref.startsWith('x:')) {
+  if (ref.startsWith('w:') || ref.startsWith('o:') || ref.startsWith('e:') || ref.startsWith('x:') || ref.startsWith('l:')) {
     const o = [...scAcOuts('bool'), ...scAcOuts('number'), ...scAcOuts('time')].find((x) => x.key === ref);
-    return o ? { key: o.block, name: o.name, out: o.out } : { key: '', name: ref.startsWith('o:') ? 'omvormer (weg)' : ref.startsWith('e:') ? 'apparaat (weg)' : ref.startsWith('x:') ? 'waarde van Loxone (weg)' : 'airco (weg)', out: '?' };
+    return o ? { key: o.block, name: o.name, out: o.out } : { key: '', name: ref.startsWith('o:') ? 'omvormer (weg)' : ref.startsWith('e:') ? 'apparaat (weg)' : ref.startsWith('x:') ? 'waarde van Loxone (weg)' : ref.startsWith('l:') ? 'tv (weg)' : 'airco (weg)', out: '?' };
   }
   if (ref.startsWith('v:')) {
     const [dp, dev] = ref.slice(2).split('@'), blk = scBlock(dev.startsWith('r:') ? dev : `y:${dev}`);
@@ -361,14 +361,14 @@ const SC_AC_SW = { turbo: 'Turbo', quiet: 'Stil', light: 'Licht', xfan: 'X-fan (
 
 const scAcOutText = (o) => (o.type === 'time' && o.text ? o.text : o.value === null || o.value === undefined ? '?' : o.type === 'bool' ? (o.value ? '1' : '0') : o.text ? o.text : `${o.value} ${o.unit === undefined ? '°C' : o.unit}`.trim());
 function scAcOuts(type) { // de uitgangen van alle airco's van deze soort, als bron voor een ingang
-  return scBlocks().filter((b) => b.kind === 'airco' || b.kind === 'solar' || b.kind === 'espdev' || b.kind === 'loxone').flatMap((b) => (b.all || b.outs).filter((o) => o.type === type).map((o) => ({ key: o.ref, block: b.key, name: `${b.name} · ${o.label}`, out: scAcOutText(o) })));
+  return scBlocks().filter((b) => b.kind === 'airco' || b.kind === 'lg' || b.kind === 'solar' || b.kind === 'espdev' || b.kind === 'loxone').flatMap((b) => (b.all || b.outs).filter((o) => o.type === type).map((o) => ({ key: o.ref, block: b.key, name: `${b.name} · ${o.label}`, out: scAcOutText(o) })));
 }
 function scAcUsers(ref) { // wie deze uitgang van een airco gebruikt
-  return scBlocks().filter((u) => ['module', 'sprinkler', 'action', 'scenes', 'airco', 'espdev'].includes(u.kind) && u.ports.some((p) => p.ref === ref)).map((u) => ({ key: u.key, text: u.name }));
+  return scBlocks().filter((u) => ['module', 'sprinkler', 'action', 'scenes', 'airco', 'lg', 'espdev'].includes(u.kind) && u.ports.some((p) => p.ref === ref)).map((u) => ({ key: u.key, text: u.name }));
 }
 
-function scAirco(b) {
-  const w = SC_AC_W, s = b.state || {};
+function scAcPorts(b) { // de poorten van een apparaatblok met ingangen links en uitgangen rechts (airco, tv)
+  const w = SC_AC_W;
   const ins = b.ports.map((p, i) => {
     const y = rowY(b, i), src = scSrc(p.ref);
     return `<circle class="pt v-${p.type} ${src ? '' : 'free'}" cx="${b.x}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="acin" data-i="${i}"><title>Ingang ${esc(p.label)}: ${p.type === 'bool' ? 'een 0 of 1 van een timer of module' : 'een getal, bv. van een module Getal'}</title></circle>
@@ -381,6 +381,12 @@ function scAirco(b) {
       <circle class="pt v-${o.type} ${users.length ? '' : 'free'} ${o.value === true ? 'on' : ''}" cx="${b.x + w}" cy="${y}" r="6" data-b="${esc(b.key)}" data-role="acout" data-i="${i}"><title>Uitgang ${esc(o.label)}: sleep naar een ingang van een module${o.type === 'bool' ? ' (En, Of), een routine of een andere airco' : ' (Groter dan, Kleiner dan)'}</title></circle>
       ${users.map((u, n) => `<text class="stub" x="${b.x + w + 11}" y="${y + 4 + n * 13}" data-sc="go" data-k="${esc(u.key)}">→ ${esc(scCut(u.text, 24))}<title>${esc(u.text)}</title></text>`).join('')}`;
   }).join('');
+  return { ins, outs };
+}
+
+function scAirco(b) {
+  const w = SC_AC_W, s = b.state || {};
+  const { ins, outs } = scAcPorts(b);
   const st = !b.online ? (b.configured ? 'offline' : 'niet ingesteld') : s.power ? (SC_AC_MODE[s.mode] || 'aan') : 'uit';
   return `<g class="bk ac t-airco ${SC.sel === b.key ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
     <rect class="bkbox" x="${b.x}" y="${b.y}" width="${w}" height="${scH(b)}" rx="8"/>
@@ -457,7 +463,7 @@ async function scWireAirco(a, b) { // een airco: een bron naar een ingang, of ee
     else if (src.role === 'pval') ref = `v:${src.dp}@${scDevOf(from).id}`;
     else if (src.role === 'acout') ref = from.outs[+src.i].ref;
     else throw new Error('Een ingang van een airco of zelfbouwapparaat krijgt een 0/1 of een getal: van een timer, een module, een waarde van een Tuya-blok of een ander apparaat.');
-    await api('PUT', `${ac.kind === 'espdev' ? 'espdev' : 'airco'}/${ac.id}`, { inputs: { [port.name]: ref } });
+    await api('PUT', `${ac.kind === 'espdev' ? 'espdev' : ac.kind === 'lg' ? 'lg' : 'airco'}/${ac.id}`, { inputs: { [port.name]: ref } });
     SC.sel = ac.key;
   } else {
     const sink = out === a ? b : a, ac = scBlock(out.b), to = scBlock(sink.b), ref = ac.outs[+out.i].ref;
@@ -469,6 +475,85 @@ async function scWireAirco(a, b) { // een airco: een bron naar een ingang, of ee
   }
   SC.force = true;
   await refresh();
+}
+
+// ---------------------------------------------------------------- tv (LG webOS): een eigen blok, links wat hem stuurt, rechts wat hij meldt
+
+const SC_LG_OFF = { screen: 'scherm uit', power: 'tv uit', home: 'terug naar het beginscherm' };
+const SC_LG_APP = { 'com.webos.app.home': 'beginscherm', 'com.webos.app.browser': 'browser', 'com.webos.app.screensaver': 'screensaver', netflix: 'Netflix', 'youtube.leanback.v4': 'YouTube', 'com.webos.app.livetv': 'live tv' };
+const scLgApp = (id) => (id ? SC_LG_APP[id] || id : '');
+
+function scLgBadge(b) { // het korte woord op het blok
+  const s = b.state || {};
+  if (b.online) return s.screen_off ? 'scherm uit' : s.watching ? 'bekeken' : 'aan';
+  if (b.pairing) return 'koppelen…';
+  if (!b.configured) return 'niet ingesteld';
+  return b.has_key ? 'uit' : 'niet gekoppeld';
+}
+
+function scLgState(b) { // de zin in de zijbalk
+  if (!b.configured) return 'nog niet ingesteld: vul het IP-adres van de tv in';
+  if (b.online) return 'verbonden';
+  if (b.pairing) return 'bevestig de koppeling met OK op de afstandsbediening van de tv';
+  if (b.rejected) return `koppeling geweigerd op de tv${b.error ? ` (${b.error})` : ''}: kies Opnieuw koppelen`;
+  return b.error || (b.has_key ? 'de tv staat uit of is niet bereikbaar' : 'verbinden…');
+}
+
+function scLg(b) {
+  const w = SC_AC_W, s = b.state || {};
+  const { ins, outs } = scAcPorts(b);
+  return `<g class="bk ac t-lg ${SC.sel === b.key ? 'sel' : ''} ${b.online ? '' : 'off'}" data-block="${esc(b.key)}">
+    <rect class="bkbox" x="${b.x}" y="${b.y}" width="${w}" height="${scH(b)}" rx="8"/>
+    <rect class="bkhead" x="${b.x}" y="${b.y}" width="${w}" height="${SC_HEAD}" rx="8"/>
+    <text class="bkn" x="${b.x + 12}" y="${b.y + 18}">${esc(scCut(b.name, 34))}</text>
+    <text class="bkbadge ${b.online && !s.screen_off ? 'ok' : ''}" x="${b.x + w - 12}" y="${b.y + 18}" text-anchor="end">${esc(scLgBadge(b))}</text>
+    <text class="bks" x="${b.x + 12}" y="${b.y + 34}">${esc(b.tech)}${b.online && s.app ? ` · ${esc(scCut(scLgApp(s.app), 22))}` : ''}</text>${ins}${outs}</g>`;
+}
+
+function scLgPanel(b, props) {
+  const opt = (v, cur, text) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(text)}</option>`;
+  const s = b.state || {};
+  const btn = (op, text, ok) => `<button class="btn small" type="button" data-sc="lgdo" data-op="${op}" data-id="${esc(b.id)}" ${ok ? '' : 'disabled'}>${text}</button>`;
+  const controls = !b.configured ? '' : `<h2>Bedienen</h2>
+    <div class="row" style="margin-top:6px">${btn('on', 'Aan', b.online || b.mac)}${btn('off', 'Uit', b.online)}${btn('screen_off', 'Scherm uit', b.online)}${btn('screen_on', 'Scherm aan', b.online)}${btn('show', 'Dashboard tonen', b.url)}</div>
+    <div class="sub">${b.online ? `Nu: ${s.screen_off ? 'het scherm is uit' : s.watching ? 'er wordt gekeken' : 'aan, niet bekeken'}${s.app ? `, app <b>${esc(scLgApp(s.app))}</b>` : ''}${s.volume != null ? `, volume ${esc(s.volume)}${s.muted ? ' (gedempt)' : ''}` : ''}.` : 'De tv is niet bereikbaar.'}
+      <b>Aan</b> wekt een tv die uit staat met Wake-on-LAN (het MAC-adres is nodig) en zet anders alleen het scherm aan. <b>Dashboard tonen</b> wekt de tv als dat nodig is en opent het adres hieronder.${b.showing ? ' <b>Bezig met openen…</b>' : ''}</div>`;
+  const sources = (p) => [...scBlocks().filter((x) => (x.kind === 'timer' && p.type === 'bool') || (x.kind === 'module' && x.out === p.type)).map((x) => ({ key: x.key, name: x.name, out: scOut(x) })),
+    ...scAcOuts(p.type).filter((o) => o.block !== b.key)];
+  const ins = b.ports.map((p) => {
+    const list = sources(p), cur = p.ref && !list.some((x) => x.key === p.ref) ? scSrc(p.ref) : null;
+    const all = cur ? [{ ...cur, key: p.ref }, ...list] : list;
+    return `<label>${esc(p.label)}</label><select data-lgin="${esc(p.name)}"><option value="">niet aangesloten</option>${all.map((x) => `<option value="${esc(x.key)}" ${x.key === p.ref ? 'selected' : ''}>${esc(x.name)} (nu ${esc(x.out)})</option>`).join('')}</select>
+      ${b.last[p.name] ? `<div class="sub">${esc(b.last[p.name])}</div>` : ''}`;
+  }).join('');
+  const users = b.outs.flatMap((o) => scAcUsers(o.ref).map((u) => ({ ...u, label: o.label })));
+  return `<h3>${esc(b.name)}</h3><div class="row"><span class="badge ${b.online ? 'ok' : ''}">${esc(scLgState(b))}</span></div>
+    <div class="sub">Een LG-tv met webOS, rechtstreeks over het LAN zonder cloud en zonder de HA-integratie. In Home Assistant verschijnen <code>binary_sensor.kk_lgtv_${esc(b.id)}_on</code> en <code>…_watch</code>.</div>${props}
+    ${controls}
+    <h2>Ingangen</h2>${ins}
+    <div class="sub">Een ingang doet pas iets als ze <b>verandert</b>: na een herstart of als de bron weer bekend wordt, onthoudt ze alleen de stand. <b>Aan</b>: 1 zet de tv aan, 0 zet hem uit. <b>Dashboard</b>: 1 zet de tv aan en opent het adres hieronder, 0 haalt het weg, maar <b>nooit terwijl er gekeken wordt</b>. Sluit er bv. een En aan van <i>tussen 06:30 en 09:00</i>, <i>iemand is thuis</i> en <i>niet bekeken</i>.</div>
+    <h2>Uitgangen gaan naar</h2>${users.map((u) => `<div class="sub">${esc(u.label)} → <a href="#" data-sc="go" data-k="${esc(u.key)}">${esc(u.text)}</a></div>`).join('') || '<div class="sub">Nog nergens. Sleep een uitgang (rechts) naar En, Of of een routine.</div>'}
+    <div class="sub"><b>Aan</b> is 1 als de tv wakker is met het scherm aan; een tv die uit staat of waarvan alleen het scherm uit is, geeft 0. <b>Wordt bekeken</b> is 1 als hij aan is en er een app vooraan staat die niet in de lijst eigen apps staat. Een tv die nog nooit gekoppeld is, geeft onbekend.</div>
+    <h2>Dashboard</h2>
+    <label>Adres van het dashboard</label><input type="text" inputmode="url" maxlength="500" data-lgfield="url" spellcheck="false" autocomplete="off" placeholder="http://homeassistant.local:8123/dashboard-tv/0" value="${esc(b.url)}">
+    <label>Dashboard weghalen</label><select data-lgfield="off_mode">${Object.entries(SC_LG_OFF).map(([v, t]) => opt(v, b.off_mode, t)).join('')}</select>
+    <label>Eigen apps (tellen niet als kijken)</label><input type="text" maxlength="1000" data-lgfield="apps" spellcheck="false" autocomplete="off" value="${esc(b.apps.join(' '))}">
+    <div class="sub">App-id's gescheiden door spaties. Standaard: de browser (het dashboard zelf), de screensaver en het beginscherm. Een spelconsole of Netflix telt dus als kijken. Zet een app erbij als hij niet als kijken moet gelden.</div>
+    <h2>Toestel</h2>
+    <label>IP-adres</label><input type="text" maxlength="253" data-lgfield="host" spellcheck="false" autocomplete="off" placeholder="192.168.1.50" value="${esc(b.host)}">
+    <label>MAC-adres (voor Wake-on-LAN)</label><input type="text" maxlength="17" data-lgfield="mac" spellcheck="false" autocomplete="off" placeholder="c8:f7:42:a1:b2:c3" value="${esc(b.mac)}">
+    <div class="sub">Het IP en het LAN-MAC (niet het Bluetooth-adres) vind je in de router. De tv moet <i>Aanzetten via wifi/LAN</i> toestaan, anders werkt Aan niet vanuit uit. De koppeling vraagt de tv eenmalig: kies <b>Opnieuw koppelen</b> en bevestig met OK op de afstandsbediening. Wijzig je het IP-adres, dan koppel je opnieuw.</div>
+    <div class="row" style="margin-top:6px">${btn('pair', 'Opnieuw koppelen', b.host)}</div>
+    <div class="row" style="margin-top:6px"><button class="btn small danger" type="button" data-sc="dellg" data-id="${esc(b.id)}">TV verwijderen</button></div>`;
+}
+
+async function scSaveLg(b, patch) {
+  try {
+    await api('PUT', `lg/${b.id}`, patch);
+  } finally {
+    SC.force = true;
+    await refresh();
+  }
 }
 
 // ---------------------------------------------------------------- omvormer (Solarman): een eigen blok met alleen uitgangen
@@ -743,7 +828,7 @@ function scOut(b) { // wat een timer of module nu geeft, als tekst
   return b.out === 'time' ? scClock(b.value) : b.value ? '1' : '0';
 }
 function scUsers(b) { // wie deze uitgang gebruikt
-  return scBlocks().filter((u) => (u.kind === 'lamp' && [u.disable, u.control].some((s) => s && scDisKey(s) === b.key)) || (['module', 'sprinkler', 'action', 'scenes', 'airco', 'espdev'].includes(u.kind) && u.ports.some((p) => p.ref === b.key)));
+  return scBlocks().filter((u) => (u.kind === 'lamp' && [u.disable, u.control].some((s) => s && scDisKey(s) === b.key)) || (['module', 'sprinkler', 'action', 'scenes', 'airco', 'lg', 'espdev'].includes(u.kind) && u.ports.some((p) => p.ref === b.key)));
 }
 
 // ---------------------------------------------------------------- Tuya-datapunten: kiezen bij een module, een routine of een kaart
@@ -1367,7 +1452,7 @@ function scModulePanel(b, props) {
 
 // Het menu "+ Module": alles wat je op een pagina kunt zetten, per soort
 const SC_MENU = [
-  ['Toestellen', [['lamp', 'Lamp', 'met touches en relais'], ['switch', 'Schakelaar', 'een toestel uit Home Assistant'], ['panel', 'NSPanel', 'scherm met twee relais'], ['screen', 'Scherm', 'aanraakscherm met openHASP'], ['tuya', 'Tuya', 'toestel rechtstreeks over het LAN'], ['airco', 'Airco', 'Gree, Toyotomi, ... over het LAN'], ['charge', 'Laadpaal', 'sessies en log op een Tuya-toestel'], ['solar', 'Omvormer', 'Deye, Sunsynk, ... met een Solarman-stick']]],
+  ['Toestellen', [['lamp', 'Lamp', 'met touches en relais'], ['switch', 'Schakelaar', 'een toestel uit Home Assistant'], ['panel', 'NSPanel', 'scherm met twee relais'], ['screen', 'Scherm', 'aanraakscherm met openHASP'], ['tuya', 'Tuya', 'toestel rechtstreeks over het LAN'], ['airco', 'Airco', 'Gree, Toyotomi, ... over het LAN'], ['lg', 'TV', 'LG met webOS over het LAN'], ['charge', 'Laadpaal', 'sessies en log op een Tuya-toestel'], ['solar', 'Omvormer', 'Deye, Sunsynk, ... met een Solarman-stick']]],
   ['Tijd', [['timer', 'Timer', 'intervallen per dag, geeft 0 of 1'], ['sunrise', 'Zonsopgang', 'tijd van vandaag'], ['sunset', 'Zonsondergang', 'tijd van vandaag'], ['time', 'Vaste tijd', 'bv. 02:30']]],
   ['Waarden', [['number', 'Getal', 'bv. aantal cycli'], ['select', 'Keuze', '1 geeft het ene getal, 0 het andere'], ['dp', 'Tuya-waarde', 'een datapunt als getal']]],
   ['Rekenen', [['add', 'Optellen', 'tijd + tijd'], ['sub', 'Aftrekken', 'tijd − tijd']]],
@@ -1510,7 +1595,7 @@ function scInner(list) {
   const shown = new Set(list.map((b) => b.key));
   const wires = !SC_WIRES ? '' : conns.filter((x) => scSame(x) && shown.has(x.lamp.key) && x.c.gang < x.sw.gangs.length).map(scWire).join('');
   const blocks = list.map((b) => (b.kind === 'lamp' ? scLamp(b) : b.kind === 'timer' ? scTimer(b) : b.kind === 'module' ? scModule(b) : b.kind === 'sprinkler' ? scSprinkler(b)
-    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'airco' ? scAirco(b) : b.kind === 'charge' ? scCharge(b) : b.kind === 'solar' || b.kind === 'loxone' ? scSolar(b) : b.kind === 'espdev' ? scEspdev(b) : b.kind === 'card' ? scCard(b) : b.kind === 'action' ? scAction(b) : b.kind === 'scenes' ? scScenes(b) : b.kind === 'remote' ? scRemote(b, tags) : b.kind === 'panel' || b.kind === 'screen' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
+    : b.kind === 'tuya' ? scTuya(b, tags) : b.kind === 'airco' ? scAirco(b) : b.kind === 'lg' ? scLg(b) : b.kind === 'charge' ? scCharge(b) : b.kind === 'solar' || b.kind === 'loxone' ? scSolar(b) : b.kind === 'espdev' ? scEspdev(b) : b.kind === 'card' ? scCard(b) : b.kind === 'action' ? scAction(b) : b.kind === 'scenes' ? scScenes(b) : b.kind === 'remote' ? scRemote(b, tags) : b.kind === 'panel' || b.kind === 'screen' ? scPanelBlock(b, tags) : scSwitch(b, tags))).join('');
   return `<g class="wires">${wires}</g>${blocks}<path id="sctemp" class="wire temp"/>`; // draden onder de blokken: anders liggen ze over de poorten
 }
 
@@ -1545,7 +1630,7 @@ function scPortPos(p) {
   if (b.kind === 'module') return p.role === 'min' ? [b.x, rowY(b, +p.i)] : [b.x + SW_W, rowY(b, 0)];
   if (b.kind === 'action') return [b.x, rowY(b, 0)];
   if (b.kind === 'scenes') return [b.x, rowY(b, +p.i)];
-  if (b.kind === 'airco' || b.kind === 'solar' || b.kind === 'loxone') return [p.role === 'acout' ? b.x + SC_AC_W : b.x, rowY(b, +p.i)];
+  if (b.kind === 'airco' || b.kind === 'lg' || b.kind === 'solar' || b.kind === 'loxone') return [p.role === 'acout' ? b.x + SC_AC_W : b.x, rowY(b, +p.i)];
   if (b.kind === 'espdev') return [p.role === 'acout' ? b.x + SC_AC_W : b.x, rowY(b, (p.role === 'acout' ? b.outs : b.ports)[+p.i].row)];
   if (p.role === 'pval' || p.role === 'pset') return [p.role === 'pval' ? b.x + TUYA_W : b.x, rowY(b, +p.i)];
   if (b.kind === 'card') return p.role === 'cout' ? [b.x + SW_W, rowY(b, 0)] :  [b.x, rowY(b, p.i === 'new' ? b.items.length : +p.i)];
@@ -1567,15 +1652,15 @@ function scTabs() {
 // Welk pictogram en welke naam bij een blok hoort (de lijst links, de kop van het eigenschappenvenster)
 function scIcon(b) {
   if (b.kind === 'module') return MENU_ICON[b.type] || 'cpu';
-  return { lamp: 'lamp', switch: 'switch', timer: 'timer', sprinkler: 'sprinkler', action: 'action', scenes: 'scenes', panel: 'panel', screen: 'screen', tuya: 'tuya', airco: 'airco', charge: 'charge', solar: 'solar', loxone: 'cpu', espdev: 'cpu', card: 'cards', remote: 'link' }[b.kind] || 'cpu';
+  return { lamp: 'lamp', switch: 'switch', timer: 'timer', sprinkler: 'sprinkler', action: 'action', scenes: 'scenes', panel: 'panel', screen: 'screen', tuya: 'tuya', airco: 'airco', lg: 'tv', charge: 'charge', solar: 'solar', loxone: 'cpu', espdev: 'cpu', card: 'cards', remote: 'link' }[b.kind] || 'cpu';
 }
 function scKindName(b) {
   if (b.kind === 'module') { const hit = SC_MENU.flatMap(([, items]) => items).find((it) => it[0] === b.type); return hit ? hit[1] : 'Module'; }
-  return { lamp: 'Lamp', switch: 'Schakelaar', timer: 'Timer', sprinkler: 'Sprinkler', action: 'Tuya instellen', scenes: 'Scènes', panel: 'NSPanel', screen: 'Scherm', tuya: 'Tuya', airco: 'Airco', charge: 'Laadpaal', solar: 'Omvormer', loxone: 'Loxone', espdev: 'Zelfbouw, ESPHome of Hue', card: 'Kaart', remote: 'Andere installatie' }[b.kind] || '';
+  return { lamp: 'Lamp', switch: 'Schakelaar', timer: 'Timer', sprinkler: 'Sprinkler', action: 'Tuya instellen', scenes: 'Scènes', panel: 'NSPanel', screen: 'Scherm', tuya: 'Tuya', airco: 'Airco', lg: 'TV', charge: 'Laadpaal', solar: 'Omvormer', loxone: 'Loxone', espdev: 'Zelfbouw, ESPHome of Hue', card: 'Kaart', remote: 'Andere installatie' }[b.kind] || '';
 }
 
 const SC_TRAY = [['Lampen', 'lamp', 'lamp'], ['Schakelaars', 'switch', 'switch'], ['Timers', 'timer', 'timer'], ['Tijd en logica', 'module', 'time'], ['Routines', 'sprinkler', 'sprinkler'], ['Tuya instellen', 'action', 'action'],
-  ['Scènes', 'scenes', 'scenes'], ['Panelen', 'panel', 'panel'], ['Kaarten', 'card', 'cards'], ['Schermen', 'screen', 'screen'], ['Tuya', 'tuya', 'tuya'], ['Airco', 'airco', 'airco'], ['Laadpaal', 'charge', 'charge'],
+  ['Scènes', 'scenes', 'scenes'], ['Panelen', 'panel', 'panel'], ['Kaarten', 'card', 'cards'], ['Schermen', 'screen', 'screen'], ['Tuya', 'tuya', 'tuya'], ['Airco', 'airco', 'airco'], ['TV', 'lg', 'tv'], ['Laadpaal', 'charge', 'charge'],
   ['Omvormer', 'solar', 'solar'], ['Loxone', 'loxone', 'cpu'], ['Zelfbouw, ESPHome en Hue', 'espdev', 'cpu'], ['Andere installaties', 'remote', 'link']];
 
 function scTray() {
@@ -1603,7 +1688,7 @@ function scPanel() {
   const pages = `<label for="scroom">Ruimte</label><select id="scroom" data-k="${esc(b.key)}"><option value="">(niet geplaatst)</option>${S.schema.pages.map((p) => `<option value="${esc(p.id)}" ${p.id === b.page ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
   const props = `<label for="scname">Eigen naam</label><input type="text" id="scname" maxlength="60" data-k="${esc(b.key)}" value="${esc(b.kind === 'switch' ? b.alias : b.name)}" placeholder="${esc(b.tech)}">
     <div class="sub">Technische naam: <code>${esc(b.tech)}</code></div>${pages}`;
-  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : b.kind === 'tuya' ? scTuyaPanel(b, props) : b.kind === 'airco' ? scAircoPanel(b, props) : b.kind === 'charge' ? scChargePanel(b, props) : b.kind === 'solar' ? scSolarPanel(b, props) : b.kind === 'loxone' ? scLoxonePanel(b, props) : b.kind === 'espdev' ? scEspdevPanel(b, props) : b.kind === 'card' ? scCardPanel(b, props) : b.kind === 'action' ? scActionPanel(b, props) : b.kind === 'scenes' ? scScenesPanel(b, props) : b.kind === 'remote' ? scRemotePanel(b) : scSwitchPanel(b, props);
+  return b.kind === 'lamp' ? scLampPanel(b, props) : b.kind === 'timer' ? scTimerPanel(b, props) : b.kind === 'module' ? scModulePanel(b, props) : b.kind === 'sprinkler' ? scSprinklerPanel(b, props) : b.kind === 'panel' ? scPanelPanel(b, props) : b.kind === 'screen' ? scScreenPanel(b, props) : b.kind === 'tuya' ? scTuyaPanel(b, props) : b.kind === 'airco' ? scAircoPanel(b, props) : b.kind === 'lg' ? scLgPanel(b, props) : b.kind === 'charge' ? scChargePanel(b, props) : b.kind === 'solar' ? scSolarPanel(b, props) : b.kind === 'loxone' ? scLoxonePanel(b, props) : b.kind === 'espdev' ? scEspdevPanel(b, props) : b.kind === 'card' ? scCardPanel(b, props) : b.kind === 'action' ? scActionPanel(b, props) : b.kind === 'scenes' ? scScenesPanel(b, props) : b.kind === 'remote' ? scRemotePanel(b) : scSwitchPanel(b, props);
 }
 
 function scConnRow(b, c, i, dir) {
@@ -2054,6 +2139,7 @@ const SC_ACTIONS = {
       : d.type === 'screen' ? await api('POST', 'screens', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'tuya' ? await api('POST', 'tuya', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'airco' ? await api('POST', 'airco', { page: SC.page, ...scFreeSpot('module') })
+      : d.type === 'lg' ? await api('POST', 'lg', { page: SC.page, ...scFreeSpot('module') })
       : d.type === 'charge' ? await api('POST', 'charge', { page: SC.page, name: 'Laadpaal', ...scFreeSpot('module') })
       : d.type === 'solar' ? await api('POST', 'solar', { page: SC.page, ...scFreeSpot('module') })
       : await api('POST', 'modules', { type: d.type, page: SC.page, ...scFreeSpot('module') });
@@ -2482,6 +2568,21 @@ const SC_ACTIONS = {
     SC.sel = null;
     await refresh();
   },
+  lgdo: async (d) => {
+    if (d.op === 'off' && !confirm('De tv uitzetten? Aanzetten kan daarna alleen met Wake-on-LAN of de afstandsbediening.')) return;
+    try {
+      await api('POST', `lg/${d.id}/${d.op}`, {});
+    } finally {
+      SC.force = true;
+      await refresh();
+    }
+  },
+  dellg: async (d) => {
+    if (!confirm('Deze tv verwijderen? De koppeling en de sleutel gaan weg; de tv zelf blijft staan.')) return;
+    await api('DELETE', `lg/${d.id}`);
+    SC.sel = null;
+    await refresh();
+  },
   delairco: async (d) => {
     if (!confirm('Deze airco verwijderen? Haar entiteiten verdwijnen uit Home Assistant.')) return;
     await api('DELETE', `airco/${d.id}`);
@@ -2832,6 +2933,7 @@ document.addEventListener('change', (ev) => {
         else if (b.kind === 'screen') await api('PUT', `screens/${b.id}`, { name });
         else if (b.kind === 'tuya') await api('PUT', `tuya/${b.id}`, { name });
         else if (b.kind === 'airco') await api('PUT', `airco/${b.id}`, { name });
+        else if (b.kind === 'lg') await api('PUT', `lg/${b.id}`, { name });
         else if (b.kind === 'charge') await api('PUT', `charge/${b.id}`, { name });
         else if (b.kind === 'solar') await api('PUT', `solar/${b.id}`, { name });
         else if (b.kind === 'loxone') throw new Error('Dit blok heet altijd Loxone. De waarden hebben hun eigen naam bij Instellingen, Loxone.');
@@ -3022,6 +3124,12 @@ document.addEventListener('change', (ev) => {
       const [mac, host] = value.split('|');
       act(() => scSaveAirco(b, { mac, host }))();
     } else if (ds.awfield && (value || ds.awfield !== 'key')) act(() => scSaveAirco(b, { [ds.awfield]: value }))();
+  }
+  if (t.dataset && (t.dataset.lgin || t.dataset.lgfield) && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'lg') {
+    const b = scBlock(SC.sel), ds = t.dataset, value = t.value.trim();
+    t.blur();
+    if (ds.lgin) act(() => scSaveLg(b, { inputs: { [ds.lgin]: value || null } }))();
+    else act(() => scSaveLg(b, { [ds.lgfield]: value }))();
   }
   if (t.dataset && (t.dataset.esset || t.dataset.esin || t.dataset.esshow !== undefined || t.dataset.esha !== undefined) && SC.sel && scBlock(SC.sel) && scBlock(SC.sel).kind === 'espdev') {
     const b = scBlock(SC.sel), ds = t.dataset;

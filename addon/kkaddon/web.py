@@ -23,16 +23,17 @@ STATIC = Path(__file__).parent / "static"
 CTX = web.AppKey("ctx", object)
 INGRESS_PROXY = {"172.30.32.2", "127.0.0.1", "::1"}
 # Events die de pagina moet kennen; de rest (bv. losse commando-statussen) is ruis.
-PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "airco", "solar", "espdev", "charge", "link", "action", "loxone", "access"}
+PUSH = {"btn", "light", "node", "cfg", "learn", "cmd", "sync", "grp", "model", "sprinkler", "panel", "screen", "tuya", "airco", "lg", "solar", "espdev", "charge", "link", "action", "loxone", "access"}
 
 
 class Ctx:
     """Alles wat de handlers nodig hebben."""
 
-    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None, energy=None, charge=None, espdev=None, loxone=None, access=None) -> None:
+    def __init__(self, settings: Settings, engine: Engine, transport=None, mqtt=None, ha=None, panels=None, tuya=None, links=None, airco=None, solar=None, energy=None, charge=None, espdev=None, loxone=None, access=None, lg=None) -> None:
         self.settings, self.engine, self.model = settings, engine, engine.model
         self.transport, self.mqtt, self.ha, self.panels, self.tuya, self.links = transport, mqtt, ha, panels, tuya, links
         self.airco = airco
+        self.lg = lg  # LG-tv's met webOS (lghub.py)
         self.charge = charge  # laadpalen met sessies (chargehub.py)
         self.solar = solar  # omvormers (solarhub.py)
         self.espdev = espdev  # zelfbouwapparaten met het HUISDEV-protocol (espdevhub.py)
@@ -681,6 +682,46 @@ async def airco_scan(request: web.Request) -> web.Response:
 
 async def airco_delete(request: web.Request) -> web.Response:
     ok = _airco(request).remove(request.match_info["did"])
+    return web.json_response({"ok": ok}, status=200 if ok else 404)
+
+
+def _lg(request: web.Request):
+    hub = request.app[CTX].lg
+    if hub is None:
+        raise ModelError("tv's zijn niet beschikbaar")
+    return hub
+
+
+async def lg_post(request: web.Request) -> web.Response:
+    ctx: Ctx = request.app[CTX]
+    b = await _body(request)
+    did = _lg(request).add(b)
+    if b.get("page"):
+        schema.place(ctx.model, ctx.engine.snapshot(), f"l:{did}", b["page"], b.get("x", 0), b.get("y", 0))
+    return web.json_response({"ok": True, "id": did, "key": f"l:{did}"})
+
+
+async def lg_put(request: web.Request) -> web.Response:
+    _lg(request).update(request.match_info["did"], await _body(request))
+    return web.json_response({"ok": True})
+
+
+async def lg_do(request: web.Request) -> web.Response:
+    """Een bevel uit de zijbalk: aan, uit, scherm aan, scherm uit, het dashboard openen of opnieuw koppelen."""
+    hub, did, op = _lg(request), request.match_info["did"], request.match_info["op"]
+    if op == "pair":
+        hub.pair(did)
+    elif op == "show":
+        hub.show(did)
+    elif op in ("on", "off"):
+        hub.power(did, op == "on")
+    else:
+        hub.screen(did, op == "screen_on")
+    return web.json_response({"ok": True})
+
+
+async def lg_delete(request: web.Request) -> web.Response:
+    ok = _lg(request).remove(request.match_info["did"])
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
@@ -1370,6 +1411,10 @@ def make_app(ctx: Ctx) -> web.Application:
     r.add_put("/api/airco/{did}", airco_put)
     r.add_delete("/api/airco/{did}", airco_delete)
     r.add_post("/api/airco/{did}/set", airco_set)
+    r.add_post("/api/lg", lg_post)
+    r.add_put("/api/lg/{did}", lg_put)
+    r.add_delete("/api/lg/{did}", lg_delete)
+    r.add_post("/api/lg/{did}/{op:on|off|screen_on|screen_off|show|pair}", lg_do)
     r.add_put("/api/schema/pages", schema_pages)
     r.add_post("/api/schema/wire", schema_wire)
     r.add_post("/api/schema/lamp", schema_lamp)

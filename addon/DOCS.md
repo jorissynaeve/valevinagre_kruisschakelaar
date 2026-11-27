@@ -272,6 +272,34 @@ andere merken die de app *Gree+* of *EWPE Smart* gebruiken. Het is een eigen blo
   ingang van een andere airco. Offline is de waarde onbekend.
 * De sleutels staan in `/data/gree.json`: in de HA-back-up, niet in *Exporteer configuratie*. Op armv7 is deze functie niet beschikbaar.
 
+## TV (LG met webOS, als huis-screensaver)
+
+*+ Module → TV* zet een tv-blok op de pagina, voor een LG-tv met webOS (getest op een 85QNED93A6A). De add-on praat rechtstreeks met de tv over
+het LAN (de webOS-websocket), zonder cloud en zonder de webOS-integratie van HA. Zo kan HA bepalen **wanneer** de tv een dashboard toont:
+een alleen-lezen scherm met klok, agenda en weer dat verschijnt als je het nodig hebt en weggaat zodra er gekeken wordt.
+
+* **Instellen**: vul het IP-adres van de tv in (een vast adres via de router) en bevestig de melding die dan op de tv verschijnt met **OK** op
+  de afstandsbediening. Dat is eenmalig; de sleutel staat in `/data/lgtv.json` (in de HA-back-up, niet in *Exporteer configuratie*). Vul voor
+  *Aan* vanuit uit ook het **LAN-MAC** in (niet het Bluetooth-adres) en zet op de tv *Aanzetten via wifi/LAN* aan. Weigert iemand de melding, dan
+  vraagt de add-on niet opnieuw: kies *Opnieuw koppelen*. Een ander IP-adres wist de sleutel.
+* **Ingangen** (links): *aan* (0/1) en *dashboard* (0/1). Zoals bij de airco doet een ingang pas iets als ze **verandert**: na een herstart of
+  als de bron weer bekend wordt, onthoudt ze alleen de stand. *Aan* op 1 wekt de tv (Wake-on-LAN als hij uit is, het scherm aan als alleen het
+  scherm uit was), op 0 zet hij uit. *Dashboard* op 1 zet de tv zo nodig aan, wacht tot hij bereikbaar is (hoogstens 3 minuten) en opent het
+  **adres van het dashboard** in de browser van de tv. Op 0 haalt de add-on het weg: *scherm uit*, *tv uit* of *terug naar het beginscherm*, naar
+  keuze, maar **nooit terwijl er gekeken wordt**; dan blijft de tv zoals hij is.
+* **Uitgangen** (rechts): *aan* is 1 als de tv wakker is met het scherm aan (een tv die uit staat, niet bereikbaar is of waarvan alleen het
+  scherm uit is, geeft 0). *Wordt bekeken* is 1 als hij aan is en er een app vooraan staat die niet bij de **eigen apps** hoort (standaard de
+  browser, de screensaver en het beginscherm). Netflix of een spelconsole op HDMI telt dus als kijken; zet een app erbij als dat niet zo hoort.
+  Een tv die nog nooit gekoppeld is, geeft onbekend. Sleep de uitgangen naar En, Of, Groter dan of een routine.
+* **Een voorbeeld**: *Tussen* 06:30 en 09:00, *iemand is thuis* en *niet bekeken* in een En, dat naar de ingang *dashboard* gaat. Zodra er
+  iemand begint te kijken, valt de En naar 0 en blijft de tv zoals hij is.
+* **In HA**: twee binaire sensoren per tv, `binary_sensor.kk_lgtv_<id>_on` en `…_watch`, via MQTT. Bedienen gaat via het schema.
+* **Bedienen met de hand**: in de zijbalk staan *Aan*, *Uit*, *Scherm uit*, *Scherm aan* en *Dashboard tonen*.
+* **Beperkingen**: de add-on vraagt geen
+  rechten aan met een ondertekend manifest: nieuwere software (webOS 25) weigert dat (`blacklisted certificate`), en met een gewoon manifest
+  inclusief `CONTROL_TV_SCREEN` werkt scherm uit/aan wel. Het scherm uitzetten en de browser openen zijn getest, het uitzetten van de tv en
+  Wake-on-LAN nog niet op de echte tv. Of de ingebouwde browser een dashboard uren open houdt, hoort bij het testplan in `TV-OVERDRACHT.md`.
+
 ## Omvormer (Deye, Sunsynk, ...: zonder Solarman-integratie of cloud)
 
 *+ Module → Omvormer* zet een omvormer-blok op de pagina, voor een omvormer met een Solarman-wifistick (LSW-3): Deye, Sunsynk en andere

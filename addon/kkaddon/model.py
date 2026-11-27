@@ -121,7 +121,7 @@ FLOOR_ID_RE = re.compile(r"^[a-z0-9]{1,12}$")
 GROUP_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
 DISABLE_RE = re.compile(r"^(m:)?[a-z0-9_]{1,80}$")
 # een bron: een timer, een module, of rechtstreeks een datapunt van een Tuya-toestel (v:<datapunt>@<toestel>, hier of r:..:y:<id>)
-SOURCE_RE = re.compile(r"^([tm]:[a-z0-9_]{1,80}|v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})|w:[a-z0-9_]{1,40}:(on|room|set)|o:[a-z0-9_]{1,40}:[a-z0-9_]{1,12}|e:[a-z0-9_]{1,40}:[a-z][a-z0-9_]{0,23}|x:[a-z0-9_]{1,40})$")  # w: een uitgang van een airco (greehub.py), o: van een omvormer (solarhub.py), e: van een HUISDEV-apparaat (espdevhub.py), x: een waarde van Loxone (loxonehub.py)
+SOURCE_RE = re.compile(r"^([tm]:[a-z0-9_]{1,80}|v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})|w:[a-z0-9_]{1,40}:(on|room|set)|o:[a-z0-9_]{1,40}:[a-z0-9_]{1,12}|e:[a-z0-9_]{1,40}:[a-z][a-z0-9_]{0,23}|x:[a-z0-9_]{1,40}|l:[a-z0-9_]{1,40}:(on|watch))$")  # w: een uitgang van een airco (greehub.py), o: van een omvormer (solarhub.py), e: van een HUISDEV-apparaat (espdevhub.py), x: een waarde van Loxone (loxonehub.py), l: een uitgang van een LG-tv (lghub.py)
 VALUE_RE = re.compile(r"^v:\d{1,4}@([a-z0-9_]{1,80}|r:[a-z0-9_]{1,40}:y:[a-z0-9_]{1,80})$")  # alleen een datapunt
 
 
@@ -729,6 +729,8 @@ def _source_type(ref: str, modules: dict[str, dict], timers: dict[str, dict]) ->
         return (esp_type(ref) if esp_type else None) or ANY  # een HUISDEV-apparaat staat niet in het model: is het weg, dan is de waarde onbekend, geen fout
     if ref.startswith("x:"):
         return (lox_type(ref) if lox_type else None) or ANY  # een waarde van Loxone staat niet in het model: is het signaal weg, dan is de waarde onbekend, geen fout
+    if ref.startswith("l:"):
+        return BOOL  # een tv staat niet in het model: is ze weg, dan is de waarde onbekend, geen fout
     if ref.startswith("w:"):
         return BOOL if ref.endswith(":on") else NUMBER  # een airco staat niet in het model: is ze weg, dan is de waarde onbekend, geen fout
     if ref.startswith("v:"):
@@ -803,7 +805,7 @@ def _conflicts(groups: dict[str, dict], virtual: dict[int, list[dict]], sprinkle
 ITEM_RE = re.compile(r"^(n\d{1,5}|l\d{1,5}\.\d{1,2})$")  # n<node> = schakelaar, l<node>.<relais> = lamp
 PAGE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 SWITCH_ID_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|w:[a-z0-9_]{1,40}|o:[a-z0-9_]{1,40}|e:[a-z0-9_]{1,40}|c:[a-z0-9_]{1,40}|k:[a-z0-9_]{1,40}|a:[a-z0-9_]{1,80}|q:[a-z0-9_]{1,40}|x:[a-z0-9_]{1,40}|r:[a-z0-9_]{1,40}:(?:g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80}|k:[a-z0-9_]{1,40}|e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190})|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
+BLOCK_RE = re.compile(r"^(g:[a-z0-9_]{1,80}|d:[a-z0-9_]{1,80}|t:[a-z0-9_]{1,80}|m:[a-z0-9_]{1,80}|s:[a-z0-9_]{1,80}|p:[a-z0-9_]{1,80}|h:[a-z0-9_]{1,80}|y:[a-z0-9_]{1,80}|w:[a-z0-9_]{1,40}|o:[a-z0-9_]{1,40}|e:[a-z0-9_]{1,40}|c:[a-z0-9_]{1,40}|k:[a-z0-9_]{1,40}|a:[a-z0-9_]{1,80}|q:[a-z0-9_]{1,40}|x:[a-z0-9_]{1,40}|l:[a-z0-9_]{1,40}|r:[a-z0-9_]{1,40}:(?:g:[a-z0-9_]{1,80}|l\d{1,5}\.\d{1,2}|y:[a-z0-9_]{1,80}|k:[a-z0-9_]{1,40}|e:[a-z0-9_]{1,60}\.[a-z0-9_]{1,190})|n\d{1,5}|l\d{1,5}\.\d{1,2})$")
 
 
 def _switch_gangs(raw) -> list[dict]:

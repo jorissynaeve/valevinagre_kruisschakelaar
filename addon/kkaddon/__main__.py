@@ -17,6 +17,7 @@ from .accesshub import AccessHub
 from .chargehub import ChargeHub
 from .engine import Engine
 from .greehub import GreeHub
+from .lghub import LgHub
 from .habridge import HaBridge
 from .hasphub import HaspHub
 from .linkhub import LinkHub
@@ -89,6 +90,10 @@ async def run() -> None:
 
     airco.changed = airco_changed
     airco.start()
+    lg = LgHub(s.data_dir, engine)  # LG-tv's met webOS, een eigen blok (l:<id>), rechtstreeks over het LAN
+    mqtt.extras.append(lg)
+    lg.changed = mqtt.resync
+    lg.start()
     solar = SolarHub(s.data_dir, engine)  # omvormers met een Solarman-stick, een eigen blok (o:<id>)
     mqtt.extras.append(solar)
     solar.changed = mqtt.resync
@@ -107,7 +112,7 @@ async def run() -> None:
     links.changed = mqtt.resync
     energy = EnergyHub(s.data_dir, ha)  # het energiedashboard van HA invullen vanuit de meters
     await links.start()
-    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar, energy, charge, espdev, loxone, access)
+    ctx = Ctx(s, engine, transport, mqtt, ha, panels, tuya, links, airco, solar, energy, charge, espdev, loxone, access, lg=lg)
     runner = web.AppRunner(make_app(ctx), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", s.web_port).start()
@@ -151,6 +156,7 @@ async def run() -> None:
     screens.close()
     tuya.close()
     airco.close()
+    lg.close()
     solar.close()
     espdev.close()
     await loxone.close()

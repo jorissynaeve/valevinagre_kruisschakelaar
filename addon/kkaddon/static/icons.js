@@ -18,6 +18,7 @@ const ICONS = {
   screen: '<rect x="2.5" y="4" width="19" height="12.5" rx="2"/><path d="M8 20.5h8M12 16.5v4"/>',
   tuya: '<rect x="3.5" y="3.5" width="17" height="17" rx="4.5"/><path d="M9 9v2.5M15 9v2.5M9.5 15.5h5"/>',
   airco: '<path d="M12 2.5v19M3.8 7.2l16.4 9.6M3.8 16.8 20.2 7.2"/><path d="m9.5 4.5 2.5 2 2.5-2M9.5 19.5l2.5-2 2.5 2"/>',
+  tv: '<rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 20.5h8M12 17v3.5"/>',
   solar: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
   // tijd
   timer: '<circle cx="12" cy="13.5" r="7.5"/><path d="M12 9.5v4l2.5 1.5M9.5 2.5h5"/>',
@@ -78,7 +79,7 @@ const ICONS = {
 
 // Welk pictogram bij welke module in het menu "+ Module" hoort (zelfde sleutels als SC_MENU in schema.js)
 const MENU_ICON = {
-  lamp: 'lamp', switch: 'switch', panel: 'panel', screen: 'screen', tuya: 'tuya', airco: 'airco', charge: 'charge', solar: 'solar',
+  lamp: 'lamp', switch: 'switch', panel: 'panel', screen: 'screen', tuya: 'tuya', airco: 'airco', lg: 'tv', charge: 'charge', solar: 'solar',
   timer: 'timer', sunrise: 'sunrise', sunset: 'sunset', time: 'time', number: 'number', select: 'select', dp: 'dp', add: 'add', sub: 'sub',
   between: 'between', after: 'after', before: 'before', above: 'above', below: 'below', and: 'and', or: 'or',
   sprinkler: 'sprinkler', action: 'action', scenes: 'scenes',
